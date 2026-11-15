@@ -1,0 +1,10 @@
+node_modules/
+dist/
+extension/dist/
+server/formflow.db
+server/formflow.db-shm
+server/formflow.db-wal
+.env
+.env.local
+.DS_Store
+*.log

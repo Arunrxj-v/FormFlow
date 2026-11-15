@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={"darkMode":"class","theme":{"extend":{"colors":{"background":"#faf8ff","primary-fixed-dim":"#c3c0ff","surface-container-high":"#e2e7ff","inverse-surface":"#283044","surface-tint":"#4d44e3","secondary-fixed":"#d3e4fe","on-tertiary-container":"#7df1bd","on-error":"#ffffff","inverse-on-surface":"#eef0ff","on-surface":"#131b2e","on-tertiary":"#ffffff","on-primary-fixed":"#0f0069","on-background":"#131b2e","secondary":"#505f76","primary":"#3525cd","on-secondary-fixed":"#0b1c30","secondary-fixed-dim":"#b7c8e1","error-container":"#ffdad6","primary-fixed":"#e2dfff","surface-container":"#eaedff","on-secondary":"#ffffff","on-tertiary-fixed":"#002114","surface-container-lowest":"#ffffff","outline":"#777587","on-secondary-fixed-variant":"#38485d","error":"#ba1a1a","tertiary-fixed-dim":"#68dba9","surface-dim":"#d2d9f4","surface":"#faf8ff","inverse-primary":"#c3c0ff","surface-variant":"#dae2fd","surface-bright":"#faf8ff","on-surface-variant":"#464555","tertiary-container":"#006e4c","surface-container-low":"#f2f3ff","tertiary-fixed":"#85f8c4","on-primary-fixed-variant":"#3323cc","on-primary":"#ffffff","on-tertiary-fixed-variant":"#005137","on-error-container":"#93000a","on-primary-container":"#dad7ff","primary-container":"#4f46e5","outline-variant":"#c7c4d8","secondary-container":"#d0e1fb","tertiary":"#005338","on-secondary-container":"#54647a","surface-container-highest":"#dae2fd"},"borderRadius":{"DEFAULT":"0.25rem","lg":"0.5rem","xl":"0.75rem","full":"9999px"},"spacing":{"space-xl":"1.5rem","space-md":"0.75rem","space-lg":"1rem","gutter":"0.75rem","margin-desktop":"1.5rem","margin":"1rem","space-sm":"0.5rem","space-xs":"0.25rem","gutter-desktop":"1rem"},"fontFamily":{"body-lg":["Inter"],"headline-md":["Inter"],"headline-sm":["Inter"],"label-sm":["Inter"],"headline-lg":["Inter"],"headline-lg-mobile":["Inter"],"body-sm":["Inter"],"code-sm":["Inter"],"body-md":["Inter"],"label-md":["Inter"]},"fontSize":{"body-lg":["0.9375rem",{"lineHeight":"1.5rem","letterSpacing":"-0.005em","fontWeight":"400"}],"headline-md":["1.125rem",{"lineHeight":"1.5rem","letterSpacing":"-0.015em","fontWeight":"600"}],"headline-sm":["0.9375rem",{"lineHeight":"1.375rem","letterSpacing":"-0.01em","fontWeight":"600"}],"label-sm":["0.75rem",{"lineHeight":"0.875rem","letterSpacing":"0.01em","fontWeight":"500"}],"headline-lg":["1.5rem",{"lineHeight":"2rem","letterSpacing":"-0.02em","fontWeight":"600"}],"headline-lg-mobile":["1.25rem",{"lineHeight":"1.75rem","letterSpacing":"-0.015em","fontWeight":"600"}],"body-sm":["0.8125rem",{"lineHeight":"1.125rem","letterSpacing":"0em","fontWeight":"400"}],"code-sm":["0.75rem",{"lineHeight":"1rem","letterSpacing":"-0.02em","fontWeight":"500"}],"body-md":["0.875rem",{"lineHeight":"1.25rem","letterSpacing":"0em","fontWeight":"400"}],"label-md":["0.8125rem",{"lineHeight":"1rem","letterSpacing":"0.005em","fontWeight":"500"}]}}}};</script></head><body class="bg-background font-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-screen w-60 bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-50 flex flex-col justify-between border-r border-surface-container-high/40"><div class="flex flex-col flex-1 overflow-y-auto px-space-md pt-space-md"><div class="flex items-center justify-between pb-space-md mb-space-sm"><div class="flex items-center gap-space-sm"><img alt="FormFlow Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1XA-5mHX52XTKUNov64CVXENDsNJduD9gq25vJjXGbk8YS9K_Co8zrOfooZ121u2S_JM_8E4jx_cxT7cXluFYW6uLVGgs02pGzEvKGaz_j6Nm4scYCnv6i9Z5svkQM3NwpFxZDOsSYyrn5f-9UXuhTR2ybttyf9VQZynsZE7B7kN9Nqz_og0hvhJ7vma2RLI-6_lwJcoP7EV4TL0ASxbaYSLpzxw0BD49uE076rCbGr"/><div class="flex items-baseline gap-space-xs"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight">FormFlow</span><span class="font-code-sm text-code-sm px-1.5 py-0.5 rounded bg-surface-container text-secondary font-medium">v1.4</span></div></div></div><div class="mb-space-md"><button class="w-full flex items-center justify-between px-space-sm py-1.5 rounded-lg bg-surface-container-low hover:bg-surface-container hover:text-on-surface text-secondary transition-colors duration-150" type="button"><div class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-[18px]">search</span><span class="font-label-md text-label-md">Quick Search</span></div><kbd class="font-code-sm text-code-sm px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface-variant shadow-[0_1px_0_rgba(15,23,42,0.08)]">⌘K</kbd></button></div><nav class="flex flex-col gap-space-md flex-1" data-active-classes="bg-primary-container text-on-primary font-medium rounded-lg"><div class="flex flex-col gap-0.5"><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="overview" href="#"><span class="material-symbols-outlined text-[18px]">home</span><span class="font-label-md text-label-md">Overview</span></a></div><div class="flex flex-col gap-0.5"><span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary px-space-sm py-1 font-semibold">MY INFORMATION</span><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="personal-profile" href="#"><span class="material-symbols-outlined text-[18px]">person</span><span class="font-label-md text-label-md">Personal Profile</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="addresses" href="#"><span class="material-symbols-outlined text-[18px]">location_on</span><span class="font-label-md text-label-md">Addresses</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="education" href="#"><span class="material-symbols-outlined text-[18px]">school</span><span class="font-label-md text-label-md">Education</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="employment" href="#"><span class="material-symbols-outlined text-[18px]">work</span><span class="font-label-md text-label-md">Employment</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="skills-and-certifications" href="#"><span class="material-symbols-outlined text-[18px]">military_tech</span><span class="font-label-md text-label-md">Skills &amp; Certifications</span></a></div><div class="flex flex-col gap-0.5"><span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary px-space-sm py-1 font-semibold">DOCUMENTS</span><a aria-current="page" class="flex items-center gap-space-sm px-space-sm py-1.5 transition-colors bg-primary-container text-on-primary font-medium rounded-lg" data-path="document-vault" href="#"><span class="material-symbols-outlined text-[18px]">folder_supervised</span><span class="font-label-md text-label-md">Document Vault</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="folders" href="#"><span class="material-symbols-outlined text-[18px]">folder_copy</span><span class="font-label-md text-label-md">Folders</span></a></div><div class="flex flex-col gap-0.5"><span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary px-space-sm py-1 font-semibold">INTEGRATIONS</span><a class="flex items-center justify-between px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="google-drive-integration" href="#"><div class="flex items-center gap-space-sm"><span class="material-symbols-outlined text-[18px]">cloud</span><span class="font-label-md text-label-md">Google Drive</span></div><span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm"><span class="w-1.5 h-1.5 rounded-full bg-tertiary-container"></span>Connected</span></a></div><div class="flex flex-col gap-0.5"><span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary px-space-sm py-1 font-semibold">PREFERENCES</span><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="autofill-settings" href="#"><span class="material-symbols-outlined text-[18px]">tune</span><span class="font-label-md text-label-md">Autofill Settings</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors" data-path="privacy-and-security" href="#"><span class="material-symbols-outlined text-[18px]">shield</span><span class="font-label-md text-label-md">Privacy &amp; Security</span></a></div></nav></div><div class="p-space-sm m-space-xs rounded-xl bg-surface-container-low hover:bg-surface-container transition-colors"><div class="flex items-center justify-between gap-space-xs"><div class="flex items-center gap-space-xs min-w-0"><img alt="Profile" class="w-8 h-8 rounded-full object-cover flex-shrink-0" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA6FvH0SPHYRtlqkeexUKw_eBppWfLMnb5zE07-E62f6Yesuu3XKmzB_P6AHEoeWkfTRZcwx6Bk2M9G3UOZVVhq_L-hbpACMQjxsTxb9-be8REm8aVVG-lFY5XGC3A_bdgcH2e592kkaRmso7fXMREmRq7Lhti964BfaBxyoyu2mxdAWeSaYJZgG0yU6vMZAPsv9mfyQe_hPqiwy8b4GD5EruUnRxMCchDTnIOb2DA"/><div class="min-w-0"><div class="font-label-md text-label-md font-semibold text-on-surface truncate">Arunraj V.</div><div class="font-body-sm text-body-sm text-secondary truncate">arun@example.com</div></div></div><span class="material-symbols-outlined text-secondary text-[18px] flex-shrink-0">unfold_more</span></div><div class="mt-space-xs pt-space-xs flex items-center justify-between text-secondary"><div class="flex items-center gap-1 font-label-sm text-label-sm text-tertiary font-medium"><span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span><span>Vault Synced</span></div><span class="material-symbols-outlined text-[14px] text-secondary">lock</span></div></div></aside><div class="pl-60 min-h-screen flex flex-col bg-background"><header class="fixed top-0 left-60 right-0 h-14 bg-surface-container-lowest/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 px-space-lg flex items-center justify-between"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs font-label-md text-label-md text-secondary"><span class="hover:text-on-surface cursor-pointer">FormFlow</span><span class="material-symbols-outlined text-[16px]">chevron_right</span><span class="font-medium text-on-surface">Workspace</span></div><div class="hidden md:flex items-center gap-space-xs px-2.5 py-1 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm"><span class="w-2 h-2 rounded-full bg-tertiary-container animate-pulse"></span><span>Connected to Chrome Extension</span></div></div><div class="flex items-center gap-space-sm"><div class="relative hidden sm:flex items-center"><span class="material-symbols-outlined absolute left-2.5 text-secondary text-[16px]">search</span><input class="h-8 pl-8 pr-8 rounded-lg bg-surface-container-low text-on-surface placeholder:text-secondary font-body-sm text-body-sm focus:outline-none focus:ring-1 focus:ring-primary w-48 lg:w-64" placeholder="Search fields, records (/) ..." type="text"/><kbd class="absolute right-2 font-code-sm text-code-sm text-secondary px-1 rounded bg-surface-container-lowest">/</kbd></div><button class="h-8 px-space-sm rounded-lg bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md flex items-center gap-1 shadow-sm transition-colors" type="button"><span class="material-symbols-outlined text-[18px]">add</span><span>Quick Autofill</span></button><img alt="Profile" class="w-8 h-8 rounded-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA6FvH0SPHYRtlqkeexUKw_eBppWfLMnb5zE07-E62f6Yesuu3XKmzB_P6AHEoeWkfTRZcwx6Bk2M9G3UOZVVhq_L-hbpACMQjxsTxb9-be8REm8aVVG-lFY5XGC3A_bdgcH2e592kkaRmso7fXMREmRq7Lhti964BfaBxyoyu2mxdAWeSaYJZgG0yU6vMZAPsv9mfyQe_hPqiwy8b4GD5EruUnRxMCchDTnIOb2DA"/></div></header><main class="relative pt-14 w-full px-space-lg py-space-md flex-1"><div class="flex flex-col w-full gap-space-md">
+<!-- Top Navigation & Action Row -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-sm bg-surface-container-lowest p-space-md rounded-xl shadow-sm">
+<div class="flex flex-wrap items-center gap-space-sm">
+<div class="flex items-center gap-2">
+<h1 class="font-headline-lg text-headline-lg text-on-surface tracking-tight">Document Vault</h1>
+<span class="px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-semibold">6 Documents</span>
+</div>
+<div class="h-4 w-[1px] bg-outline-variant hidden sm:block"></div>
+<div class="flex items-center gap-1 font-body-sm text-body-sm text-secondary">
+<span class="hover:text-primary cursor-pointer transition-colors">Documents</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="font-medium text-on-surface">Document Vault</span>
+</div>
+</div>
+<!-- Actions & Global Search -->
+<div class="flex flex-wrap items-center gap-space-xs sm:gap-space-sm">
+<div class="relative flex items-center min-w-[240px] sm:min-w-[300px]">
+<span class="material-symbols-outlined absolute left-2.5 text-secondary text-[18px]">search</span>
+<input class="w-full h-8 pl-8 pr-12 rounded-lg bg-surface-container-low text-on-surface placeholder:text-secondary font-body-sm text-body-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-inner" placeholder="Search documents by name, category, or metadata..." type="text"/>
+<kbd class="absolute right-2 font-code-sm text-code-sm text-secondary px-1.5 py-0.5 rounded bg-surface-container-lowest shadow-sm">⌘F</kbd>
+</div>
+<div class="flex items-center bg-surface-container-low p-0.5 rounded-lg shadow-inner">
+<button class="p-1 rounded-md bg-surface-container-lowest text-primary shadow-sm transition-all" id="viewToggleList" title="List View" type="button">
+<span class="material-symbols-outlined text-[18px] block">format_list_bulleted</span>
+</button>
+<button class="p-1 rounded-md text-secondary hover:text-on-surface transition-all" id="viewToggleGrid" title="Grid View" type="button">
+<span class="material-symbols-outlined text-[18px] block">grid_view</span>
+</button>
+</div>
+<button class="h-8 px-space-sm rounded-lg bg-surface-container-low hover:bg-surface-container text-on-surface font-label-md text-label-md flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[18px] text-secondary">create_new_folder</span>
+<span>New Folder</span>
+</button>
+<button class="h-8 px-space-md rounded-lg bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md flex items-center gap-1.5 shadow-sm transition-all active:scale-[0.98]" type="button">
+<span class="material-symbols-outlined text-[18px]">upload</span>
+<span>Upload Document</span>
+</button>
+</div>
+</div>
+<!-- Primary Workspace: Categories Sidebar + Main Records Area + Inspector Panel -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-md items-start">
+<!-- Left Navigation Folders -->
+<div class="lg:col-span-3 xl:col-span-2 flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl shadow-sm">
+<div class="flex items-center justify-between px-space-xs pb-1">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary font-semibold">FOLDERS &amp; CATEGORIES</span>
+<span class="material-symbols-outlined text-secondary text-[16px] cursor-pointer hover:text-on-surface">tune</span>
+</div>
+<nav class="flex flex-col gap-0.5" id="folderNav">
+<button class="folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container transition-colors font-body-sm text-body-sm" data-category="all" type="button">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-secondary">folder_supervised</span>
+<span>All Documents</span>
+</div>
+<span class="px-1.5 py-0.5 rounded-full bg-surface-container text-secondary font-code-sm text-code-sm font-semibold">6</span>
+</button>
+<button class="folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container transition-colors font-body-sm text-body-sm" data-category="identity" type="button">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-secondary">badge</span>
+<span>Identity Documents</span>
+</div>
+<span class="px-1.5 py-0.5 rounded-full bg-surface-container text-secondary font-code-sm text-code-sm font-semibold">2</span>
+</button>
+<!-- Active Filter: Education -->
+<button class="folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg bg-primary-container text-on-primary font-medium shadow-sm transition-colors font-body-sm text-body-sm" data-category="education" type="button">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">school</span>
+<span>Education</span>
+</div>
+<span class="px-1.5 py-0.5 rounded-full bg-on-primary/20 text-on-primary font-code-sm text-code-sm font-bold">3</span>
+</button>
+<button class="folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container transition-colors font-body-sm text-body-sm" data-category="employment" type="button">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-secondary">work_history</span>
+<span>Employment</span>
+</div>
+<span class="px-1.5 py-0.5 rounded-full bg-surface-container text-secondary font-code-sm text-code-sm font-semibold">1</span>
+</button>
+<button class="folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg text-on-surface-variant/60 hover:bg-surface-container transition-colors font-body-sm text-body-sm" data-category="certifications" type="button">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-secondary">verified</span>
+<span>Certifications</span>
+</div>
+<span class="px-1.5 py-0.5 rounded-full bg-surface-container/60 text-secondary font-code-sm text-code-sm font-semibold">0</span>
+</button>
+</nav>
+<!-- Drive Storage Widget -->
+<div class="mt-space-md p-space-sm rounded-lg bg-surface-container-low flex flex-col gap-2">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1 font-label-sm text-label-sm text-on-surface font-semibold">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud_done</span>
+<span>Google Drive Sync</span>
+</div>
+<span class="text-tertiary font-code-sm text-code-sm font-semibold">Healthy</span>
+</div>
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-primary h-full rounded-full w-[28%]"></div>
+</div>
+<div class="flex items-center justify-between text-secondary font-code-sm text-code-sm">
+<span>4.34 MB in vault</span>
+<span>15 GB Free</span>
+</div>
+</div>
+</div>
+<!-- Center Document Table Area -->
+<div class="lg:col-span-5 xl:col-span-6 flex flex-col gap-space-sm bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden">
+<!-- Active Folder Banner -->
+<div class="flex items-center justify-between px-space-md py-space-sm bg-surface-container-low">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface">Education Documents</span>
+<span class="font-body-sm text-body-sm text-secondary">• Showing active directory filter</span>
+</div>
+<button class="font-label-sm text-label-sm text-primary hover:underline font-semibold" type="button">Show all</button>
+</div>
+<!-- Data Table -->
+<div class="overflow-x-auto w-full">
+<table class="w-full text-left font-body-sm text-body-sm">
+<thead class="bg-surface-container-lowest text-secondary uppercase font-label-sm text-label-sm tracking-wider">
+<tr class="bg-surface-container-low/50">
+<th class="py-2.5 px-space-md font-semibold">Name</th>
+<th class="py-2.5 px-space-sm font-semibold">Category</th>
+<th class="py-2.5 px-space-xs font-semibold">Format</th>
+<th class="py-2.5 px-space-sm font-semibold">Size</th>
+<th class="py-2.5 px-space-sm font-semibold hidden sm:table-cell">Modified</th>
+<th class="py-2.5 px-space-xs font-semibold">Source</th>
+<th class="py-2.5 px-space-md text-right font-semibold">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-none" id="documentsTableBody">
+<!-- Row 1: Selected Record -->
+<tr class="doc-row cursor-pointer transition-colors bg-surface-container hover:bg-surface-container" data-doc-id="degree">
+<td class="py-3 px-space-md">
+<div class="flex items-center gap-space-xs min-w-0">
+<div class="w-7 h-7 rounded bg-error-container text-error flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+</div>
+<div class="min-w-0">
+<span class="font-medium text-on-surface truncate block max-w-[160px] xl:max-w-[200px]">Degree_Certificate_2025.pdf</span>
+<span class="text-tertiary font-code-sm text-code-sm flex items-center gap-0.5">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary inline-block"></span> Linked to Profile
+                    </span>
+</div>
+</div>
+</td>
+<td class="py-3 px-space-sm">
+<span class="px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant font-label-sm text-label-sm">
+                  Education / Degree
+                </span>
+</td>
+<td class="py-3 px-space-xs">
+<span class="px-1.5 py-0.5 rounded bg-error text-on-error font-code-sm text-code-sm font-bold">PDF</span>
+</td>
+<td class="py-3 px-space-sm font-code-sm text-code-sm text-secondary">1.8 MB</td>
+<td class="py-3 px-space-sm font-body-sm text-body-sm text-secondary hidden sm:table-cell">May 24, 2025</td>
+<td class="py-3 px-space-xs">
+<div class="flex items-center gap-1 text-secondary" title="Stored in Google Drive">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud</span>
+</div>
+</td>
+<td class="py-3 px-space-md text-right">
+<div class="flex items-center justify-end gap-1">
+<button class="p-1 rounded hover:bg-surface-container-lowest text-secondary hover:text-on-surface transition-colors" title="Preview" type="button">
+<span class="material-symbols-outlined text-[18px]">visibility</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container-lowest text-secondary hover:text-on-surface transition-colors" title="Download" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container-lowest text-secondary hover:text-on-surface transition-colors" title="More" type="button">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="doc-row cursor-pointer transition-colors hover:bg-surface-container-low" data-doc-id="cbse">
+<td class="py-3 px-space-md">
+<div class="flex items-center gap-space-xs min-w-0">
+<div class="w-7 h-7 rounded bg-error-container text-error flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+</div>
+<div class="min-w-0">
+<span class="font-medium text-on-surface truncate block max-w-[160px] xl:max-w-[200px]">CBSE_XII_Consolidated_Marklist.pdf</span>
+<span class="text-secondary font-code-sm text-code-sm">Higher Secondary Records</span>
+</div>
+</div>
+</td>
+<td class="py-3 px-space-sm">
+<span class="px-2 py-0.5 rounded bg-surface-container-low text-on-surface-variant font-label-sm text-label-sm">
+                  Education / Higher Sec
+                </span>
+</td>
+<td class="py-3 px-space-xs">
+<span class="px-1.5 py-0.5 rounded bg-error-container text-error font-code-sm text-code-sm font-bold">PDF</span>
+</td>
+<td class="py-3 px-space-sm font-code-sm text-code-sm text-secondary">1.2 MB</td>
+<td class="py-3 px-space-sm font-body-sm text-body-sm text-secondary hidden sm:table-cell">May 10, 2025</td>
+<td class="py-3 px-space-xs">
+<div class="flex items-center gap-1 text-secondary" title="Stored in Google Drive">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud</span>
+</div>
+</td>
+<td class="py-3 px-space-md text-right">
+<div class="flex items-center justify-end gap-1">
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Preview" type="button">
+<span class="material-symbols-outlined text-[18px]">visibility</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Download" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="More" type="button">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="doc-row cursor-pointer transition-colors hover:bg-surface-container-low" data-doc-id="passport">
+<td class="py-3 px-space-md">
+<div class="flex items-center gap-space-xs min-w-0">
+<div class="w-7 h-7 rounded bg-error-container text-error flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+</div>
+<div class="min-w-0">
+<span class="font-medium text-on-surface truncate block max-w-[160px] xl:max-w-[200px]">Passport_Bio_Page_Scan.pdf</span>
+<span class="text-secondary font-code-sm text-code-sm">Government ID</span>
+</div>
+</div>
+</td>
+<td class="py-3 px-space-sm">
+<span class="px-2 py-0.5 rounded bg-surface-container-low text-on-surface-variant font-label-sm text-label-sm">
+                  Identity / Passport
+                </span>
+</td>
+<td class="py-3 px-space-xs">
+<span class="px-1.5 py-0.5 rounded bg-error-container text-error font-code-sm text-code-sm font-bold">PDF</span>
+</td>
+<td class="py-3 px-space-sm font-code-sm text-code-sm text-secondary">840 KB</td>
+<td class="py-3 px-space-sm font-body-sm text-body-sm text-secondary hidden sm:table-cell">Apr 18, 2025</td>
+<td class="py-3 px-space-xs">
+<div class="flex items-center gap-1 text-secondary" title="Stored in Google Drive">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud</span>
+</div>
+</td>
+<td class="py-3 px-space-md text-right">
+<div class="flex items-center justify-end gap-1">
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Preview" type="button">
+<span class="material-symbols-outlined text-[18px]">visibility</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Download" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="More" type="button">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+</div>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="doc-row cursor-pointer transition-colors hover:bg-surface-container-low" data-doc-id="employment">
+<td class="py-3 px-space-md">
+<div class="flex items-center gap-space-xs min-w-0">
+<div class="w-7 h-7 rounded bg-error-container text-error flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+</div>
+<div class="min-w-0">
+<span class="font-medium text-on-surface truncate block max-w-[160px] xl:max-w-[200px]">Employment_Offer_Letter_2025.pdf</span>
+<span class="text-secondary font-code-sm text-code-sm">Career Records</span>
+</div>
+</div>
+</td>
+<td class="py-3 px-space-sm">
+<span class="px-2 py-0.5 rounded bg-surface-container-low text-on-surface-variant font-label-sm text-label-sm">
+                  Employment / Letters
+                </span>
+</td>
+<td class="py-3 px-space-xs">
+<span class="px-1.5 py-0.5 rounded bg-error-container text-error font-code-sm text-code-sm font-bold">PDF</span>
+</td>
+<td class="py-3 px-space-sm font-code-sm text-code-sm text-secondary">510 KB</td>
+<td class="py-3 px-space-sm font-body-sm text-body-sm text-secondary hidden sm:table-cell">Jan 15, 2025</td>
+<td class="py-3 px-space-xs">
+<div class="flex items-center gap-1 text-secondary" title="Stored in Google Drive">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud</span>
+</div>
+</td>
+<td class="py-3 px-space-md text-right">
+<div class="flex items-center justify-end gap-1">
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Preview" type="button">
+<span class="material-symbols-outlined text-[18px]">visibility</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="Download" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+<button class="p-1 rounded hover:bg-surface-container text-secondary hover:text-on-surface transition-colors" title="More" type="button">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Quick Autofill Trigger Bar -->
+<div class="m-space-sm p-space-sm rounded-lg bg-surface-container-low flex flex-col sm:flex-row sm:items-center justify-between gap-space-xs">
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined text-[14px]">bolt</span>
+</div>
+<div>
+<span class="font-label-md text-label-md font-semibold text-on-surface">Deterministic Autofill Ready</span>
+<span class="block text-secondary font-code-sm text-code-sm">Extension matches document proofs during active multi-page form filling.</span>
+</div>
+</div>
+<kbd class="px-2 py-1 rounded bg-surface-container-lowest font-code-sm text-code-sm text-on-surface shadow-sm inline-flex items-center gap-1">
+<span>Alt + A</span> to attach
+        </kbd>
+</div>
+</div>
+<!-- Right Side Panel: Inspector for Degree_Certificate_2025.pdf -->
+<div class="lg:col-span-4 xl:col-span-4 flex flex-col gap-space-md bg-surface-container-lowest p-space-md rounded-xl shadow-sm">
+<div class="flex items-center justify-between pb-1">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[18px] text-primary">info</span>
+<span class="font-headline-sm text-headline-sm text-on-surface">Document Details</span>
+</div>
+<div class="flex items-center gap-1">
+<span class="px-2 py-0.5 rounded-full bg-tertiary-fixed text-on-tertiary-fixed font-label-sm text-label-sm font-semibold flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span> Verified Source
+          </span>
+</div>
+</div>
+<!-- Quick PDF Thumbnail Preview Card -->
+<div class="relative w-full rounded-xl overflow-hidden bg-surface-container-high aspect-[16/10] flex flex-col shadow-inner group">
+<img class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" data-alt="A clean, high-resolution scanned degree certificate document sitting on an executive desk with official university seal and embossed gold foil emblem in gentle morning light." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCTXMkX-5SewEC-4TyuEQsFHuBCGUV4JntXu9QOuVgEw2mybi8L0y3GcMfTSRY5hunu0KzM3h2N1D4OyqT7OY16HnkNUOJ04t3Vruy-IgekdAInhuKuIuCJp3BFZoJP7IHDIVYdjhU5kys4amNBd01JNCK0Liz9n06n8kH6fYs-X45ysvzAipF_XmX7ETja5myp86rpiPG2Sn3beaNAvshm_T-MPUm41R_bkuaMZMU"/>
+<div class="absolute inset-0 bg-gradient-to-t from-inverse-surface/80 via-transparent to-transparent flex flex-col justify-end p-space-sm text-inverse-on-surface">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1 font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[16px] text-on-tertiary-container">verified_user</span>
+<span>KTU Official Transcript Attached</span>
+</div>
+<span class="font-code-sm text-code-sm bg-surface-container-lowest/20 backdrop-blur-md px-1.5 py-0.5 rounded">Page 1 of 1</span>
+</div>
+</div>
+</div>
+<!-- File Metadata Grid -->
+<div class="flex flex-col gap-space-xs bg-surface-container-low p-space-sm rounded-lg">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary font-semibold">File Metadata</span>
+<div class="grid grid-cols-2 gap-y-2 gap-x-space-sm pt-1">
+<div>
+<span class="font-body-sm text-body-sm text-secondary block">File Size</span>
+<span class="font-code-sm text-code-sm font-semibold text-on-surface">1.8 MB (1,842,100 bytes)</span>
+</div>
+<div>
+<span class="font-body-sm text-body-sm text-secondary block">Uploaded Date</span>
+<span class="font-code-sm text-code-sm font-semibold text-on-surface">May 24, 2025</span>
+</div>
+<div>
+<span class="font-body-sm text-body-sm text-secondary block">MIME Type</span>
+<span class="font-code-sm text-code-sm font-semibold text-on-surface">application/pdf</span>
+</div>
+<div>
+<span class="font-body-sm text-body-sm text-secondary block">Encryption Status</span>
+<span class="font-code-sm text-code-sm font-semibold text-tertiary">Zero-Custody Key</span>
+</div>
+<div class="col-span-2">
+<span class="font-body-sm text-body-sm text-secondary block">Cloud Path</span>
+<div class="flex items-center gap-1 text-on-surface font-code-sm text-code-sm bg-surface-container-lowest px-2 py-1 rounded shadow-inner mt-0.5 truncate">
+<span class="material-symbols-outlined text-[14px] text-secondary">folder</span>
+<span class="truncate">/FormFlow Vault/Education/Degree_Certificate_2025.pdf</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Linked Record Mapping -->
+<div class="flex flex-col gap-space-xs bg-surface-container-low p-space-sm rounded-lg">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary font-semibold">Linked Identity Profile</span>
+<button class="font-label-sm text-label-sm text-primary hover:underline font-semibold" type="button">Change</button>
+</div>
+<div class="flex items-center gap-space-xs p-space-xs bg-surface-container-lowest rounded-md shadow-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center text-primary flex-shrink-0">
+<span class="material-symbols-outlined text-[20px]">school</span>
+</div>
+<div class="min-w-0 flex-1">
+<span class="font-label-md text-label-md font-semibold text-on-surface block truncate">Undergraduate Degree (B.Tech - KTU)</span>
+<span class="font-body-sm text-body-sm text-secondary block">Electronics &amp; Communication • 2021-2025</span>
+</div>
+</div>
+</div>
+<!-- Autofill Rule Definition -->
+<div class="flex flex-col gap-1.5 bg-surface-container-low p-space-sm rounded-lg">
+<div class="flex items-center gap-1.5 text-primary">
+<span class="material-symbols-outlined text-[18px]">auto_fix_high</span>
+<span class="font-label-md text-label-md font-semibold text-on-surface">Browser Autofill Rule</span>
+</div>
+<p class="font-body-sm text-body-sm text-secondary">
+          Suggested automatically when upload inputs match the pattern:
+        </p>
+<div class="flex flex-wrap gap-1 mt-1">
+<span class="px-2 py-0.5 rounded bg-surface-container text-on-surface-variant font-code-sm text-code-sm">Degree Certificate</span>
+<span class="px-2 py-0.5 rounded bg-surface-container text-on-surface-variant font-code-sm text-code-sm">Graduation Proof</span>
+<span class="px-2 py-0.5 rounded bg-surface-container text-on-surface-variant font-code-sm text-code-sm">Convocation Certificate</span>
+</div>
+</div>
+<!-- Strict Zero-Knowledge Notice -->
+<div class="flex items-start gap-2 p-space-sm rounded-lg bg-surface-container">
+<span class="material-symbols-outlined text-secondary text-[18px] mt-0.5 flex-shrink-0">shield</span>
+<div class="flex flex-col gap-0.5">
+<span class="font-label-sm text-label-sm font-semibold text-on-surface">Strict Trust &amp; Privacy Notice</span>
+<p class="font-body-sm text-body-sm text-secondary leading-tight">
+            Original file stored in your personal Google Drive. FormFlow holds zero custody over your actual files.
+          </p>
+</div>
+</div>
+<!-- Side Panel Action Buttons -->
+<div class="flex flex-col sm:flex-row gap-space-xs pt-1">
+<button class="flex-1 h-9 px-space-sm rounded-lg bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-[0.98]" type="button">
+<span class="material-symbols-outlined text-[18px]">download</span>
+<span>Download to Device</span>
+</button>
+<button class="h-9 px-space-sm rounded-lg bg-surface-container-low hover:bg-error-container text-error font-label-md text-label-md flex items-center justify-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[18px]">link_off</span>
+<span>Unlink Record</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Simple row selection micro-interaction
+  document.querySelectorAll('.doc-row').forEach(row => {
+    row.addEventListener('click', function(e) {
+      if (e.target.closest('button')) return;
+      document.querySelectorAll('.doc-row').forEach(r => {
+        r.classList.remove('bg-surface-container');
+        r.classList.add('hover:bg-surface-container-low');
+      });
+      this.classList.add('bg-surface-container');
+    });
+  });
+
+  // View toggle micro-interaction
+  const btnList = document.getElementById('viewToggleList');
+  const btnGrid = document.getElementById('viewToggleGrid');
+  if (btnList && btnGrid) {
+    btnGrid.addEventListener('click', () => {
+      btnGrid.className = 'p-1 rounded-md bg-surface-container-lowest text-primary shadow-sm transition-all';
+      btnList.className = 'p-1 rounded-md text-secondary hover:text-on-surface transition-all';
+    });
+    btnList.addEventListener('click', () => {
+      btnList.className = 'p-1 rounded-md bg-surface-container-lowest text-primary shadow-sm transition-all';
+      btnGrid.className = 'p-1 rounded-md text-secondary hover:text-on-surface transition-all';
+    });
+  }
+
+  // Folder tab selection
+  document.querySelectorAll('.folder-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.folder-btn').forEach(b => {
+        b.className = 'folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container transition-colors font-body-sm text-body-sm';
+        const badge = b.querySelector('span:last-child');
+        if (badge) badge.className = 'px-1.5 py-0.5 rounded-full bg-surface-container text-secondary font-code-sm text-code-sm font-semibold';
+      });
+      this.className = 'folder-btn w-full flex items-center justify-between px-space-sm py-2 rounded-lg bg-primary-container text-on-primary font-medium shadow-sm transition-colors font-body-sm text-body-sm';
+      const activeBadge = this.querySelector('span:last-child');
+      if (activeBadge) activeBadge.className = 'px-1.5 py-0.5 rounded-full bg-on-primary/20 text-on-primary font-code-sm text-code-sm font-bold';
+    });
+  });
+</script></main></div></body></html>
