@@ -1,8 +1,8 @@
 import { FormFlowError } from '@shared/errors';
-import { PBKDF2_ITERATIONS } from '@shared/constants';
+import { ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS, VAULT_SCHEMA_VERSION } from '@shared/constants';
 
 export interface EncryptedEnvelope {
-  v: 1;
+  v: 1 | 2;
   alg: 'AES-GCM';
   iv: string;
   data: string;
@@ -14,10 +14,49 @@ export interface WrappedKey {
   wrapped: EncryptedEnvelope;
 }
 
-const ENVELOPE_VERSION = 1;
-const AAD = new TextEncoder().encode('formflow:vault:v1');
+/**
+ * Canonical authenticated context for one encrypted field.
+ *
+ * The AAD is a length-prefixed encoding, not string concatenation, so
+ * attacker-controlled IDs cannot shift field boundaries.
+ */
+export interface RecordAad {
+  vaultId: string;
+  recordType: string;
+  recordId: string;
+  field: string;
+  schemaVersion: number;
+}
 
-function toBase64(bytes: ArrayBuffer | Uint8Array): string {
+const LEGACY_AAD = new TextEncoder().encode('formflow:vault:v1');
+const textEncoder = new TextEncoder();
+
+function lengthPrefixed(parts: string[]): Uint8Array {
+  return textEncoder.encode(parts.map((part) => `${textEncoder.encode(part).length}:${part}`).join('|'));
+}
+
+export function recordAad(context: RecordAad): Uint8Array {
+  return lengthPrefixed([
+    'formflow',
+    'record',
+    String(ENCRYPTION_FORMAT_VERSION),
+    String(context.schemaVersion),
+    context.vaultId,
+    context.recordType,
+    context.recordId,
+    context.field,
+  ]);
+}
+
+export const BACKUP_AAD: RecordAad = {
+  vaultId: 'formflow-backup',
+  recordType: 'backup',
+  recordId: 'archive',
+  field: 'payload',
+  schemaVersion: 3,
+};
+
+export function toBase64(bytes: ArrayBuffer | Uint8Array): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = '';
   const chunk = 0x8000;
@@ -51,7 +90,7 @@ export function base64ToArrayBuffer(value: string): ArrayBuffer {
 
 export async function sha256Hex(data: string | ArrayBuffer | Uint8Array): Promise<string> {
   const bytes = typeof data === 'string'
-    ? new TextEncoder().encode(data)
+    ? textEncoder.encode(data)
     : data instanceof Uint8Array
       ? data
       : new Uint8Array(data);
@@ -66,7 +105,7 @@ export async function deriveKeyFromPassword(
 ): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(password) as BufferSource,
+    textEncoder.encode(password) as BufferSource,
     'PBKDF2',
     false,
     ['deriveKey'],
@@ -101,21 +140,42 @@ export async function importDataKey(raw: Uint8Array, extractable = false): Promi
   ]);
 }
 
-export async function encryptBytesWithKey(key: CryptoKey, bytes: ArrayBuffer | Uint8Array): Promise<{ iv: string; data: ArrayBuffer }> {
+async function encryptBytesWithAad(
+  key: CryptoKey,
+  bytes: ArrayBuffer | Uint8Array,
+  additionalData: Uint8Array,
+): Promise<{ iv: string; data: ArrayBuffer }> {
   const iv = randomBytes(12);
-  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const plaintext = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: AAD as BufferSource, tagLength: 128 },
+    { name: 'AES-GCM', iv: iv as BufferSource, additionalData: additionalData as BufferSource, tagLength: 128 },
     key,
-    data as BufferSource,
+    plaintext as BufferSource,
   );
   return { iv: toBase64(iv), data: ciphertext };
 }
 
-export async function decryptBytesWithKey(key: CryptoKey, ivBase64: string, ciphertext: ArrayBuffer): Promise<ArrayBuffer> {
+async function decryptBytesWithAad(
+  key: CryptoKey,
+  ivBase64: string,
+  ciphertext: ArrayBuffer,
+  additionalData: Uint8Array,
+): Promise<ArrayBuffer> {
+  let iv: Uint8Array;
+  try {
+    iv = fromBase64(ivBase64);
+  } catch (error) {
+    throw new FormFlowError('VALIDATION_FAILED', 'Encrypted data has malformed nonce metadata.', { cause: error });
+  }
+  if (iv.byteLength !== 12) {
+    throw new FormFlowError('VALIDATION_FAILED', 'Encrypted data has an invalid nonce length.');
+  }
+  if (ciphertext.byteLength < 16) {
+    throw new FormFlowError('VALIDATION_FAILED', 'Encrypted data is truncated.');
+  }
   try {
     return await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: fromBase64(ivBase64) as BufferSource, additionalData: AAD as BufferSource, tagLength: 128 },
+      { name: 'AES-GCM', iv: iv as BufferSource, additionalData: additionalData as BufferSource, tagLength: 128 },
       key,
       ciphertext,
     );
@@ -124,11 +184,47 @@ export async function decryptBytesWithKey(key: CryptoKey, ivBase64: string, ciph
   }
 }
 
-export async function encryptJsonWithKey(key: CryptoKey, value: unknown): Promise<string> {
-  const encoded = new TextEncoder().encode(JSON.stringify(value));
-  const { iv, data } = await encryptBytesWithKey(key, encoded);
+/** Encrypt record bytes with per-record AAD. */
+export async function encryptBytesWithKey(
+  key: CryptoKey,
+  bytes: ArrayBuffer | Uint8Array,
+  context: RecordAad,
+): Promise<{ iv: string; data: ArrayBuffer }> {
+  return encryptBytesWithAad(key, bytes, recordAad(context));
+}
+
+/** Decrypt record bytes with per-record AAD. */
+export async function decryptBytesWithKey(
+  key: CryptoKey,
+  ivBase64: string,
+  ciphertext: ArrayBuffer,
+  context: RecordAad,
+): Promise<ArrayBuffer> {
+  return decryptBytesWithAad(key, ivBase64, ciphertext, recordAad(context));
+}
+
+/** Legacy helper for the wrapped data key, which is not a vault record. */
+export async function encryptBytesWithLegacyAad(
+  key: CryptoKey,
+  bytes: ArrayBuffer | Uint8Array,
+): Promise<{ iv: string; data: ArrayBuffer }> {
+  return encryptBytesWithAad(key, bytes, LEGACY_AAD);
+}
+
+/** Legacy helper for reading Phase 2/3 data before the record-AAD migration. */
+export async function decryptBytesWithLegacyAad(
+  key: CryptoKey,
+  ivBase64: string,
+  ciphertext: ArrayBuffer,
+): Promise<ArrayBuffer> {
+  return decryptBytesWithAad(key, ivBase64, ciphertext, LEGACY_AAD);
+}
+
+export async function encryptJsonWithKey(key: CryptoKey, value: unknown, context: RecordAad): Promise<string> {
+  const encoded = textEncoder.encode(JSON.stringify(value));
+  const { iv, data } = await encryptBytesWithKey(key, encoded, context);
   const envelope: EncryptedEnvelope = {
-    v: ENVELOPE_VERSION,
+    v: 2,
     alg: 'AES-GCM',
     iv,
     data: toBase64(data),
@@ -136,19 +232,65 @@ export async function encryptJsonWithKey(key: CryptoKey, value: unknown): Promis
   return JSON.stringify(envelope);
 }
 
-export async function decryptJsonWithKey<T>(key: CryptoKey, payload: string): Promise<T> {
+/** Legacy writer used only to construct fixtures or read old data. */
+export async function encryptJsonWithLegacyAad(key: CryptoKey, value: unknown): Promise<string> {
+  const encoded = textEncoder.encode(JSON.stringify(value));
+  const { iv, data } = await encryptBytesWithLegacyAad(key, encoded);
+  const envelope: EncryptedEnvelope = {
+    v: 1,
+    alg: 'AES-GCM',
+    iv,
+    data: toBase64(data),
+  };
+  return JSON.stringify(envelope);
+}
+
+function parseEnvelope(payload: string): EncryptedEnvelope {
   let envelope: EncryptedEnvelope;
   try {
     envelope = JSON.parse(payload) as EncryptedEnvelope;
   } catch (error) {
     throw new FormFlowError('VALIDATION_FAILED', 'Encrypted payload is not valid JSON.', { cause: error });
   }
-  if (envelope.v !== 1 || envelope.alg !== 'AES-GCM' || !envelope.iv || !envelope.data) {
+  if (
+    !envelope ||
+    (envelope.v !== 1 && envelope.v !== 2) ||
+    envelope.alg !== 'AES-GCM' ||
+    typeof envelope.iv !== 'string' ||
+    typeof envelope.data !== 'string'
+  ) {
     throw new FormFlowError('VALIDATION_FAILED', 'Unsupported or malformed encryption envelope.');
   }
-  const plaintext = await decryptBytesWithKey(key, envelope.iv, base64ToArrayBuffer(envelope.data));
+  return envelope;
+}
+
+export function envelopeVersion(payload: string): 1 | 2 {
+  return parseEnvelope(payload).v;
+}
+
+export function isV2Envelope(payload: string): boolean {
   try {
-    return JSON.parse(new TextDecoder().decode(plaintext)) as T;
+    return parseEnvelope(payload).v === 2;
+  } catch {
+    return false;
+  }
+}
+
+export async function decryptJsonWithKey<T>(
+  key: CryptoKey,
+  payload: string,
+  context?: RecordAad,
+): Promise<T> {
+  const envelope = parseEnvelope(payload);
+  let plaintext: ArrayBuffer;
+  if (envelope.v === 2) {
+    if (!context) throw new FormFlowError('VALIDATION_FAILED', 'Encrypted record is missing its authenticated context.');
+    plaintext = await decryptBytesWithKey(key, envelope.iv, base64ToArrayBuffer(envelope.data), context);
+  } else {
+    plaintext = await decryptBytesWithLegacyAad(key, envelope.iv, base64ToArrayBuffer(envelope.data));
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plaintext)) as T;
   } catch (error) {
     throw new FormFlowError('VALIDATION_FAILED', 'Decrypted payload is not valid JSON.', { cause: error });
   }
@@ -159,7 +301,7 @@ export async function wrapDataKey(password: string, iterations = PBKDF2_ITERATIO
   const kek = await deriveKeyFromPassword(password, salt, iterations);
   const dataKey = await generateDataKey();
   const raw = await exportKeyRaw(dataKey);
-  const encrypted = await encryptBytesWithKey(kek, raw);
+  const encrypted = await encryptBytesWithLegacyAad(kek, raw);
   return {
     salt: toBase64(salt),
     iterations,
@@ -176,7 +318,7 @@ export async function unwrapDataKey(password: string, saltBase64: string, iterat
   const salt = fromBase64(saltBase64);
   const kek = await deriveKeyFromPassword(password, salt, iterations);
   try {
-    const raw = await decryptBytesWithKey(kek, wrapped.iv, base64ToArrayBuffer(wrapped.data));
+    const raw = await decryptBytesWithLegacyAad(kek, wrapped.iv, base64ToArrayBuffer(wrapped.data));
     return importDataKey(new Uint8Array(raw), true);
   } catch (error) {
     throw new FormFlowError('INVALID_PASSWORD', 'That vault password is incorrect.', { cause: error });
@@ -194,7 +336,7 @@ export async function rewrapDataKey(
   const raw = await exportKeyRaw(dataKey);
   const newSalt = randomBytes(16);
   const newKek = await deriveKeyFromPassword(newPassword, newSalt);
-  const encrypted = await encryptBytesWithKey(newKek, raw);
+  const encrypted = await encryptBytesWithLegacyAad(newKek, raw);
   return {
     salt: toBase64(newSalt),
     iterations: PBKDF2_ITERATIONS,
@@ -212,4 +354,8 @@ export function validatePasswordStrength(password: string): { ok: boolean; messa
   if (/^(.)\1+$/.test(password)) return { ok: false, message: 'Choose a less repetitive password.' };
   if (/^\d+$/.test(password)) return { ok: false, message: 'A password made only of digits is too weak.' };
   return { ok: true };
+}
+
+export function isSupportedSchemaVersion(value: unknown): value is number {
+  return value === VAULT_SCHEMA_VERSION;
 }

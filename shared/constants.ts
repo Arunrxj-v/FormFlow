@@ -2,6 +2,8 @@ export const APP_NAME = 'FormFlow';
 export const APP_VERSION = '2.0.0';
 export const DB_NAME = 'formflow-local';
 export const DB_VERSION = 2;
+export const VAULT_SCHEMA_VERSION = 2;
+export const ENCRYPTION_FORMAT_VERSION = 2;
 
 export const MODEL_CACHE_NAME = 'formflow-model-cache-v1';
 export const MODEL_METADATA_ID = 'qwen3-0.6b-instruct';
@@ -39,4 +41,11 @@ export const MODEL_MAX_OUTPUT_TOKENS = 320;
 export const MODEL_MAX_CONTEXT_TOKENS = 3072;
 
 export const BACKUP_FORMAT = 'formflow-encrypted-backup';
-export const BACKUP_VERSION = 1;
+export const BACKUP_VERSION = 2;
+export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
+export const MAX_BACKUP_DOCUMENTS = 5000;
+export const MAX_BACKUP_VALUES = 50000;
+export const MAX_BACKUP_COLLECTIONS = 5000;
+export const MAX_BACKUP_HISTORY = 50000;
+export const MAX_BACKUP_PROFILE_RECORDS = 10000;
+export const MAX_BACKUP_TEXT_RECORDS = 10000;

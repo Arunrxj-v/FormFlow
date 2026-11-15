@@ -371,7 +371,9 @@ export interface DocumentRecord {
 export interface ExtractedValueRecord {
   id: string;
   key: string;
+  /** Plaintext label exists only in pre-3.1 rows until the v2 migration encrypts it. */
   label: string;
+  labelEnc?: string;
   valueEnc: string;
   normalizedValueEnc: string;
   category: VaultCategory;
@@ -389,7 +391,9 @@ export interface ExtractedValueRecord {
 export interface ConflictRecord {
   id: string;
   key: string;
+  /** Plaintext label exists only in pre-3.1 rows until the v2 migration encrypts it. */
   label: string;
+  labelEnc?: string;
   existingValueEnc: string;
   existingSourceDocumentId: string;
   existingConfidence: number;
@@ -420,6 +424,8 @@ export interface StoredDocumentFile {
   ciphertext: Blob;
   iv: string;
   version: 2;
+  /** AAD format used for the blob. Missing means legacy vault-wide AAD. */
+  aadVersion?: 1 | 2;
   createdAt: string;
   updatedAt: string;
 }
@@ -494,6 +500,8 @@ export interface VaultMeta {
   iterations: number;
   salt: string;
   wrappedDataKey: string;
+  /** 1 or missing = Phase 3 vault-wide AAD; 2 = per-record AAD. */
+  encryptionFormat?: 1 | 2;
   createdAt: string;
   passwordUpdatedAt: string;
 }
