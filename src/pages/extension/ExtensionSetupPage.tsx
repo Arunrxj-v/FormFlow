@@ -34,20 +34,20 @@ const steps = [
   },
   {
     icon: PlugZap,
-    title: 'Connect your workspace',
-    body: 'Open the FormFlow popup to connect it to your local vault. The extension requests data only when triggered on an active form.',
-    code: 'http://localhost:5173',
+    title: 'Open the extension dashboard',
+    body: 'Create or unlock the encrypted vault in the extension-owned dashboard. The popup reads the same vault through controlled extension messaging.',
+    code: 'chrome-extension://<extension-id>/dashboard.html',
   },
   {
     icon: MousePointerClick,
     title: 'Review before you fill',
-    body: 'Open any supported form, invoke the extension, review every suggested field, and approve the fill.',
+    body: 'Open any supported form, invoke the extension, review every suggested field, and approve the fill. The content script never receives the whole vault.',
     code: 'Alt+Shift+F',
   },
 ];
 
 export function ExtensionSetupPage() {
-  const { user, extensionConnection, documents, fields, driveConnection } = useApp();
+  const { user, documents, fields, vaultStatus } = useApp();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [copied, setCopied] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export function ExtensionSetupPage() {
     window.setTimeout(() => setCopied(null), 1600);
   };
 
-  const processed = documents.filter((doc) => doc.status === 'processed' || doc.status === 'completed');
+  const processed = documents.filter((doc) => doc.status === 'stored' || doc.status === 'completed');
 
   return (
     <div>
@@ -70,7 +70,7 @@ export function ExtensionSetupPage() {
         description="FormFlow detects forms only when you invoke it, suggests values from your vault, and waits for approval before filling."
         actions={
           <>
-            <Badge tone={extensionConnection.connected ? 'success' : 'warning'}>{extensionConnection.connected ? 'Connected' : 'Setup required'}</Badge>
+            <Badge tone={vaultStatus?.unlocked ? 'success' : 'warning'}>{vaultStatus?.unlocked ? 'Vault unlocked' : 'Vault locked'}</Badge>
             <Button variant="primary" icon={ArrowRight} onClick={() => navigate('/demo-form')}>Open test form</Button>
           </>
         }
@@ -80,7 +80,7 @@ export function ExtensionSetupPage() {
         <div className="ff-extension-main">
           <Card className="ff-extension-hero">
             <div className="ff-extension-hero__copy">
-              <div className="ff-row ff-gap-6 ff-mb-8"><span className="ff-status-dot is-online" /><span className="ff-code">EXTENSION READY</span></div>
+              <div className="ff-row ff-gap-6 ff-mb-8"><span className={`ff-status-dot ${vaultStatus?.unlocked ? 'is-online' : ''}`} /><span className="ff-code">{vaultStatus?.unlocked ? 'EXTENSION VAULT UNLOCKED' : 'EXTENSION VAULT LOCKED'}</span></div>
               <h2 className="ff-h2">Your vault, one click away from any form.</h2>
               <p className="ff-body-sm ff-muted ff-mt-8">The bundled Manifest V3 extension reads field labels on the active tab, matches them against your collection, and shows a review panel. Nothing is submitted automatically.</p>
               <div className="ff-row ff-gap-8 ff-mt-16" style={{ flexWrap: 'wrap' }}>
@@ -179,14 +179,14 @@ export function ExtensionSetupPage() {
 
         <div className="ff-dashboard-col">
           <Card className="ff-section-card">
-            <div className="ff-row ff-between"><div className="ff-row ff-gap-8"><PlugZap size={17} className="ff-primary" /><span className="ff-h3">Connection</span></div><span className={cn('ff-status-dot', extensionConnection.connected && 'is-online')} /></div>
+            <div className="ff-row ff-between"><div className="ff-row ff-gap-8"><PlugZap size={17} className="ff-primary" /><span className="ff-h3">Extension vault</span></div><span className={cn('ff-status-dot', vaultStatus?.unlocked && 'is-online')} /></div>
             <div className="ff-stack ff-gap-8 ff-mt-12">
-              <div className="ff-info-pair"><span>Browser</span><span>{extensionConnection.browser}</span></div>
-              <div className="ff-info-pair"><span>Version</span><span>{extensionConnection.version}</span></div>
-              <div className="ff-info-pair"><span>Shortcut</span><span className="ff-code">{extensionConnection.shortcut}</span></div>
-              <div className="ff-info-pair"><span>Last handshake</span><span>{extensionConnection.lastSync}</span></div>
+              <div className="ff-info-pair"><span>Dashboard origin</span><span>{typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:' ? 'chrome-extension://' : 'localhost (development)'}</span></div>
+              <div className="ff-info-pair"><span>Vault</span><span>{vaultStatus?.unlocked ? 'Unlocked' : 'Locked'}</span></div>
+              <div className="ff-info-pair"><span>Encryption</span><span>{vaultStatus?.encrypted ? 'AES-256-GCM' : 'Not enabled'}</span></div>
+              <div className="ff-info-pair"><span>Shortcut</span><span className="ff-code">Alt + F</span></div>
             </div>
-            <div className="ff-note ff-mt-12">The extension communicates with your local FormFlow vault to inspect and autofill form fields.</div>
+            <div className="ff-note ff-mt-12">The popup and dashboard use the same extension-owned vault. Content scripts never receive the full vault.</div>
           </Card>
 
           <Card className="ff-section-card">
@@ -194,7 +194,7 @@ export function ExtensionSetupPage() {
             <div className="ff-stack ff-gap-8 ff-mt-12">
               <div className="ff-info-pair"><span>Processed documents</span><span>{processed.length}</span></div>
               <div className="ff-info-pair"><span>Extracted values</span><span>{fields.length}</span></div>
-              <div className="ff-info-pair"><span>Drive source</span><span>{driveConnection.connected ? 'Demo connected' : 'Manual upload'}</span></div>
+              <div className="ff-info-pair"><span>Vault owner</span><span>Extension origin</span></div>
               <div className="ff-info-pair"><span>Conflicts</span><span>{fields.filter((field) => field.conflicts?.length).length}</span></div>
             </div>
             <Button fullWidth className="ff-mt-12" onClick={() => navigate('/collections')}>Manage collections</Button>
@@ -206,7 +206,7 @@ export function ExtensionSetupPage() {
               {[
                 'Detection runs only on the active tab after you click.',
                 'Sensitive fields always need explicit approval.',
-                'Tokens stay in the extension service worker.',
+                'The vault key stays in the browser session.',
                 'FormFlow never clicks submit.',
               ].map((item) => (
                 <div className="ff-row ff-gap-6 ff-body-sm" key={item}><CheckCircle2 size={13} style={{ flex: '0 0 auto', color: 'var(--ff-success)' }} /><span>{item}</span></div>

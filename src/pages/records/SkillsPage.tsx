@@ -31,47 +31,75 @@ export function SkillsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Skill | null>(null);
 
   useEffect(() => {
-    // Check skills from vault fields
-    const skillField = fields.find((f) => f.key === 'other.skills');
-    const vaultSkills: Skill[] = [];
-    if (skillField?.value) {
-      const items = skillField.value.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
-      items.forEach((item, idx) => {
-        vaultSkills.push({
-          id: `sk_vault_${idx}`,
-          name: item,
-          category: 'Technical',
-          level: 80,
-          source: skillField.source.documentName || 'Vault',
+    let cancelled = false;
+    const load = async () => {
+      const skillField = fields.find((f) => f.key === 'other.skills' || f.key === 'skills.technical');
+      const vaultSkills: Skill[] = [];
+      if (skillField?.value) {
+        const items = skillField.value.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+        items.forEach((item, idx) => {
+          vaultSkills.push({
+            id: `sk_vault_${idx}`,
+            name: item,
+            category: 'Technical',
+            level: 80,
+            source: skillField.source.documentName || 'Vault',
+          });
         });
-      });
-    }
+      }
 
-    recordService.listEmployment().then((records) => {
-      const names = new Set(records.flatMap((record) => record.skills));
-      setSkills((current) => {
-        const base = [...vaultSkills, ...current];
-        const known = new Set(base.map((skill) => skill.name.toLowerCase()));
-        const extra = [...names].filter((name) => !known.has(name.toLowerCase())).map((name, index) => ({
+      const [employment, localSkills] = await Promise.all([
+        recordService.listEmployment(),
+        recordService.listSkills(),
+      ]);
+      if (cancelled) return;
+      const names = new Set([...vaultSkills, ...localSkills].map((skill) => skill.name.toLowerCase()));
+      const extraFromEmployment = [...new Set(employment.flatMap((record) => record.skills))]
+        .filter((name) => !names.has(name.toLowerCase()))
+        .map((name, index) => ({
           id: `sk_auto_${index}`,
           name,
           category: 'Technical' as const,
           level: 75,
           source: 'Employment record',
         }));
-        return extra.length ? [...base, ...extra] : base;
-      });
-    });
+      const persisted = localSkills.map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        category: skill.category,
+        level: skill.level,
+        source: skill.source,
+      }));
+      setSkills([...persisted, ...vaultSkills, ...extraFromEmployment]);
+    };
+    void load();
+    return () => { cancelled = true; };
   }, [fields]);
 
   const groups = useMemo(() => ['Technical', 'Tools', 'Languages', 'Certification'] as const, []);
   const sourceDocuments = new Set(fields.map((field) => field.source.documentName));
 
-  const add = () => {
+  const add = async () => {
     if (!form?.name.trim()) return;
-    setSkills((current) => [{ id: `sk_${Date.now()}`, name: form.name.trim(), category: form.category, level: form.level, source: 'Added by you' }, ...current]);
+    const now = new Date().toISOString();
+    const saved = await recordService.saveSkill({
+      id: `sk_${crypto.randomUUID()}`,
+      name: form.name.trim(),
+      category: form.category,
+      level: form.level,
+      source: 'Added by you',
+      createdAt: now,
+      updatedAt: now,
+    });
+    setSkills((current) => [{
+      id: saved.id,
+      name: saved.name,
+      category: saved.category,
+      level: saved.level,
+      source: saved.source,
+    }, ...current.filter((skill) => skill.name.toLowerCase() !== saved.name.toLowerCase())]);
     setForm(null);
-    toast({ tone: 'success', title: 'Skill added', message: 'Available for autofill.' });
+    toast({ tone: 'success', title: 'Skill added', message: 'Saved to your local vault.' });
   };
 
   return (
@@ -194,8 +222,11 @@ export function SkillsPage() {
         description="This removes the skill from your profile. Source documents remain unchanged."
         confirmLabel="Remove skill"
         destructive
-        onConfirm={() => {
-          if (deleteTarget) setSkills((current) => current.filter((skill) => skill.id !== deleteTarget.id));
+        onConfirm={async () => {
+          if (deleteTarget) {
+            await recordService.removeSkill(deleteTarget.id);
+            setSkills((current) => current.filter((skill) => skill.id !== deleteTarget.id));
+          }
           setDeleteTarget(null);
           toast({ tone: 'success', title: 'Skill removed' });
         }}

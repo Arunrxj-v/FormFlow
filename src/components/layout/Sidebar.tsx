@@ -36,14 +36,9 @@ const informationLinks = [
 ];
 
 export function Sidebar({ mobileOpen, onCloseMobile, onOpenSearch }: SidebarProps) {
-  const { user, driveConnection, logout } = useApp();
+  const { user, vaultStatus } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
-
-  const handleSignOut = () => {
-    logout();
-    navigate('/login');
-  };
 
   const settingsTab = new URLSearchParams(location.search).get('tab');
 
@@ -93,12 +88,16 @@ export function Sidebar({ mobileOpen, onCloseMobile, onOpenSearch }: SidebarProp
             </div>
 
             <div className="ff-nav__group">
-              <span className="ff-nav__label">Integrations</span>
-              <NavLink to="/settings?tab=connections" className={({ isActive }) => cn('ff-nav__link ff-nav__link--split', isActive && 'is-active')} onClick={onCloseMobile}>
-                <span className="ff-nav__link-main"><Cloud size={18} strokeWidth={1.8} /> Google Drive</span>
-                <span className={cn('ff-pill ff-pill--tiny', driveConnection.connected ? 'ff-pill--success' : '')}>
-                  <span className="ff-dot" /> {driveConnection.connected ? 'Connected' : 'Off'}
+              <span className="ff-nav__label">Vault</span>
+              <NavLink to="/settings?tab=security" className={({ isActive }) => cn('ff-nav__link ff-nav__link--split', isActive && 'is-active')} onClick={onCloseMobile}>
+                <span className="ff-nav__link-main"><Shield size={18} strokeWidth={1.8} /> Security</span>
+                <span className={cn('ff-pill ff-pill--tiny', vaultStatus?.encrypted ? 'ff-pill--success' : '')}>
+                  <span className="ff-dot" /> {vaultStatus?.encrypted ? 'Encrypted' : 'Off'}
                 </span>
+              </NavLink>
+              <NavLink to="/vault/migration" className={({ isActive }) => cn('ff-nav__link', isActive && 'is-active')} onClick={onCloseMobile}>
+                <LockKeyhole size={18} strokeWidth={1.8} />
+                <span>Backup &amp; migration</span>
               </NavLink>
               <NavLink to="/extension" className={({ isActive }) => cn('ff-nav__link', isActive && 'is-active')} onClick={onCloseMobile}>
                 <BookOpen size={18} strokeWidth={1.8} />
@@ -142,8 +141,8 @@ export function Sidebar({ mobileOpen, onCloseMobile, onOpenSearch }: SidebarProp
             <ChevronDown size={16} className="ff-muted" />
           </div>
           <div className="ff-sidebar__account-meta">
-            <span><span className="ff-dot" /> Vault synced</span>
-            <button type="button" onClick={handleSignOut} className="ff-link-button">Sign out</button>
+            <span><span className="ff-dot" /> Local vault</span>
+            <button type="button" onClick={() => navigate('/vault/migration')} className="ff-link-button">Backup / migrate</button>
           </div>
         </div>
       </aside>

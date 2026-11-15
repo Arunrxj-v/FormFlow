@@ -3,6 +3,7 @@ import { ArrowUpRight, Chrome, FileCheck2, MousePointerClick, ShieldCheck } from
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { useApp } from '@/context/AppContext';
+import { APP_VERSION } from '@shared/constants';
 
 interface QuickAutofillDialogProps {
   open: boolean;
@@ -11,7 +12,7 @@ interface QuickAutofillDialogProps {
 
 export function QuickAutofillDialog({ open, onClose }: QuickAutofillDialogProps) {
   const navigate = useNavigate();
-  const { extensionConnection } = useApp();
+  const { vaultStatus } = useApp();
   return (
     <Modal
       open={open}
@@ -36,10 +37,10 @@ export function QuickAutofillDialog({ open, onClose }: QuickAutofillDialogProps)
     >
       <div className="ff-autofill-dialog">
         <div className="ff-autofill-dialog__status">
-          <span className={`ff-status-dot ${extensionConnection.connected ? 'is-online' : ''}`} />
+          <span className={`ff-status-dot ${vaultStatus?.unlocked ? 'is-online' : ''}`} />
           <div>
-            <div className="ff-label">{extensionConnection.connected ? 'Extension connected' : 'Extension not connected'}</div>
-            <div className="ff-body-sm ff-muted">Version {extensionConnection.version} · last sync {extensionConnection.lastSync}</div>
+            <div className="ff-label">{vaultStatus?.unlocked ? 'Encrypted vault unlocked' : 'Vault locked'}</div>
+            <div className="ff-body-sm ff-muted">Extension v{APP_VERSION} · local-only autofill</div>
           </div>
         </div>
         <div className="ff-steps-compact">

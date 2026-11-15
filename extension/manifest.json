@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "FormFlow — Personal Document Intelligence",
   "short_name": "FormFlow",
-  "version": "1.4.0",
-  "description": "Review document-backed suggestions and fill the active form only after you approve.",
+  "version": "2.0.0",
+  "description": "Local-first, encrypted document vault and review-before-fill form assistant.",
   "minimum_chrome_version": "102",
   "action": {
     "default_title": "FormFlow",
@@ -22,12 +22,11 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
-    "https://docs.google.com/forms/*",
-    "http://localhost:8787/*",
-    "http://localhost:5173/*"
+    "https://docs.google.com/forms/*"
   ],
   "content_scripts": [
     {

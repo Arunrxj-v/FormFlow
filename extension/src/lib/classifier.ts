@@ -1,30 +1,7 @@
-export type FieldKind =
-  | 'fullName'
-  | 'firstName'
-  | 'lastName'
-  | 'email'
-  | 'phone'
-  | 'dateOfBirth'
-  | 'gender'
-  | 'nationality'
-  | 'address'
-  | 'city'
-  | 'state'
-  | 'postalCode'
-  | 'country'
-  | 'degree'
-  | 'university'
-  | 'branch'
-  | 'semester'
-  | 'registrationNumber'
-  | 'graduationYear'
-  | 'cgpa'
-  | 'employer'
-  | 'jobTitle'
-  | 'skills'
-  | 'identificationNumber'
-  | 'longAnswer'
-  | 'unknown';
+import type { FieldKind } from '../../../shared/form-fields.ts';
+import { KIND_TO_VAULT_KEY } from '../../../shared/form-fields.ts';
+
+export type { FieldKind } from '../../../shared/form-fields.ts';
 
 export interface ClassifiedField {
   kind: FieldKind;
@@ -60,32 +37,7 @@ const rules: Array<{ kind: FieldKind; sensitive?: boolean; patterns: RegExp[]; w
   { kind: 'longAnswer', patterns: [/describe/i, /explain/i, /why are you/i, /tell us/i, /statement of purpose/i, /cover letter/i, /motivation/i, /academic background/i, /project experience/i, /brief summary/i], weight: 88 },
 ];
 
-export const kindToVaultKey: Partial<Record<FieldKind, string>> = {
-  fullName: 'personal.fullName',
-  firstName: 'personal.firstName',
-  lastName: 'personal.lastName',
-  email: 'contact.email',
-  phone: 'contact.phone',
-  dateOfBirth: 'personal.dateOfBirth',
-  gender: 'personal.gender',
-  nationality: 'personal.nationality',
-  address: 'contact.addressLine1',
-  city: 'contact.city',
-  state: 'contact.state',
-  postalCode: 'contact.postalCode',
-  country: 'contact.country',
-  degree: 'education.degree',
-  university: 'education.university',
-  branch: 'education.branch',
-  semester: 'education.semester',
-  registrationNumber: 'education.registrationNumber',
-  graduationYear: 'education.graduationYear',
-  cgpa: 'education.cgpa',
-  employer: 'employment.employer',
-  jobTitle: 'employment.jobTitle',
-  skills: 'other.skills',
-  identificationNumber: 'identification.number',
-};
+export const kindToVaultKey = KIND_TO_VAULT_KEY;
 
 export function classifyField(input: {
   label?: string;
@@ -135,7 +87,7 @@ export function generateGroundedAnswer(kind: FieldKind, vault: Record<string, st
   const cgpa = vault['education.cgpa'];
   const employer = vault['employment.employer'];
   const title = vault['employment.jobTitle'];
-  const skills = vault['other.skills'];
+  const skills = vault['skills.technical'] ?? vault['other.skills'];
   if (!degree && !employer) return null;
   const parts = [
     degree ? `I hold a ${degree}${branch && !degree.toLowerCase().includes(branch.toLowerCase()) ? ` in ${branch}` : ''}${university ? ` from ${university}` : ''}${year ? `, completed in ${year}` : ''}${cgpa ? ` with a CGPA of ${cgpa}` : ''}.` : '',

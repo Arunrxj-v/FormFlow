@@ -23,5 +23,14 @@
       "@ext/*": ["extension/src/*"]
     }
   },
-  "include": ["src", "extension/src", "shared", "vite.config.ts", "extension/vite.config.ts"]
+  "include": [
+    "src",
+    "extension/src",
+    "extension/test",
+    "core",
+    "ai",
+    "shared",
+    "tests",
+    "vite.config.ts"
+  ]
 }

@@ -1,25 +1,19 @@
-import { apiRequest } from './apiClient';
-import type { ActivityItem } from './types';
+import { activityRepository } from '../../core/database/repositories';
+import type { ActivityItem } from '../../shared/types';
 
 export const activityService = {
-  isDemo: false,
+  isLocal: true,
 
-  async list(): Promise<ActivityItem[]> {
-    try {
-      const data = await apiRequest<{ activity: ActivityItem[] }>('/api/activity');
-      return Array.isArray(data?.activity) ? data.activity : [];
-    } catch {
-      return [];
-    }
+  list(): Promise<ActivityItem[]> {
+    return activityRepository.list(100);
   },
 
-  async record(item: Omit<ActivityItem, 'id' | 'timestamp' | 'relativeTime'>): Promise<ActivityItem> {
-    const created: ActivityItem = {
+  record(item: Omit<ActivityItem, 'id' | 'timestamp' | 'relativeTime'>): Promise<ActivityItem> {
+    return activityRepository.record(item.type, item.title, item.detail).then(() => ({
       ...item,
-      id: `act_${Date.now()}`,
+      id: `act_${crypto.randomUUID()}`,
       timestamp: new Date().toISOString(),
       relativeTime: 'Just now',
-    };
-    return created;
+    }));
   },
 };

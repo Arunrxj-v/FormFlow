@@ -27,6 +27,7 @@ import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
 import { useToast } from '@/context/ToastContext';
+import { documentService as localDocumentService } from '@/services/documentService';
 import type { VaultDocument } from '@/services/types';
 
 interface DocumentInspectorProps {
@@ -52,7 +53,6 @@ export function DocumentInspector({
   const [activeTab, setActiveTab] = useState<TabType>('preview');
   const [currentPage, setCurrentPage] = useState(1);
   const [downloading, setDownloading] = useState(false);
-  const [reprocessing, setReprocessing] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const totalPages = document.pageCount ?? 1;
@@ -61,51 +61,24 @@ export function DocumentInspector({
   const history = document.processingHistory ?? [];
   const rules = document.autofillRules ?? ['Personal document', 'Identity reference'];
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setDownloading(true);
-    // Real client-side file download of extracted text or summary
-    const content = `FormFlow Verified Document Export
-Filename: ${document.name}
-Category: ${document.category}
-Source: ${document.source} (${document.drivePath})
-Confidence: ${document.confidence ?? 0}%
-Date: ${document.uploadedAt}
-
---- EXTRACTED TEXT & STRUCTURED ENTITIES ---
-${document.extractedText ?? 'No raw text available.'}
-
-Extracted Structured Facts:
-${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.confidence ?? 95}%, Page ${e.page ?? 1}]`).join('\n')}
-`;
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = window.document.createElement('a');
-    link.href = url;
-    link.download = document.name.endsWith('.pdf') ? document.name.replace('.pdf', '-FormFlow-Verified.txt') : `${document.name}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-
-    setTimeout(() => {
+    try {
+      await localDocumentService.download(document.id, document.name);
+      toast({ tone: 'success', title: 'Original file saved', message: `${document.name} was downloaded from local storage.` });
+    } catch (error) {
+      toast({ tone: 'error', title: 'Download failed', message: error instanceof Error ? error.message : 'Original file is unavailable.' });
+    } finally {
       setDownloading(false);
-      toast({
-        tone: 'success',
-        title: 'Document export ready',
-        message: `Saved ${document.name} metadata and extracted facts to your device.`,
-      });
-    }, 600);
+    }
   };
 
-  const handleReprocess = async () => {
-    setReprocessing(true);
-    await onRetry();
-    setTimeout(() => {
-      setReprocessing(false);
-      toast({
-        tone: 'success',
-        title: 'Reprocessing completed',
-        message: `Verified and refreshed extracted values for ${document.name}.`,
-      });
-    }, 800);
+  const handleView = async () => {
+    try {
+      await localDocumentService.openInBrowser(document.id);
+    } catch (error) {
+      toast({ tone: 'error', title: 'Preview failed', message: error instanceof Error ? error.message : 'Original file is unavailable.' });
+    }
   };
 
   const copyFact = (key: string, value: string) => {
@@ -125,12 +98,11 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
         </div>
         <div className="ff-row ff-gap-4">
           <a
-            href={`/api/documents/${document.id}/preview`}
-            target="_blank"
-            rel="noopener noreferrer"
+            href="#"
+            onClick={(event) => { event.preventDefault(); void handleView(); }}
             className="ff-btn ff-btn--secondary ff-btn--sm"
             style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}
-            title="Open original document in browser"
+            title="Open original document from local storage"
           >
             <ExternalLink size={12} /> View
           </a>
@@ -142,12 +114,7 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
         <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--ff-danger-bg, #fef2f2)', border: '1px solid var(--ff-danger-border, #fecaca)', borderRadius: 6, color: 'var(--ff-danger, #b91c1c)', fontSize: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 2 }}>Processing failed</div>
           <div style={{ wordBreak: 'break-word' }}>{document.processingError || document.failureReason || 'Document could not be processed.'}</div>
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="ff-btn ff-btn--sm" onClick={handleReprocess} disabled={reprocessing}>
-              <RefreshCw size={12} className={reprocessing ? 'ff-spin' : ''} style={{ marginRight: 4 }} />
-              Retry processing
-            </button>
-          </div>
+          <div style={{ marginTop: 6, fontSize: 11 }}>Local document processing will be added in a later phase.</div>
         </div>
       )}
 
@@ -198,7 +165,7 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
             <div className="ff-doc-preview__seal" />
             <div className="ff-doc-preview__label">
               <span className="ff-row ff-gap-4">
-                <Shield size={13} /> {document.source === 'google-drive' ? 'Google Drive verified' : 'Local upload'}
+                <Shield size={13} /> {document.source === 'legacy-import' ? 'Imported from legacy vault' : 'Stored locally'}
               </span>
               <div className="ff-row ff-gap-4">
                 {totalPages > 1 && (
@@ -239,10 +206,10 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
                 </dd>
               </div>
               <div className="ff-meta-full">
-                <dt>Cloud path</dt>
+                <dt>Local storage key</dt>
                 <dd className="ff-row ff-gap-4" style={{ fontWeight: 500 }}>
                   <Folder size={12} className="ff-muted" />
-                  <span className="ff-truncate" title={document.drivePath}>{document.drivePath}</span>
+                  <span className="ff-truncate" title="IndexedDB document blob">{`file_${document.id}`}</span>
                 </dd>
               </div>
             </dl>
@@ -382,7 +349,7 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
         <div>
           <div className="ff-label" style={{ fontSize: 10 }}>Strict document custody notice</div>
           <div className="ff-body-sm ff-muted" style={{ fontSize: 10, lineHeight: 1.4 }}>
-            Original documents remain safely in Google Drive. Removing or modifying records in FormFlow never alters or deletes your Drive files.
+            Original documents remain in local IndexedDB storage. Removing or modifying records in FormFlow never alters files outside FormFlow.
           </div>
         </div>
       </div>
@@ -398,11 +365,7 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
         >
           Download Document
         </Button>
-        <IconButton
-          icon={reprocessing ? Loader2 : RefreshCw}
-          label="Reprocess document with intelligence pipeline"
-          onClick={handleReprocess}
-        />
+        <IconButton icon={Download} label="Download original document" onClick={handleDownload} />
         {onRename && (
           <IconButton icon={Pencil} label="Rename document" onClick={onRename} />
         )}
@@ -413,7 +376,7 @@ ${entities.map((e) => `• ${e.label} (${e.key}): ${e.value} [Confidence: ${e.co
       </div>
 
       <div className="ff-row ff-gap-4 ff-mt-6 ff-body-sm ff-muted" style={{ fontSize: 10 }}>
-        <Cloud size={12} /> {isPdf ? 'PDF document · Google Drive source' : 'Document file · FormFlow vault'}
+        <Cloud size={12} /> {isPdf ? 'PDF document · local storage' : 'Document file · FormFlow vault'}
       </div>
     </aside>
   );

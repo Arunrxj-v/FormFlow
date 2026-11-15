@@ -1,0 +1,42 @@
+export const APP_NAME = 'FormFlow';
+export const APP_VERSION = '2.0.0';
+export const DB_NAME = 'formflow-local';
+export const DB_VERSION = 2;
+
+export const MODEL_CACHE_NAME = 'formflow-model-cache-v1';
+export const MODEL_METADATA_ID = 'qwen3-0.6b-instruct';
+export const MODEL_REPOSITORY = 'onnx-community/Qwen3-0.6B-Instruct-ONNX';
+export const MODEL_REVISION = '54250909aca286a05b9d013c8af7a21859ee6ead';
+export const MODEL_LICENSE = 'Apache-2.0';
+export const MODEL_LICENSE_URL = 'https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE';
+
+export const VAULT_SESSION_KEY = 'formflow.vault.session_key';
+export const VAULT_ACTIVITY_KEY = 'formflow.vault.last_activity';
+export const AUTO_LOCK_ALARM = 'formflow-auto-lock';
+export const DEFAULT_AUTO_LOCK_MINUTES = 15;
+export const PBKDF2_ITERATIONS = 600_000;
+
+export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+export const SUPPORTED_EXTENSIONS = ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png'] as const;
+export const SUPPORTED_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'image/jpeg',
+  'image/png',
+] as const;
+
+export const OCR_LANGUAGES = [
+  { id: 'eng', label: 'English' },
+  { id: 'eng+hin', label: 'English + Hindi' },
+  { id: 'eng+mal', label: 'English + Malayalam' },
+  { id: 'eng+tam', label: 'English + Tamil' },
+] as const;
+
+export const MODEL_INFERENCE_TIMEOUT_MS = 120_000;
+export const MODEL_SELF_TEST_TIMEOUT_MS = 180_000;
+export const MODEL_MAX_OUTPUT_TOKENS = 320;
+export const MODEL_MAX_CONTEXT_TOKENS = 3072;
+
+export const BACKUP_FORMAT = 'formflow-encrypted-backup';
+export const BACKUP_VERSION = 1;

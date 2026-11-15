@@ -28,11 +28,11 @@ import { EmptyState } from '@/components/ui/States';
 import { Dropdown } from '@/components/ui/Dropdown';
 import { DocumentInspector } from '@/components/documents/DocumentInspector';
 import { UploadDocumentDialog } from '@/components/documents/UploadDocumentDialog';
-import { DrivePickerDialog } from '@/components/documents/DrivePickerDialog';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/context/ToastContext';
 import type { DocumentCategory, DocumentStatus, VaultDocument } from '@/services/types';
 import { cn } from '@/utils/cn';
+import { documentService } from '@/services/documentService';
 
 type SortKey = 'modified' | 'name' | 'size';
 type ViewMode = 'list' | 'grid';
@@ -51,10 +51,9 @@ const defaultCategories = [
 
 const statusOptions: { value: 'all' | DocumentStatus; label: string }[] = [
   { value: 'all', label: 'All statuses' },
-  { value: 'processed', label: 'Processed' },
-  { value: 'processing', label: 'Processing' },
+  { value: 'stored', label: 'Stored locally' },
   { value: 'failed', label: 'Processing failed' },
-  { value: 'needs_attention', label: 'Needs attention' },
+  { value: 'review_required', label: 'Needs review' },
 ];
 
 export function DocumentsPage() {
@@ -64,7 +63,6 @@ export function DocumentsPage() {
     renameDocument,
     retryDocument,
     unlinkDocument,
-    driveConnection,
     dataLoading,
   } = useApp();
   const { toast } = useToast();
@@ -77,7 +75,6 @@ export function DocumentsPage() {
   const [view, setView] = useState<ViewMode>('list');
   const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('doc'));
   const [uploadOpen, setUploadOpen] = useState(searchParams.get('upload') === '1');
-  const [driveOpen, setDriveOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<VaultDocument | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<VaultDocument | null>(null);
@@ -86,7 +83,6 @@ export function DocumentsPage() {
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [folderOpen, setFolderOpen] = useState(false);
   const [folderName, setFolderName] = useState('');
-  const [checkingDrive, setCheckingDrive] = useState(false);
 
   const categories = useMemo(() => {
     const list = [...defaultCategories];
@@ -106,17 +102,6 @@ export function DocumentsPage() {
     }
     setFolderName('');
     setFolderOpen(false);
-  };
-
-  const handleCheckDriveSync = async () => {
-    setCheckingDrive(true);
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    setCheckingDrive(false);
-    toast({
-      tone: 'success',
-      title: 'Google Drive synchronization verified',
-      message: 'All 6 vault documents are in sync with Google Drive metadata. No remote updates detected.',
-    });
   };
 
   useEffect(() => {
@@ -188,8 +173,6 @@ export function DocumentsPage() {
         description="Select documents, inspect extracted fields, and manage what FormFlow can use."
         actions={
           <>
-            <Button icon={RefreshCw} loading={checkingDrive} onClick={handleCheckDriveSync}>Check Drive Sync</Button>
-            <Button icon={Cloud} onClick={() => setDriveOpen(true)}>Add from Drive</Button>
             <Button variant="primary" icon={Upload} onClick={() => setUploadOpen(true)}>Upload document</Button>
           </>
         }
@@ -238,24 +221,12 @@ export function DocumentsPage() {
           </nav>
           <div className="ff-drive-widget">
             <div className="ff-row ff-between">
-              <span className="ff-row ff-gap-4 ff-label" style={{ fontSize: 10 }}><Cloud size={13} className={driveConnection.connected ? 'ff-primary' : 'ff-muted'} /> Google Drive</span>
-              <span className="ff-code" style={{ color: driveConnection.connected ? 'var(--ff-success)' : 'var(--ff-muted)', fontSize: 9 }}>{driveConnection.connected ? 'Connected' : 'Not connected'}</span>
+              <span className="ff-row ff-gap-4 ff-label" style={{ fontSize: 10 }}><FolderCog size={13} className="ff-primary" /> Local storage</span>
+              <span className="ff-code" style={{ color: 'var(--ff-success)', fontSize: 9 }}>IndexedDB</span>
             </div>
-            {driveConnection.connected ? (
-              <>
-                <div className="ff-drive-widget__bar"><span /></div>
-                <div className="ff-row ff-between ff-body-sm ff-muted" style={{ fontSize: 9 }}>
-                  <span className="ff-truncate">{driveConnection.accountEmail}</span>
-                  <span>Active</span>
-                </div>
-                <button type="button" className="ff-link-button ff-mt-8" style={{ color: 'var(--ff-primary)', fontSize: 10 }} onClick={() => navigate('/settings?tab=connections')}>Manage connection</button>
-              </>
-            ) : (
-              <>
-                <p className="ff-body-sm ff-muted ff-mt-6" style={{ fontSize: 10, lineHeight: 1.4 }}>Link Google Drive to import files directly.</p>
-                <button type="button" className="ff-link-button ff-mt-8" style={{ color: 'var(--ff-primary)', fontSize: 10, fontWeight: 600 }} onClick={() => navigate('/settings?tab=connections')}>Connect Drive</button>
-              </>
-            )}
+            <p className="ff-body-sm ff-muted ff-mt-6" style={{ fontSize: 10, lineHeight: 1.4 }}>
+              Document bytes and metadata stay on this device. No FormFlow backend is required.
+            </p>
           </div>
         </div>
 
@@ -323,7 +294,7 @@ export function DocumentsPage() {
                           <div style={{ minWidth: 0 }}>
                             <div className="ff-label ff-truncate" style={{ maxWidth: 210 }}>{doc.name}</div>
                             <div className="ff-row ff-gap-4 ff-code ff-muted" style={{ fontSize: 9 }}>
-                              {doc.status === 'processed' || doc.status === 'completed' ? <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Linked to profile</> : <StatusBadge status={doc.status} />}
+                              {doc.status === 'stored' || doc.status === 'completed' ? <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Linked to profile</> : <StatusBadge status={doc.status} />}
                             </div>
                           </div>
                         </div>
@@ -332,16 +303,15 @@ export function DocumentsPage() {
                       <td><span className="ff-format-tag" data-kind={doc.fileType}>{doc.fileType}</span></td>
                       <td className="ff-code ff-muted">{doc.sizeLabel}</td>
                       <td className="ff-body-sm ff-muted">{doc.uploadedAt}</td>
-                      <td>{doc.source === 'google-drive' ? <Cloud size={15} className="ff-primary" aria-label="Google Drive" /> : <span className="ff-body-sm ff-muted">Upload</span>}</td>
+                      <td>{doc.source === 'legacy-import' ? <Cloud size={15} className="ff-primary" aria-label="Legacy import" /> : <span className="ff-body-sm ff-muted">Local</span>}</td>
                       <td onClick={(event) => event.stopPropagation()}>
                         <div className="ff-row ff-gap-4" style={{ justifyContent: 'flex-end' }}>
                           <IconButton icon={Eye} label="Inspect document" size="sm" onClick={() => setSelectedId(doc.id)} />
-                          <IconButton icon={Download} label="View original document" size="sm" onClick={() => window.open(`/api/documents/${doc.id}/preview`, '_blank')} />
+                          <IconButton icon={Download} label="View original document" size="sm" onClick={() => void documentService.openInBrowser(doc.id)} />
                           <Dropdown
                             items={[
-                              { label: 'View original file', icon: <ExternalLink size={14} />, onSelect: () => window.open(`/api/documents/${doc.id}/preview`, '_blank') },
+                              { label: 'View original file', icon: <ExternalLink size={14} />, onSelect: () => void documentService.openInBrowser(doc.id) },
                               { label: 'Rename', onSelect: () => { setRenameTarget(doc); setRenameValue(doc.name); } },
-                              { label: 'Retry processing', icon: <RefreshCw size={14} />, disabled: doc.status === 'processing' || doc.status === 'extracting_text' || doc.status === 'extracting_information', onSelect: () => retryDocument(doc.id) },
                               { label: 'Unlink profile record', icon: <LinkIcon />, disabled: !doc.linkedRecordId, onSelect: () => setUnlinkTarget(doc) },
                               { label: 'Remove from FormFlow', icon: <Trash2 size={14} />, danger: true, onSelect: () => setDeleteTarget(doc) },
                             ]}
@@ -388,7 +358,6 @@ export function DocumentsPage() {
       </div>
 
       <UploadDocumentDialog open={uploadOpen} onClose={() => setUploadOpen(false)} />
-      <DrivePickerDialog open={driveOpen} onClose={() => setDriveOpen(false)} />
 
       <Modal
         open={folderOpen}
@@ -423,7 +392,7 @@ export function DocumentsPage() {
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Remove document from FormFlow?"
-        description={<span>This removes the document reference and its extracted values from FormFlow. The original file in Google Drive is not deleted. This action cannot be undone.</span>}
+        description={<span>This removes the encrypted document and its extracted values from FormFlow. The source file elsewhere on your device is not deleted. This action cannot be undone.</span>}
         confirmLabel="Remove document"
         destructive
         onConfirm={handleDelete}

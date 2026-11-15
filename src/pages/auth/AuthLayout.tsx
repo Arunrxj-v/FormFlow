@@ -46,13 +46,12 @@ export function AuthLayout({ title, subtitle, children, footer }: AuthLayoutProp
             </div>
             <div className="ff-auth-feature">
               <span className="ff-auth-feature__icon"><LockKeyhole size={14} /></span>
-              Google Drive access limited to files you select
+              Local IndexedDB storage on this device
             </div>
           </div>
         </div>
         <div className="ff-auth-quote">
-          FormFlow never asks for your Google password, never silently submits a form, and never
-          shares your vault without your approval. All data remains securely stored in your local vault.
+          FormFlow never silently submits a form and never shares your vault without approval. Your documents and personal information stay on this device.
         </div>
       </aside>
     </div>

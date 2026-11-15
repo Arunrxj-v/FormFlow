@@ -1,4 +1,5 @@
 import { Zap } from 'lucide-react';
+import { APP_VERSION } from '@shared/constants';
 import { cn } from '@/utils/cn';
 
 interface LogoProps {
@@ -17,7 +18,7 @@ export function Logo({ size = 'md', withWordmark = true, className }: LogoProps)
       {withWordmark ? (
         <span className="ff-logo__wordmark">
           FormFlow
-          <span className="ff-logo__version">v1.4</span>
+          <span className="ff-logo__version">v{APP_VERSION}</span>
         </span>
       ) : null}
     </div>

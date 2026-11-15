@@ -13,7 +13,7 @@ try {
   document.documentElement.setAttribute('data-formflow-extension', 'installed');
   window.addEventListener('message', (event) => {
     if (event.data?.type === 'FORMFLOW_EXTENSION_PING') {
-      window.postMessage({ type: 'FORMFLOW_EXTENSION_PONG', version: '1.4.0' }, '*');
+      window.postMessage({ type: 'FORMFLOW_EXTENSION_PONG', version: '2.0.0' }, '*');
     }
   });
 } catch {
@@ -25,7 +25,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // Scanner Ping / Ready check
   if (message?.type === 'FORMFLOW_PING' || message?.type === 'PING') {
-    sendResponse({ ok: true, ready: true, version: '1.4.0', requestId });
+    sendResponse({ ok: true, ready: true, version: '2.0.0', requestId });
     return true;
   }
 

@@ -1,67 +1,87 @@
-import type { EducationRecord, EmploymentRecord } from './types';
-import { getStoredToken } from './apiClient';
+import { profileRecordService } from '../../core/application/profile-service';
+import type {
+  AddressRecord,
+  CertificationRecord,
+  EducationRecord,
+  EmploymentRecord,
+  ProjectRecord,
+  SkillRecord,
+} from '../../shared/types';
 
-function getStorageKey(type: string): string {
-  const token = getStoredToken();
-  const userHash = token ? token.slice(-12) : 'guest';
-  return `formflow.records.${type}.${userHash}`;
-}
-
-function loadRecords<T>(key: string): T[] {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecords<T>(key: string, data: T[]): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(data));
-  } catch {
-    // Ignore storage quota
-  }
-}
-
+/**
+ * Compatibility facade over the local profile-record service.
+ * Keeps the existing page API while the business logic lives in core/application.
+ */
 export const recordService = {
-  isDemo: false,
-
-  async listEducation(): Promise<EducationRecord[]> {
-    return loadRecords<EducationRecord>(getStorageKey('education'));
+  listAddresses(): Promise<AddressRecord[]> {
+    return profileRecordService.listAddresses();
   },
 
-  async listEmployment(): Promise<EmploymentRecord[]> {
-    return loadRecords<EmploymentRecord>(getStorageKey('employment'));
+  saveAddress(input: Partial<AddressRecord> & Pick<AddressRecord, 'addressLine1'>): Promise<AddressRecord> {
+    return profileRecordService.saveAddress(input);
   },
 
-  async saveEducation(record: EducationRecord): Promise<EducationRecord> {
-    const key = getStorageKey('education');
-    const records = loadRecords<EducationRecord>(key);
-    const exists = records.some((item) => item.id === record.id);
-    const updated = exists ? records.map((item) => (item.id === record.id ? record : item)) : [record, ...records];
-    saveRecords(key, updated);
-    return record;
+  removeAddress(id: string): Promise<void> {
+    return profileRecordService.removeAddress(id);
   },
 
-  async removeEducation(id: string): Promise<void> {
-    const key = getStorageKey('education');
-    const records = loadRecords<EducationRecord>(key);
-    saveRecords(key, records.filter((item) => item.id !== id));
+  listEducation(): Promise<EducationRecord[]> {
+    return profileRecordService.listEducation();
   },
 
-  async saveEmployment(record: EmploymentRecord): Promise<EmploymentRecord> {
-    const key = getStorageKey('employment');
-    const records = loadRecords<EmploymentRecord>(key);
-    const exists = records.some((item) => item.id === record.id);
-    const updated = exists ? records.map((item) => (item.id === record.id ? record : item)) : [record, ...records];
-    saveRecords(key, updated);
-    return record;
+  saveEducation(record: EducationRecord, documentId?: string): Promise<EducationRecord> {
+    return profileRecordService.saveEducation(record, documentId);
   },
 
-  async removeEmployment(id: string): Promise<void> {
-    const key = getStorageKey('employment');
-    const records = loadRecords<EmploymentRecord>(key);
-    saveRecords(key, records.filter((item) => item.id !== id));
+  removeEducation(id: string): Promise<void> {
+    return profileRecordService.removeEducation(id);
+  },
+
+  listEmployment(): Promise<EmploymentRecord[]> {
+    return profileRecordService.listEmployment();
+  },
+
+  saveEmployment(record: EmploymentRecord, documentId?: string): Promise<EmploymentRecord> {
+    return profileRecordService.saveEmployment(record, documentId);
+  },
+
+  removeEmployment(id: string): Promise<void> {
+    return profileRecordService.removeEmployment(id);
+  },
+
+  listSkills(): Promise<SkillRecord[]> {
+    return profileRecordService.listSkills();
+  },
+
+  saveSkill(record: SkillRecord): Promise<SkillRecord> {
+    return profileRecordService.saveSkill(record);
+  },
+
+  removeSkill(id: string): Promise<void> {
+    return profileRecordService.removeSkill(id);
+  },
+
+  listCertifications(): Promise<CertificationRecord[]> {
+    return profileRecordService.listCertifications();
+  },
+
+  saveCertification(record: CertificationRecord): Promise<CertificationRecord> {
+    return profileRecordService.saveCertification(record);
+  },
+
+  removeCertification(id: string): Promise<void> {
+    return profileRecordService.removeCertification(id);
+  },
+
+  listProjects(): Promise<ProjectRecord[]> {
+    return profileRecordService.listProjects();
+  },
+
+  saveProject(record: ProjectRecord): Promise<ProjectRecord> {
+    return profileRecordService.saveProject(record);
+  },
+
+  removeProject(id: string): Promise<void> {
+    return profileRecordService.removeProject(id);
   },
 };

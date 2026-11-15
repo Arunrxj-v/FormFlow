@@ -52,7 +52,7 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
       open={open}
       onClose={close}
       title="Upload documents"
-      description="Add files to your personal vault. Backend text extraction and AI field analysis begin immediately."
+      description="Add files to your local vault. Document bytes and metadata are stored in IndexedDB on this device."
       wide
       footer={
         <>
@@ -112,13 +112,12 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
 
       {busy ? (
         <div style={{ marginTop: 14 }}>
-          <ProgressBar value={100} label="Uploading file bytes and analyzing with Gemini AI..." />
+          <ProgressBar value={100} label="Validating, checksumming, and storing document bytes locally..." />
         </div>
       ) : null}
 
       <div className="ff-note ff-mt-12">
-        <strong>Secure Vault Ingestion:</strong> Files are securely stored in your personal vault.
-        FormFlow extracts structured records and detects conflicts with existing entries.
+        <strong>Local Vault Ingestion:</strong> Files are stored in IndexedDB on this device. FormFlow does not send document contents to a backend.
       </div>
     </Modal>
   );

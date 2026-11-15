@@ -1,35 +1,22 @@
-import { apiRequest } from './apiClient';
-import type { Collection } from './types';
+import { localCollectionService } from './localApplication';
+import type { Collection } from '../../shared/types';
 
 export const collectionService = {
-  isDemo: false,
+  isLocal: true,
 
-  async list(): Promise<Collection[]> {
-    try {
-      const data = await apiRequest<{ collections: Collection[] }>('/api/collections');
-      return Array.isArray(data?.collections) ? data.collections : [];
-    } catch {
-      return [];
-    }
+  list(): Promise<Collection[]> {
+    return localCollectionService.list();
   },
 
-  async create(input: Pick<Collection, 'name' | 'description' | 'documentIds' | 'notes'>): Promise<Collection> {
-    const data = await apiRequest<{ collection: Collection }>('/api/collections', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-    return data.collection;
+  create(input: Pick<Collection, 'name' | 'description' | 'documentIds' | 'notes'> & { color?: string }): Promise<Collection> {
+    return localCollectionService.create(input);
   },
 
-  async update(id: string, patch: Partial<Pick<Collection, 'name' | 'description' | 'documentIds' | 'notes'>>): Promise<Collection | null> {
-    const data = await apiRequest<{ collection: Collection }>(`/api/collections/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    });
-    return data.collection || null;
+  update(id: string, patch: Partial<Pick<Collection, 'name' | 'description' | 'documentIds' | 'notes' | 'color'>>): Promise<Collection | null> {
+    return localCollectionService.update(id, patch);
   },
 
-  async remove(id: string): Promise<void> {
-    await apiRequest(`/api/collections/${id}`, { method: 'DELETE' });
+  remove(id: string): Promise<void> {
+    return localCollectionService.remove(id);
   },
 };

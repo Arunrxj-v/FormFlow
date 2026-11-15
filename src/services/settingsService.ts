@@ -1,36 +1,14 @@
-import { apiRequest } from './apiClient';
-import type { Preferences } from './types';
-
-const defaultPreferences: Preferences = {
-  confirmBeforeAutofill: true,
-  requireSensitiveReview: true,
-  autoDownloadFiles: false,
-  activityNotifications: true,
-  productNotifications: false,
-  compactMode: false,
-};
+import { settingsRepository } from '../../core/database/repositories';
+import type { Preferences } from '../../shared/types';
 
 export const settingsService = {
-  isDemo: false,
+  isLocal: true,
 
   async getPreferences(): Promise<Preferences> {
-    try {
-      const data = await apiRequest<{ preferences: Preferences }>('/api/preferences');
-      return data?.preferences ? { ...defaultPreferences, ...data.preferences } : defaultPreferences;
-    } catch {
-      return defaultPreferences;
-    }
+    return settingsRepository.getPreferences();
   },
 
   async updatePreferences(next: Preferences): Promise<Preferences> {
-    try {
-      const data = await apiRequest<{ preferences: Preferences }>('/api/preferences', {
-        method: 'PUT',
-        body: JSON.stringify(next),
-      });
-      return data.preferences;
-    } catch {
-      return next;
-    }
+    return settingsRepository.updatePreferences(next);
   },
 };

@@ -31,7 +31,7 @@ const commands = [
   { label: 'Form history', hint: 'Autofill activity and outcomes', to: '/history', icon: Clock3, group: 'Activity' },
   { label: 'Autofill Settings', hint: 'Confirmation and notification preferences', to: '/settings?tab=preferences', icon: SlidersHorizontal, group: 'Settings' },
   { label: 'Privacy & Security', hint: 'Access, data, and account controls', to: '/settings?tab=privacy', icon: Shield, group: 'Settings' },
-  { label: 'Account settings', hint: 'Profile, Google Drive, and extension', to: '/settings', icon: Settings, group: 'Settings' },
+  { label: 'Account settings', hint: 'Profile, vault security, and extension', to: '/settings', icon: Settings, group: 'Settings' },
 ];
 
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {

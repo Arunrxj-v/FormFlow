@@ -148,7 +148,7 @@ export function PersonalProfilePage() {
             <div className="ff-row ff-gap-8"><ShieldCheck size={17} className="ff-primary" /><span className="ff-h3">Vault health</span></div>
             <div className="ff-stack ff-gap-8 ff-mt-16">
               <div className="ff-info-pair"><span>Values extracted</span><span>{fields.length}</span></div>
-              <div className="ff-info-pair"><span>Source documents</span><span>{documents.filter((doc) => doc.status === 'processed' || doc.status === 'completed').length}</span></div>
+              <div className="ff-info-pair"><span>Source documents</span><span>{documents.filter((doc) => doc.status === 'stored' || doc.status === 'completed').length}</span></div>
               <div className="ff-info-pair"><span>Conflicts to resolve</span><span style={{ color: conflicts.length ? 'var(--ff-warning)' : 'var(--ff-success)' }}>{conflicts.length}</span></div>
               <div className="ff-info-pair"><span>Sensitive fields</span><span>{fields.filter((field) => field.sensitive).length}</span></div>
             </div>

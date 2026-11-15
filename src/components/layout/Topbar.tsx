@@ -36,7 +36,7 @@ const labels: Record<string, string> = {
 };
 
 export function Topbar({ onOpenMobileNav, onOpenSearch, onQuickAutofill }: TopbarProps) {
-  const { user, logout, extensionConnection } = useApp();
+  const { user, lockVault, vaultStatus } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
@@ -54,10 +54,10 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, onQuickAutofill }: Topba
     return () => document.removeEventListener('mousedown', onClick);
   }, [profileOpen]);
 
-  const handleLogout = () => {
+  const handleLock = () => {
     setProfileOpen(false);
-    logout();
-    navigate('/login');
+    void lockVault();
+    navigate('/unlock');
   };
 
   return (
@@ -71,9 +71,9 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, onQuickAutofill }: Topba
           <ChevronRight size={14} />
           <span>{currentLabel}</span>
         </div>
-        <div className={extensionConnection.connected ? 'ff-connection-pill' : 'ff-connection-pill ff-connection-pill--muted'}>
+        <div className={vaultStatus?.unlocked ? 'ff-connection-pill' : 'ff-connection-pill ff-connection-pill--muted'}>
           <span className="ff-dot" />
-          <span>{extensionConnection.connected ? 'Extension connected' : 'Extension disconnected'}</span>
+          <span>{vaultStatus?.unlocked ? 'Local vault unlocked' : 'Local vault locked'}</span>
         </div>
       </div>
 
@@ -117,8 +117,8 @@ export function Topbar({ onOpenMobileNav, onOpenSearch, onQuickAutofill }: Topba
                 <BookOpen size={15} /> Extension setup
               </button>
               <div className="ff-menu__sep" />
-              <button type="button" className="ff-menu__item ff-menu__item--danger" onClick={handleLogout}>
-                <LogOut size={15} /> Sign out
+              <button type="button" className="ff-menu__item ff-menu__item--danger" onClick={handleLock}>
+                <LogOut size={15} /> Lock vault
               </button>
             </div>
           ) : null}

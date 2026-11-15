@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/Input';
 import { EmptyState, Skeleton } from '@/components/ui/States';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/context/ToastContext';
+import { documentService } from '@/services/documentService';
 import { recordService } from '@/services/recordService';
 import type { EducationRecord } from '@/services/types';
 import { cn } from '@/utils/cn';
@@ -175,10 +176,10 @@ export function EducationPage() {
                         <span className="ff-file-icon"><FileText size={15} /></span>
                         <div style={{ minWidth: 0 }}>
                           <div className="ff-label ff-truncate">{doc.name}</div>
-                          <div className="ff-row ff-gap-4 ff-body-sm ff-muted"><Cloud size={11} className="ff-primary" /> Google Drive sync <span className="ff-sep">·</span> {doc.sizeLabel}</div>
+                          <div className="ff-row ff-gap-4 ff-body-sm ff-muted"><Cloud size={11} className="ff-primary" /> Local vault document <span className="ff-sep">·</span> {doc.sizeLabel}</div>
                         </div>
                       </div>
-                      <IconButton icon={Download} label="Download document" size="sm" onClick={() => toast({ tone: 'info', title: 'Download unavailable', message: 'Original file remains in Google Drive or local storage.' })} />
+                      <IconButton icon={Download} label="Download document" size="sm" onClick={() => void documentService.download(doc.id, doc.name).catch(() => toast({ tone: 'error', title: 'Download unavailable', message: 'The encrypted local file could not be opened.' }))} />
                     </div>
                   ) : null}
                   <div className="ff-row ff-between ff-mt-12 ff-body-sm ff-muted" style={{ fontSize: 10 }}>

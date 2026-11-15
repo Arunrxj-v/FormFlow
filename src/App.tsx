@@ -1,11 +1,7 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider, useApp } from '@/context/AppContext';
 import { ToastProvider } from '@/context/ToastContext';
 import { AppShell } from '@/components/layout/AppShell';
-import { LoginPage } from '@/pages/auth/LoginPage';
-import { SignupPage } from '@/pages/auth/SignupPage';
-import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
-import { OnboardingPage } from '@/pages/onboarding/OnboardingPage';
 import { OverviewPage } from '@/pages/dashboard/OverviewPage';
 import { DocumentsPage } from '@/pages/documents/DocumentsPage';
 import { PersonalProfilePage } from '@/pages/records/PersonalProfilePage';
@@ -18,28 +14,32 @@ import { HistoryPage } from '@/pages/history/HistoryPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { ExtensionSetupPage } from '@/pages/extension/ExtensionSetupPage';
 import { DemoFormPage } from '@/pages/demo/DemoFormPage';
-import { AuthCallbackPage } from '@/pages/auth/AuthCallbackPage';
+import { VaultSetupPage } from '@/pages/vault/VaultSetupPage';
+import { VaultUnlockPage } from '@/pages/vault/VaultUnlockPage';
+import { VaultMigrationPage } from '@/pages/vault/VaultMigrationPage';
 import type { ReactNode } from 'react';
 
 function Protected({ children }: { children: ReactNode }) {
-  const { user } = useApp();
-  return user ? <>{children}</> : <Navigate to="/login" replace />;
+  const { vaultState } = useApp();
+  if (vaultState === 'loading') return <div className="ff-empty"><span className="ff-spinner" /></div>;
+  if (vaultState === 'locked') return <Navigate to="/unlock" replace />;
+  if (vaultState === 'no_vault' || vaultState === 'migration_required') return <Navigate to="/setup" replace />;
+  if (vaultState === 'error') return <Navigate to="/setup" replace />;
+  return <>{children}</>;
 }
 
 function PublicOnly({ children }: { children: ReactNode }) {
-  const { user } = useApp();
-  return user ? <Navigate to="/dashboard" replace /> : <>{children}</>;
+  const { vaultState } = useApp();
+  if (vaultState === 'loading') return <div className="ff-empty"><span className="ff-spinner" /></div>;
+  return vaultState === 'unlocked' ? <Navigate to="/dashboard" replace /> : <>{children}</>;
 }
 
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/auth/callback" element={<AuthCallbackPage />} />
-      <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
-      <Route path="/signup" element={<PublicOnly><SignupPage /></PublicOnly>} />
-      <Route path="/forgot-password" element={<PublicOnly><ForgotPasswordPage /></PublicOnly>} />
-      <Route path="/onboarding" element={<Protected><OnboardingPage /></Protected>} />
+      <Route path="/setup" element={<PublicOnly><VaultSetupPage /></PublicOnly>} />
+      <Route path="/unlock" element={<PublicOnly><VaultUnlockPage /></PublicOnly>} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<OverviewPage />} />
         <Route path="/documents" element={<DocumentsPage />} />
@@ -52,6 +52,7 @@ function AppRoutes() {
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/extension" element={<ExtensionSetupPage />} />
+        <Route path="/vault/migration" element={<VaultMigrationPage />} />
         <Route path="/demo-form" element={<DemoFormPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
@@ -59,14 +60,20 @@ function AppRoutes() {
   );
 }
 
+const Router = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:'
+  ? HashRouter
+  : BrowserRouter;
+
 export function App() {
   return (
-    <BrowserRouter>
+    <Router>
       <ToastProvider>
         <AppProvider>
           <AppRoutes />
         </AppProvider>
       </ToastProvider>
-    </BrowserRouter>
+    </Router>
   );
 }
+
+

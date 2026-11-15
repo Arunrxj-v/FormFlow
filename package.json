@@ -1,7 +1,7 @@
 {
   "name": "formflow",
   "private": true,
-  "version": "1.4.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,12 +12,14 @@
     "preview": "vite preview",
     "server": "node --env-file-if-exists=.env server/index.mjs",
     "test:server": "node --test server/test/*.test.mjs",
-    "test": "npm run typecheck && npm run test:extension && npm run test:server",
-    "test:extension": "node --test extension/test/*.test.ts"
+    "test": "npm run typecheck && npm run test:local && npm run test:extension && npm run test:server",
+    "test:extension": "node --test extension/test/*.test.ts",
+    "test:local": "node scripts/test-local.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.1.1",
     "@huggingface/transformers": "^4.3.2",
+    "@noble/hashes": "^2.4.0",
     "busboy": "^1.6.0",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",

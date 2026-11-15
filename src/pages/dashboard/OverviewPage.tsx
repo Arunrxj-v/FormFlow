@@ -6,10 +6,10 @@ import {
   BookOpenCheck,
   Briefcase,
   Chrome,
-  Cloud,
   FileText,
   FolderOpen,
   GraduationCap,
+  LockKeyhole,
   ShieldCheck,
   Upload,
   Zap,
@@ -25,8 +25,8 @@ export function OverviewPage() {
     documents,
     fields,
     activity,
-    driveConnection,
-    extensionConnection,
+    vaultStatus,
+    lockVault,
   } = useApp();
   const navigate = useNavigate();
 
@@ -34,7 +34,7 @@ export function OverviewPage() {
   const personalComplete = personalFields.length > 0
     ? Math.round((personalFields.filter((field) => field.value).length / Math.max(1, personalFields.length)) * 100)
     : 0;
-  const processedCount = documents.filter((doc) => doc.status === 'processed' || doc.status === 'completed').length;
+  const processedCount = documents.filter((doc) => doc.status === 'stored' || doc.status === 'completed').length;
   const filledCount = activity.filter((item) => item.type === 'form_filled').length;
   const recentDocuments = documents.slice(0, 4);
   const recentActivity = activity.slice(0, 4);
@@ -52,7 +52,7 @@ export function OverviewPage() {
           <div>
             <div className="ff-row ff-gap-8" style={{ marginBottom: 5 }}>
               <span className="ff-pill"><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> {user?.accountType || 'Personal Vault'}</span>
-              <span className="ff-body-sm ff-muted">{driveConnection.connected ? 'Google Drive connected' : 'Local document vault'}</span>
+              <span className="ff-body-sm ff-muted">{vaultStatus?.encrypted ? 'Encrypted local vault' : 'Local document vault'}</span>
             </div>
             <h1 className="ff-h1">{greeting}, {user?.firstName ?? user?.name?.split(' ')[0] ?? 'there'}</h1>
             <p className="ff-body-sm ff-muted" style={{ marginTop: 2 }}>
@@ -141,38 +141,32 @@ export function OverviewPage() {
         <div className="ff-dashboard-col">
           <Card className="ff-section-card">
             <div className="ff-row ff-between">
-              <div className="ff-row ff-gap-8"><Cloud size={17} className={driveConnection.connected ? 'ff-primary' : 'ff-muted'} /><span className="ff-h3">Google Drive</span></div>
-              <BadgePill tone={driveConnection.connected ? 'success' : 'neutral'}>{driveConnection.connected ? 'Connected' : 'Not connected'}</BadgePill>
+              <div className="ff-row ff-gap-8"><LockKeyhole size={17} className="ff-primary" /><span className="ff-h3">Local vault security</span></div>
+              <BadgePill tone={vaultStatus?.encrypted ? 'success' : 'warning'}>{vaultStatus?.encrypted ? 'Encrypted' : 'Unprotected'}</BadgePill>
             </div>
-            {driveConnection.connected ? (
-              <div className="ff-stack ff-gap-8 ff-mt-16">
-                <div className="ff-info-pair"><span>Account</span><span className="ff-truncate">{driveConnection.accountEmail}</span></div>
-                <div className="ff-info-pair"><span>Target folder</span><span className="ff-code">{driveConnection.targetFolder}</span></div>
-                <div className="ff-info-pair"><span>Last sync</span><span>{driveConnection.lastSync}</span></div>
-                <Button className="ff-mt-12" fullWidth onClick={() => navigate('/settings?tab=connections')}>Manage connection</Button>
-              </div>
-            ) : (
-              <div className="ff-mt-12">
-                <p className="ff-body-sm ff-muted">Connect your Google account to automatically import documents from Google Drive.</p>
-                <Button className="ff-mt-12" fullWidth variant="primary" icon={Cloud} onClick={() => navigate('/settings?tab=connections')}>Connect Google Drive</Button>
-              </div>
-            )}
+            <div className="ff-stack ff-gap-8 ff-mt-16">
+              <div className="ff-info-pair"><span>Lock state</span><span>{vaultStatus?.unlocked ? 'Unlocked' : 'Locked'}</span></div>
+              <div className="ff-info-pair"><span>Encryption</span><span>{vaultStatus?.encrypted ? 'AES-256-GCM' : 'Not enabled'}</span></div>
+              <div className="ff-info-pair"><span>Key derivation</span><span>{vaultStatus?.kdf ?? 'PBKDF2-SHA256'}</span></div>
+            </div>
+            <div className="ff-row ff-gap-8 ff-mt-12">
+              <Button className="ff-mt-4" onClick={() => navigate('/settings?tab=security')} icon={ShieldCheck}>Security settings</Button>
+              <Button className="ff-mt-4" variant="secondary" icon={LockKeyhole} onClick={() => void lockVault()}>Lock now</Button>
+            </div>
           </Card>
 
           <Card className="ff-section-card">
             <div className="ff-row ff-between">
-              <div className="ff-row ff-gap-8"><Chrome size={17} className={extensionConnection.connected ? 'ff-primary' : 'ff-muted'} /><span className="ff-h3">Chrome extension</span></div>
-              <BadgePill tone={extensionConnection.connected ? 'success' : 'neutral'}>
-                {extensionConnection.connected ? 'Connected' : 'Not connected'}
-              </BadgePill>
+              <div className="ff-row ff-gap-8"><Chrome size={17} className="ff-primary" /><span className="ff-h3">Extension popup</span></div>
+              <BadgePill tone="success">Same vault</BadgePill>
             </div>
             <div className="ff-stack ff-gap-8 ff-mt-16">
-              <div className="ff-info-pair"><span>Status</span><span className="ff-row ff-gap-6">{extensionConnection.connected ? <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Active</> : <span className="ff-muted">Not detected</span>}</span></div>
-              <div className="ff-info-pair"><span>Autofill shortcut</span><span className="ff-kbd">{extensionConnection.shortcut}</span></div>
-              <div className="ff-info-pair"><span>Keylogging</span><span className="ff-muted">Disabled</span></div>
+              <div className="ff-info-pair"><span>Storage owner</span><span>Extension origin</span></div>
+              <div className="ff-info-pair"><span>Autofill shortcut</span><span className="ff-kbd">Alt + F</span></div>
+              <div className="ff-info-pair"><span>Content access</span><span className="ff-muted">After user action only</span></div>
             </div>
             <Button className="ff-mt-12" fullWidth icon={BookOpenCheck} onClick={() => navigate('/extension')}>
-              {extensionConnection.connected ? 'Extension settings' : 'Set up extension'}
+              Extension setup
             </Button>
           </Card>
 

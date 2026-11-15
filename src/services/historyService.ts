@@ -1,26 +1,28 @@
-import { apiRequest } from './apiClient';
-import type { FormHistoryItem } from './types';
+import { historyService as coreHistoryService } from '../../core/application/history-service';
+import type { FormHistoryItem } from '../../shared/types';
 
 export const historyService = {
-  isDemo: false,
+  isLocal: true,
 
-  async list(): Promise<FormHistoryItem[]> {
-    try {
-      const data = await apiRequest<{ history: FormHistoryItem[] }>('/api/history');
-      return Array.isArray(data?.history) ? data.history : [];
-    } catch {
-      return [];
-    }
+  list(): Promise<FormHistoryItem[]> {
+    return coreHistoryService.list();
   },
 
-  async record(entry: { website: string; url: string; collectionId?: string; detected: number; filled: number; skipped: number; status: string; duration: number }): Promise<void> {
-    await apiRequest('/api/history', {
-      method: 'POST',
-      body: JSON.stringify(entry),
-    });
+  record(entry: {
+    website: string;
+    pageTitle?: string;
+    url: string;
+    documentsUsed?: string[];
+    detected: number;
+    filled: number;
+    review: number;
+    status: FormHistoryItem['status'];
+    durationMs: number;
+  }): Promise<void> {
+    return coreHistoryService.record(entry);
   },
 
-  async clear(): Promise<void> {
-    // No-op or clear
+  clear(): Promise<void> {
+    return coreHistoryService.clear();
   },
 };

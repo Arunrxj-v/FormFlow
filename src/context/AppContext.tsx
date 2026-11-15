@@ -4,32 +4,37 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { authService } from '@/services/authService';
-import { documentService } from '@/services/documentService';
-import { extractionService } from '@/services/extractionService';
-import { activityService } from '@/services/activityService';
-import { googleDriveService } from '@/services/googleDriveService';
-import { settingsService } from '@/services/settingsService';
-import { clearAuthStorage, setStoredToken, setStoredUser } from '@/services/apiClient';
 import { useToast } from './ToastContext';
+import { dashboardService, vaultService } from '@/services/localApplication';
+import { documentService as localDocumentService } from '@/services/documentService';
+import { profileService } from '@/services/localApplication';
+import { settingsService } from '@/services/settingsService';
+import { vaultManager } from '../../core/vault/vault-manager';
+import { vaultSession } from '../../core/vault/vault-session';
+import type { VaultStatus } from '../../core/vault/vault-manager';
 import type {
   ActivityItem,
   DriveConnection,
-  DriveFile,
   ExtensionConnection,
   Preferences,
   User,
   VaultDocument,
   VaultField,
+  VaultRecord,
 } from '@/services/types';
 
 export type AuthState = 'unauthenticated' | 'authenticating' | 'authenticated' | 'session_expired' | 'auth_error';
 export type ServiceStatus = 'online' | 'offline' | 'checking';
+export type VaultState = 'loading' | 'no_vault' | 'migration_required' | 'locked' | 'unlocked' | 'error';
 
 interface AppContextValue {
+  vault: VaultRecord | null;
+  vaultStatus: VaultStatus | null;
+  vaultState: VaultState;
   user: User | null;
   authState: AuthState;
   serviceStatus: ServiceStatus;
@@ -43,14 +48,19 @@ interface AppContextValue {
   preferences: Preferences;
   driveConnection: DriveConnection;
   extensionConnection: ExtensionConnection;
+  createVault: (input: { name: string; passphrase: string }) => Promise<VaultRecord>;
+  migratePlaintextVault: (passphrase: string) => Promise<VaultRecord | null>;
+  unlockVault: (passphrase: string) => Promise<void>;
+  lockVault: () => Promise<void>;
+  changePassphrase: (currentPassphrase: string, newPassphrase: string) => Promise<void>;
   login: (email: string, password: string) => Promise<User>;
   signup: (name: string, email: string, password: string) => Promise<User>;
   logout: () => void;
   handleAuthSuccess: (token: string, initialUser?: User) => Promise<void>;
   refreshDrive: () => Promise<DriveConnection>;
   updateProfile: (user: User) => void;
-  addDriveDocuments: (files: DriveFile[]) => Promise<VaultDocument[]>;
-  uploadDocuments: (files: File[]) => Promise<{ accepted: VaultDocument[]; rejected: string[] }>;
+  addDriveDocuments: (files: Array<{ id: string; name: string; category: DocumentCategoryLike; subcategory: string }>) => Promise<VaultDocument[]>;
+  uploadDocuments: (files: File[]) => Promise<{ accepted: VaultDocument[]; rejected: string[]; duplicates: string[] }>;
   retryDocument: (id: string) => Promise<void>;
   removeDocument: (id: string) => Promise<void>;
   renameDocument: (id: string, name: string) => Promise<void>;
@@ -63,26 +73,49 @@ interface AppContextValue {
   refreshData: () => Promise<void>;
 }
 
+type DocumentCategoryLike = VaultDocument['category'];
+
 const AppContext = createContext<AppContextValue | null>(null);
 
-// Purge legacy mock storage keys on startup
-try {
-  localStorage.removeItem('formflow.demo.session.v1');
-  localStorage.removeItem('formflow.demo.store.v2');
-  localStorage.removeItem('formflow.demo.records');
-  localStorage.removeItem('formflow.demo.store');
-  const storedUserRaw = localStorage.getItem('formflow.auth.user');
-  if (storedUserRaw && (storedUserRaw.includes('usr_demo_arun') || storedUserRaw.includes('arun@example.com'))) {
-    localStorage.removeItem('formflow.auth.user');
-    localStorage.removeItem('formflow.auth.token');
-  }
-} catch {
-  // Ignore localStorage errors
+function deriveUser(profile: Awaited<ReturnType<typeof profileService.getProfile>>): User | null {
+  if (!profile.name && !profile.email) return null;
+  const parts = profile.name.trim().split(/\s+/);
+  return {
+    id: 'me',
+    name: profile.name,
+    firstName: parts[0] ?? 'there',
+    email: profile.email,
+    avatarInitials: ((parts[0]?.[0] ?? 'F') + (parts[1]?.[0] ?? 'F')).toUpperCase(),
+    accountType: profile.accountType,
+  };
 }
 
+const disconnectedDrive: DriveConnection = {
+  connected: false,
+  accountEmail: '',
+  targetFolder: '',
+  storageUsed: '',
+  storageTotal: '',
+  lastSync: 'Not connected',
+  permissions: [],
+  isDemo: false,
+};
+
+const disconnectedExtension: ExtensionConnection = {
+  installed: false,
+  connected: false,
+  version: '2.0.0',
+  browser: 'Chrome',
+  lastSync: 'Not connected',
+  shortcut: 'Alt + F',
+};
+
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => authService.getSession());
-  const [authState, setAuthState] = useState<AuthState>(() => (authService.getSession() ? 'authenticating' : 'unauthenticated'));
+  const [vault, setVault] = useState<VaultRecord | null>(null);
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
+  const [vaultState, setVaultState] = useState<VaultState>('loading');
+  const [user, setUser] = useState<User | null>(null);
+  const [authState, setAuthState] = useState<AuthState>('authenticating');
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>('checking');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -93,438 +126,309 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState<Preferences>({
     confirmBeforeAutofill: true,
     requireSensitiveReview: true,
+    allowLongAnswers: true,
     autoDownloadFiles: false,
-    activityNotifications: true,
     productNotifications: false,
+    activityNotifications: true,
     compactMode: false,
+    autoLockMinutes: 15,
+    ocrLanguage: 'eng',
   });
-  const [drive, setDrive] = useState<DriveConnection>({
-    connected: false,
-    accountEmail: '',
-    targetFolder: '/FormFlow Vault/',
-    storageUsed: '0 MB',
-    storageTotal: '15 GB',
-    lastSync: 'Not synced',
-    permissions: [],
-    isDemo: false,
-  });
-  const [extension, setExtension] = useState<ExtensionConnection>({
-    installed: false,
-    connected: false,
-    browser: 'Chrome',
-    version: '1.4.0',
-    lastSync: 'Never',
-    shortcut: 'Alt + F',
-  });
+  const [drive] = useState<DriveConnection>(disconnectedDrive);
+  const [extension] = useState<ExtensionConnection>(disconnectedExtension);
   const { toast } = useToast();
+  const lockTimer = useRef<number | null>(null);
 
-  const checkHealth = useCallback(async () => {
-    try {
-      const res = await fetch('/api/health');
-      if (res.ok) {
-        setServiceStatus('online');
-        return true;
-      }
-      setServiceStatus('offline');
-      return false;
-    } catch {
-      setServiceStatus('offline');
-      return false;
-    }
-  }, []);
-
-  // Extension connectivity check
-  useEffect(() => {
-    const checkExtension = () => {
-      const isInstalled = Boolean(
-        (typeof window !== 'undefined' && (window as any).__formflowInjected) ||
-        (typeof document !== 'undefined' && document.documentElement.getAttribute('data-formflow-extension') === 'installed')
-      );
-      if (isInstalled) {
-        setExtension((prev) => ({ ...prev, installed: true, connected: true, lastSync: 'Just now' }));
-      }
-    };
-    checkExtension();
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'FORMFLOW_EXTENSION_PONG') {
-        setExtension((prev) => ({ ...prev, installed: true, connected: true, lastSync: 'Just now', version: event.data.version || prev.version }));
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    try {
-      window.postMessage({ type: 'FORMFLOW_EXTENSION_PING' }, '*');
-    } catch {
-      // Ignore
-    }
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
-  const loadData = useCallback(async () => {
-    if (!authService.getSession()) {
-      setDocuments([]);
-      setFields([]);
-      setActivity([]);
-      setDrive((prev) => ({ ...prev, connected: false }));
-      setDataLoading(false);
-      return;
-    }
-    setDataLoading(true);
-    try {
-      const [nextDocuments, nextFields, nextActivity, nextPreferences, nextDrive] = await Promise.all([
-        documentService.list(),
-        extractionService.list(),
-        activityService.list(),
-        settingsService.getPreferences(),
-        googleDriveService.getConnection(),
-      ]);
-      setDocuments(nextDocuments);
-      setFields(nextFields);
-      setActivity(nextActivity);
-      setPreferences(nextPreferences);
-      setDrive(nextDrive);
-    } catch (err) {
-      console.error('Error loading vault data:', err);
-    } finally {
-      setDataLoading(false);
-    }
-  }, []);
-
-  // Validate session and check health on mount
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      const isOnline = await checkHealth();
-      if (!active) return;
-      if (!isOnline) {
-        setDataLoading(false);
-        setAuthLoading(false);
-        return;
-      }
-
-      const storedUser = authService.getSession();
-      if (storedUser) {
-        try {
-          const verifiedUser = await authService.getMe();
-          if (!active) return;
-          if (verifiedUser) {
-            setUser(verifiedUser);
-            setAuthState('authenticated');
-            void loadData();
-          } else {
-            setUser(null);
-            clearAuthStorage();
-            setAuthState('session_expired');
-            setDataLoading(false);
-          }
-        } catch {
-          if (!active) return;
-          setUser(null);
-          clearAuthStorage();
-          setAuthState('unauthenticated');
-          setDataLoading(false);
-        }
-      } else {
-        setAuthState('unauthenticated');
-        setDataLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [checkHealth, loadData]);
-
-  const login = useCallback(async (email: string, password: string) => {
-    setAuthLoading(true);
-    setAuthState('authenticating');
-    setAuthError(null);
-    try {
-      const nextUser = await authService.login(email, password);
-      setUser(nextUser);
-      setAuthState('authenticated');
-      setServiceStatus('online');
-      toast({ tone: 'success', title: 'Welcome back', message: `Signed in as ${nextUser.email}` });
-      await loadData();
-      return nextUser;
-    } catch (err: any) {
-      if (err?.status === 503 || err?.message?.includes('unreachable') || err?.message?.includes('Cannot connect')) {
-        setServiceStatus('offline');
-      }
-      setAuthState('auth_error');
-      setAuthError(err instanceof Error ? err.message : 'Unable to sign in.');
-      throw err;
-    } finally {
-      setAuthLoading(false);
-    }
-  }, [loadData, toast]);
-
-  const signup = useCallback(async (name: string, email: string, password: string) => {
-    setAuthLoading(true);
-    setAuthState('authenticating');
-    setAuthError(null);
-    try {
-      const nextUser = await authService.signup(name, email, password);
-      setUser(nextUser);
-      setAuthState('authenticated');
-      setServiceStatus('online');
-      toast({ tone: 'success', title: 'Account created', message: 'Welcome to FormFlow.' });
-      await loadData();
-      return nextUser;
-    } catch (err: any) {
-      if (err?.status === 503 || err?.message?.includes('unreachable') || err?.message?.includes('Cannot connect')) {
-        setServiceStatus('offline');
-      }
-      setAuthState('auth_error');
-      setAuthError(err instanceof Error ? err.message : 'Unable to create account.');
-      throw err;
-    } finally {
-      setAuthLoading(false);
-    }
-  }, [loadData, toast]);
-
-  const logout = useCallback(() => {
-    void authService.logout();
+  const clearSensitive = useCallback(() => {
+    setVault(null);
     setUser(null);
-    setAuthState('unauthenticated');
-    setAuthError(null);
     setDocuments([]);
     setFields([]);
     setActivity([]);
-    setDrive((prev) => ({ ...prev, connected: false }));
-    toast({ tone: 'info', title: 'Signed out successfully' });
-  }, [toast]);
+  }, []);
 
-  const handleAuthSuccess = useCallback(async (token: string, initialUser?: User) => {
-    setStoredToken(token);
-    if (initialUser) {
-      setStoredUser(initialUser);
-      setUser(initialUser);
-    }
-    setAuthState('authenticated');
+  const checkHealth = useCallback(async () => {
     setServiceStatus('online');
+    return true;
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setDataLoading(true);
+    try {
+      const status = await vaultManager.status();
+      setVaultStatus(status);
+      const prefs = await settingsService.getPreferences();
+      setPreferences(prefs);
+
+      if (status.requiresEncryptionMigration) {
+        clearSensitive();
+        setVaultState('migration_required');
+        setAuthState('unauthenticated');
+        setServiceStatus('online');
+        return;
+      }
+
+      if (!status.exists) {
+        clearSensitive();
+        setVaultState('no_vault');
+        setAuthState('unauthenticated');
+        setServiceStatus('online');
+        return;
+      }
+
+      if (!status.unlocked) {
+        clearSensitive();
+        setVaultState('locked');
+        setAuthState('session_expired');
+        setServiceStatus('online');
+        return;
+      }
+
+      const activeVault = await vaultService.getActiveVault();
+      setVault(activeVault);
+      const profile = await profileService.getProfile();
+      setUser(deriveUser(profile));
+      const data = await dashboardService.load();
+      setDocuments(data.documents);
+      setFields(data.fields);
+      setActivity(data.activity);
+      setVaultState('unlocked');
+      setAuthState('authenticated');
+      setAuthError(null);
+      setServiceStatus('online');
+      void vaultService.touch();
+    } catch (error) {
+      console.error('Local vault load failed', error);
+      clearSensitive();
+      setVaultState('error');
+      setAuthState('auth_error');
+      setAuthError(error instanceof Error ? error.message : 'Unable to open the local vault.');
+      setServiceStatus('offline');
+    } finally {
+      setDataLoading(false);
+    }
+  }, [clearSensitive]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    return vaultSession.subscribe(() => {
+      void loadData();
+    });
+  }, [loadData]);
+
+  const createVault = useCallback(async (input: { name: string; passphrase: string }) => {
+    const record = await vaultService.createVault(input);
+    await loadData();
+    return record;
+  }, [loadData]);
+
+  const migratePlaintextVault = useCallback(async (passphrase: string) => {
+    const record = await vaultService.migratePlaintextVault(passphrase);
+    await loadData();
+    return record;
+  }, [loadData]);
+
+  const unlockVault = useCallback(async (passphrase: string) => {
+    setAuthLoading(true);
     setAuthError(null);
     try {
-      const verifiedUser = await authService.getMe();
-      if (verifiedUser) {
-        setUser(verifiedUser);
-      }
-    } catch {
-      // Continue with active token session
+      await vaultManager.unlock(passphrase);
+      await loadData();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to unlock the vault.');
+      throw error;
+    } finally {
+      setAuthLoading(false);
     }
+  }, [loadData]);
+
+  const lockVault = useCallback(async () => {
+    await vaultManager.lock();
+    clearSensitive();
+    setVaultState('locked');
+    setVaultStatus((current) => (current ? { ...current, unlocked: false } : current));
+    setAuthState('session_expired');
+  }, [clearSensitive]);
+
+  const changePassphrase = useCallback(async (currentPassphrase: string, newPassphrase: string) => {
+    await vaultManager.changePassword(currentPassphrase, newPassphrase);
+    toast({ tone: 'success', title: 'Vault passphrase changed' });
+  }, [toast]);
+
+  const login = useCallback(async (_email: string, _password: string) => {
+    throw new Error('Use the local vault unlock screen.');
+  }, []);
+
+  const signup = useCallback(async (_name: string, _email: string, _password: string) => {
+    throw new Error('Use the local vault setup screen.');
+  }, []);
+
+  const logout = useCallback(() => {
+    void lockVault();
+  }, [lockVault]);
+
+  const handleAuthSuccess = useCallback(async (_token: string, _initialUser?: User) => {
     await loadData();
   }, [loadData]);
 
-  const refreshDrive = useCallback(async () => {
-    const nextDrive = await googleDriveService.getConnection();
-    setDrive(nextDrive);
-    return nextDrive;
-  }, []);
+  const refreshDrive = useCallback(async () => disconnectedDrive, []);
 
   const updateProfile = useCallback((nextUser: User) => {
-    authService.updateProfile(nextUser);
-    setUser(nextUser);
-  }, []);
+    void profileService.saveProfile({ name: nextUser.name, email: nextUser.email }).then(() => {
+      setUser(nextUser);
+      toast({ tone: 'success', title: 'Profile updated', message: 'Saved to your encrypted local vault.' });
+    });
+  }, [toast]);
 
-  const addDriveDocuments = useCallback(
-    async (files: DriveFile[]) => {
-      const created = await documentService.addFromDrive(files);
-      if (created.length) {
-        setDocuments((current) => [...created, ...current]);
-        await loadData();
-        toast({
-          tone: 'success',
-          title: 'Documents added from Google Drive',
-          message: `${created.length} ${created.length === 1 ? 'file' : 'files'} imported into your vault.`,
-        });
+  const addDriveDocuments = useCallback(async () => [], []);
+
+  const uploadDocuments = useCallback(async (files: File[]) => {
+    const accepted: VaultDocument[] = [];
+    const rejected: string[] = [];
+    const duplicates: string[] = [];
+    for (const file of files) {
+      try {
+        const result = await localDocumentService.importDocument(file);
+        if (result.duplicate) duplicates.push(file.name);
+        else accepted.push(result.document);
+      } catch (error) {
+        rejected.push(file.name);
+        if (error instanceof Error) console.warn(`Import rejected: ${error.message}`);
       }
-      return created;
-    },
-    [loadData, toast],
-  );
-
-  const uploadDocuments = useCallback(
-    async (files: File[]) => {
-      const result = await documentService.uploadLocal(files);
-      if (result.accepted.length) {
-        setDocuments((current) => [...result.accepted, ...current]);
-        await loadData();
-        toast({
-          tone: 'success',
-          title: 'Document uploaded',
-          message: `${result.accepted.length} ${result.accepted.length === 1 ? 'document' : 'documents'} added to your vault.`,
-        });
-      }
-      if (result.rejected.length) {
-        toast({
-          tone: 'error',
-          title: 'Some files were not accepted',
-          message: `${result.rejected.join(', ')} — use PDF, DOCX, JPG, PNG, or TXT.`,
-        });
-      }
-      return result;
-    },
-    [loadData, toast],
-  );
-
-  const retryDocument = useCallback(
-    async (id: string) => {
-      const retried = await documentService.retry(id);
-      if (!retried) return;
-      setDocuments((current) => current.map((doc) => (doc.id === id ? retried : doc)));
+    }
+    if (accepted.length) {
       await loadData();
-      toast({ tone: 'info', title: 'Reprocessing started' });
-    },
-    [loadData, toast],
-  );
+      toast({ tone: 'success', title: 'Document encrypted locally', message: `${accepted.length} document(s) added to your vault.` });
+    }
+    if (duplicates.length) {
+      toast({ tone: 'info', title: 'Duplicate files skipped', message: `${duplicates.length} identical file(s) already exist in this vault.` });
+    }
+    if (rejected.length) {
+      toast({ tone: 'error', title: 'Some files could not be imported', message: `${rejected.join(', ')} failed validation.` });
+    }
+    return { accepted, rejected, duplicates };
+  }, [loadData, toast]);
 
-  const removeDocument = useCallback(
-    async (id: string) => {
-      const doc = documents.find((item) => item.id === id);
-      await documentService.remove(id);
-      setDocuments((current) => current.filter((item) => item.id !== id));
-      await loadData();
-      toast({ tone: 'success', title: 'Document removed', message: `${doc?.name || 'Document'} was removed from your vault.` });
-    },
-    [documents, loadData, toast],
-  );
+  const retryDocument = useCallback(async (_id: string) => {
+    await loadData();
+  }, [loadData]);
 
-  const renameDocument = useCallback(
-    async (id: string, name: string) => {
-      const updated = await documentService.rename(id, name);
-      if (!updated) return;
-      setDocuments((current) => current.map((doc) => (doc.id === id ? updated : doc)));
-      toast({ tone: 'success', title: 'Document renamed' });
-    },
-    [toast],
-  );
+  const removeDocument = useCallback(async (id: string) => {
+    await localDocumentService.remove(id);
+    await loadData();
+    toast({ tone: 'success', title: 'Document removed', message: 'Encrypted file and metadata were deleted.' });
+  }, [loadData, toast]);
 
-  const unlinkDocument = useCallback(
-    async (id: string) => {
-      const updated = await documentService.unlink(id);
-      if (!updated) return;
-      setDocuments((current) => current.map((doc) => (doc.id === id ? updated : doc)));
-      toast({ tone: 'success', title: 'Record unlinked' });
-    },
-    [toast],
-  );
+  const renameDocument = useCallback(async (id: string, name: string) => {
+    await localDocumentService.rename(id, name);
+    await loadData();
+    toast({ tone: 'success', title: 'Document renamed' });
+  }, [loadData, toast]);
 
-  const addField = useCallback(
-    async (field: Omit<VaultField, 'id'>) => {
-      const created = await extractionService.add(field);
-      setFields((current) => [...current, created]);
-      await loadData();
-      toast({ tone: 'success', title: 'Value added to vault' });
-      return created;
-    },
-    [loadData, toast],
-  );
+  const unlinkDocument = useCallback(async (_id: string) => {
+    await loadData();
+  }, [loadData]);
 
-  const updateField = useCallback(
-    async (id: string, value: string) => {
-      const updated = await extractionService.update(id, value);
-      if (!updated) return;
-      setFields((current) => current.map((field) => (field.id === id ? updated : field)));
-      toast({ tone: 'success', title: 'Vault value updated' });
-    },
-    [toast],
-  );
+  const addField = useCallback(async (field: Omit<VaultField, 'id'>) => {
+    const result = await profileService.addField(field);
+    await loadData();
+    toast({ tone: 'success', title: 'Value added to vault' });
+    return result.field;
+  }, [loadData, toast]);
 
-  const deleteField = useCallback(
-    async (id: string) => {
-      await extractionService.remove(id);
-      setFields((current) => current.filter((field) => field.id !== id));
-      toast({ tone: 'success', title: 'Value removed' });
-    },
-    [toast],
-  );
+  const updateField = useCallback(async (id: string, value: string) => {
+    await profileService.updateField(id, value);
+    await loadData();
+    toast({ tone: 'success', title: 'Vault value updated' });
+  }, [loadData, toast]);
 
-  const resolveConflict = useCallback(
-    async (id: string, value: string) => {
-      const updated = await extractionService.resolveConflict(id, value);
-      if (!updated) return;
-      setFields((current) => current.map((field) => (field.id === id ? updated : field)));
-      toast({ tone: 'success', title: 'Conflict resolved', message: 'Preferred value selected.' });
-    },
-    [toast],
-  );
+  const deleteField = useCallback(async (id: string) => {
+    await profileService.deleteField(id);
+    await loadData();
+    toast({ tone: 'success', title: 'Value removed' });
+  }, [loadData, toast]);
 
-  const updatePreferences = useCallback(
-    async (next: Preferences) => {
-      const saved = await settingsService.updatePreferences(next);
-      setPreferences(saved);
-      toast({ tone: 'success', title: 'Preferences saved' });
-    },
-    [toast],
-  );
+  const resolveConflict = useCallback(async (id: string, value: string) => {
+    await profileService.resolveConflict(id, value);
+    await loadData();
+    toast({ tone: 'success', title: 'Conflict resolved', message: 'Preferred value selected.' });
+  }, [loadData, toast]);
 
-  const value = useMemo<AppContextValue>(
-    () => ({
-      user,
-      authState,
-      serviceStatus,
-      authError,
-      authLoading,
-      dataLoading,
-      checkHealth,
-      documents,
-      fields,
-      activity,
-      preferences,
-      driveConnection: drive,
-      extensionConnection: extension,
-      login,
-      signup,
-      logout,
-      handleAuthSuccess,
-      refreshDrive,
-      updateProfile,
-      addDriveDocuments,
-      uploadDocuments,
-      retryDocument,
-      removeDocument,
-      renameDocument,
-      unlinkDocument,
-      addField,
-      updateField,
-      deleteField,
-      resolveConflict,
-      updatePreferences,
-      refreshData: loadData,
-    }),
-    [
-      user,
-      authState,
-      serviceStatus,
-      authError,
-      authLoading,
-      dataLoading,
-      checkHealth,
-      documents,
-      fields,
-      activity,
-      preferences,
-      drive,
-      extension,
-      login,
-      signup,
-      logout,
-      handleAuthSuccess,
-      refreshDrive,
-      updateProfile,
-      addDriveDocuments,
-      uploadDocuments,
-      retryDocument,
-      removeDocument,
-      renameDocument,
-      unlinkDocument,
-      addField,
-      updateField,
-      deleteField,
-      resolveConflict,
-      updatePreferences,
-      loadData,
-    ],
-  );
+  const updatePreferences = useCallback(async (next: Preferences) => {
+    const saved = await settingsService.updatePreferences(next);
+    setPreferences(saved);
+    toast({ tone: 'success', title: 'Preferences saved' });
+  }, [toast]);
+
+  useEffect(() => {
+    if (vaultState !== 'unlocked' || !preferences.autoLockMinutes || preferences.autoLockMinutes <= 0) {
+      if (lockTimer.current) window.clearTimeout(lockTimer.current);
+      return;
+    }
+    const timeoutMs = preferences.autoLockMinutes * 60_000;
+    const reset = () => {
+      if (lockTimer.current) window.clearTimeout(lockTimer.current);
+      lockTimer.current = window.setTimeout(() => { void lockVault(); }, timeoutMs);
+    };
+    reset();
+    const events: Array<keyof WindowEventMap> = ['pointerdown', 'keydown', 'touchstart', 'scroll'];
+    for (const event of events) window.addEventListener(event, reset, { passive: true });
+    return () => {
+      if (lockTimer.current) window.clearTimeout(lockTimer.current);
+      for (const event of events) window.removeEventListener(event, reset);
+    };
+  }, [vaultState, preferences.autoLockMinutes, lockVault]);
+
+  const value = useMemo<AppContextValue>(() => ({
+    vault,
+    vaultStatus,
+    vaultState,
+    user,
+    authState,
+    serviceStatus,
+    authError,
+    authLoading,
+    dataLoading,
+    checkHealth,
+    documents,
+    fields,
+    activity,
+    preferences,
+    driveConnection: drive,
+    extensionConnection: extension,
+    createVault,
+    migratePlaintextVault,
+    unlockVault,
+    lockVault,
+    changePassphrase,
+    login,
+    signup,
+    logout,
+    handleAuthSuccess,
+    refreshDrive,
+    updateProfile,
+    addDriveDocuments,
+    uploadDocuments,
+    retryDocument,
+    removeDocument,
+    renameDocument,
+    unlinkDocument,
+    addField,
+    updateField,
+    deleteField,
+    resolveConflict,
+    updatePreferences,
+    refreshData: loadData,
+  }), [
+    vault, vaultStatus, vaultState, user, authState, serviceStatus, authError, authLoading, dataLoading,
+    checkHealth, documents, fields, activity, preferences, drive, extension, createVault, migratePlaintextVault,
+    unlockVault, lockVault, changePassphrase, login, signup, logout, handleAuthSuccess, refreshDrive,
+    updateProfile, addDriveDocuments, uploadDocuments, retryDocument, removeDocument, renameDocument,
+    unlinkDocument, addField, updateField, deleteField, resolveConflict, updatePreferences, loadData,
+  ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
