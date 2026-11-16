@@ -5,6 +5,7 @@ import type {
   Collection,
   CollectionRow,
   ConflictRecord,
+  DocumentExtractionDetails,
   DocumentRecord,
   DocumentStatus,
   ExtractedValueRecord,
@@ -470,6 +471,73 @@ export const vaultRepository = {
   },
 };
 
+async function prepareDocumentRow(
+  vault: VaultIdentity,
+  documentId: string,
+  record: Omit<DocumentRecord, 'id' | 'createdAt' | 'updatedAt' | 'nameEnc' | 'originalFilenameEnc'>,
+  rawName: string,
+): Promise<DocumentRecord> {
+  if (record.vaultId !== vault.vaultId) {
+    throw new FormFlowError('VALIDATION_FAILED', 'Document vault identity does not match the active vault.');
+  }
+  const now = new Date().toISOString();
+  return {
+    ...record,
+    id: documentId,
+    nameEnc: await enc(rawName, aad(vault, 'document', documentId, 'name')),
+    originalFilenameEnc: await enc(rawName, aad(vault, 'document', documentId, 'originalFilename')),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function prepareStoredFile(
+  vault: VaultIdentity,
+  documentId: string,
+  mimeType: string,
+  data: Blob,
+): Promise<StoredDocumentFile> {
+  const now = new Date().toISOString();
+  const encrypted = await encryptBytesWithKey(
+    await vaultSession.getDataKey(),
+    await data.arrayBuffer(),
+    aad(vault, 'documentFile', documentId, 'file'),
+  );
+  return {
+    documentId,
+    storageKey: `file_${documentId}`,
+    mimeType,
+    sizeBytes: data.size,
+    ciphertext: new Blob([encrypted.data], { type: 'application/octet-stream' }),
+    iv: encrypted.iv,
+    version: 2,
+    aadVersion: 2,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function prepareStoredText(
+  vault: VaultIdentity,
+  documentId: string,
+  text: string,
+  pageTexts: string[],
+  method: StoredDocumentText['method'],
+  extraction?: DocumentExtractionDetails,
+): Promise<StoredDocumentText> {
+  return {
+    documentId,
+    textEnc: await enc(text, aad(vault, 'documentText', documentId, 'text')),
+    pageTextsEnc: await enc(pageTexts, aad(vault, 'documentText', documentId, 'pageTexts')),
+    pageCount: pageTexts.length,
+    method,
+    ...(extraction
+      ? { extractionEnc: await enc(extraction, aad(vault, 'documentText', documentId, 'extraction')) }
+      : {}),
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export const documentRepository = {
   async list(): Promise<Array<{ row: DocumentRecord; name: string }>> {
     const vault = await identity();
@@ -517,64 +585,82 @@ export const documentRepository = {
     if (existing) {
       throw new FormFlowError('DUPLICATE_DOCUMENT', 'This document is already in your vault.');
     }
-    const now = new Date().toISOString();
-    const documentId = id('doc');
-    const row: DocumentRecord = {
-      ...record,
-      id: documentId,
-      nameEnc: await enc(rawName, aad(vault, 'document', documentId, 'name')),
-      originalFilenameEnc: await enc(rawName, aad(vault, 'document', documentId, 'originalFilename')),
-      createdAt: now,
-      updatedAt: now,
-    };
+    const row = await prepareDocumentRow(vault, id('doc'), record, rawName);
     await db.put('documents', row);
     return row;
   },
 
-  async update(documentId: string, patch: Partial<Omit<DocumentRecord, 'id' | 'createdAt'>>): Promise<void> {
-    const db = await getDb();
-    const row = await db.get('documents', documentId);
-    if (!row) throw new FormFlowError('NOT_FOUND', 'Document not found.');
-    await db.put('documents', { ...row, ...patch, updatedAt: new Date().toISOString() });
+  /** Builds an encrypted document row without writing it. Used by atomic ingestion. */
+  async prepare(
+    documentId: string,
+    record: Omit<DocumentRecord, 'id' | 'createdAt' | 'updatedAt' | 'nameEnc' | 'originalFilenameEnc'>,
+    rawName: string,
+  ): Promise<DocumentRecord> {
+    return prepareDocumentRow(await identity(), documentId, record, rawName);
   },
 
-  async rename(documentId: string, name: string): Promise<void> {
+  async prepareOriginalFile(documentId: string, mimeType: string, data: Blob): Promise<StoredDocumentFile> {
+    return prepareStoredFile(await identity(), documentId, mimeType, data);
+  },
+
+  async prepareText(
+    documentId: string,
+    text: string,
+    pageTexts: string[],
+    method: StoredDocumentText['method'],
+    extraction?: DocumentExtractionDetails,
+  ): Promise<StoredDocumentText> {
+    return prepareStoredText(await identity(), documentId, text, pageTexts, method, extraction);
+  },
+
+  /**
+   * Commits the document row, encrypted original file, and encrypted text in a
+   * single IndexedDB transaction. A quota failure, lock, or worker termination
+   * therefore cannot leave a successful document without its text or file.
+   */
+  async commitIngested(
+    row: DocumentRecord,
+    file: StoredDocumentFile,
+    text: StoredDocumentText,
+  ): Promise<void> {
     const vault = await identity();
-    const db = await getDb();
-    const row = await db.get('documents', documentId);
-    if (!row) throw new FormFlowError('NOT_FOUND', 'Document not found.');
     assertVault(vault, row.vaultId);
-    await db.put('documents', {
-      ...row,
-      nameEnc: await enc(name, aad(vault, 'document', row.id, 'name')),
-      updatedAt: new Date().toISOString(),
-    });
+    if (file.documentId !== row.id || text.documentId !== row.id) {
+      throw new FormFlowError('VALIDATION_FAILED', 'Prepared ingestion records do not share one document id.');
+    }
+    const db = await getDb();
+    const tx = db.transaction(['documents', 'documentFiles', 'documentText'], 'readwrite', { durability: 'strict' });
+    try {
+      const existing = await tx.objectStore('documents').index('by-checksum').get(row.checksum);
+      if (existing) {
+        throw new FormFlowError('DUPLICATE_DOCUMENT', 'This document is already in your vault.');
+      }
+      await tx.objectStore('documents').put(row);
+      await tx.objectStore('documentFiles').put(file);
+      await tx.objectStore('documentText').put(text);
+      await tx.done;
+    } catch (error) {
+      try {
+        tx.abort();
+      } catch {
+        // The transaction already aborted or completed.
+      }
+      void tx.done.catch(() => undefined);
+      if (error instanceof FormFlowError) throw error;
+      if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+        throw new FormFlowError(
+          'INSUFFICIENT_STORAGE',
+          'The encrypted document transaction was aborted before commit. No partial document or text was written.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   },
 
   async saveOriginalFile(documentId: string, mimeType: string, data: Blob): Promise<StoredDocumentFile> {
-    const vault = await identity();
+    const row = await this.prepareOriginalFile(documentId, mimeType, data);
     const db = await getDb();
-    const document = await db.get('documents', documentId);
-    if (!document) throw new FormFlowError('NOT_FOUND', 'Document not found.');
-    assertVault(vault, document.vaultId);
-    const now = new Date().toISOString();
-    const encrypted = await encryptBytesWithKey(
-      await vaultSession.getDataKey(),
-      await data.arrayBuffer(),
-      aad(vault, 'documentFile', documentId, 'file'),
-    );
-    const row: StoredDocumentFile = {
-      documentId,
-      storageKey: `file_${documentId}`,
-      mimeType,
-      sizeBytes: data.size,
-      ciphertext: new Blob([encrypted.data], { type: 'application/octet-stream' }),
-      iv: encrypted.iv,
-      version: 2,
-      aadVersion: 2,
-      createdAt: now,
-      updatedAt: now,
-    };
     await db.put('documentFiles', row);
     return row;
   },
@@ -599,21 +685,24 @@ export const documentRepository = {
     return new Blob([plaintext], { type: row.mimeType });
   },
 
-  async saveText(documentId: string, text: string, pageTexts: string[], method: StoredDocumentText['method']): Promise<void> {
-    const vault = await identity();
+  async saveText(
+    documentId: string,
+    text: string,
+    pageTexts: string[],
+    method: StoredDocumentText['method'],
+    extraction?: DocumentExtractionDetails,
+  ): Promise<void> {
+    const row = await this.prepareText(documentId, text, pageTexts, method, extraction);
     const db = await getDb();
-    const row: StoredDocumentText = {
-      documentId,
-      textEnc: await enc(text, aad(vault, 'documentText', documentId, 'text')),
-      pageTextsEnc: await enc(pageTexts, aad(vault, 'documentText', documentId, 'pageTexts')),
-      pageCount: pageTexts.length,
-      method,
-      createdAt: new Date().toISOString(),
-    };
     await db.put('documentText', row);
   },
 
-  async getText(documentId: string): Promise<{ text: string; pageTexts: string[]; method: StoredDocumentText['method'] } | null> {
+  async getText(documentId: string): Promise<{
+    text: string;
+    pageTexts: string[];
+    method: StoredDocumentText['method'];
+    extraction: DocumentExtractionDetails | null;
+  } | null> {
     const vault = await identity();
     const db = await getDb();
     const row = await db.get('documentText', documentId);
@@ -622,7 +711,72 @@ export const documentRepository = {
       text: await dec<string>(row.textEnc, aad(vault, 'documentText', documentId, 'text')),
       pageTexts: await dec<string[]>(row.pageTextsEnc, aad(vault, 'documentText', documentId, 'pageTexts')),
       method: row.method,
+      extraction: row.extractionEnc
+        ? await dec<DocumentExtractionDetails>(row.extractionEnc, aad(vault, 'documentText', documentId, 'extraction'))
+        : null,
     };
+  },
+
+  /** Replaces extraction output for an existing document in one transaction. */
+  async replaceExtraction(
+    documentId: string,
+    text: string,
+    pageTexts: string[],
+    method: StoredDocumentText['method'],
+    extraction: DocumentExtractionDetails,
+    patch: Partial<Omit<DocumentRecord, 'id' | 'createdAt'>>,
+  ): Promise<DocumentRecord> {
+    const vault = await identity();
+    const db = await getDb();
+    const current = await db.get('documents', documentId);
+    if (!current) throw new FormFlowError('NOT_FOUND', 'Document not found.');
+    assertVault(vault, current.vaultId);
+    // Encryption is asynchronous and must finish before the transaction opens;
+    // IndexedDB transactions become inactive across unrelated awaits.
+    const textRow = await prepareStoredText(vault, documentId, text, pageTexts, method, extraction);
+    const tx = db.transaction(['documents', 'documentText'], 'readwrite', { durability: 'strict' });
+    try {
+      const latest = await tx.objectStore('documents').get(documentId);
+      if (!latest) {
+        tx.abort();
+        throw new FormFlowError('NOT_FOUND', 'Document not found.');
+      }
+      if (latest.updatedAt !== current.updatedAt) {
+        tx.abort();
+        throw new FormFlowError('VALIDATION_FAILED', 'The document changed while extraction was running. Retry the extraction.');
+      }
+      assertVault(vault, latest.vaultId);
+      const updated: DocumentRecord = {
+        ...latest,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      await tx.objectStore('documents').put(updated);
+      await tx.objectStore('documentText').put(textRow);
+      await tx.done;
+      return updated;
+    } catch (error) {
+      try {
+        tx.abort();
+      } catch {
+        // Already completed/aborted.
+      }
+      void tx.done.catch(() => undefined);
+      throw error;
+    }
+  },
+
+  async rename(documentId: string, name: string): Promise<void> {
+    const vault = await identity();
+    const db = await getDb();
+    const row = await db.get('documents', documentId);
+    if (!row) throw new FormFlowError('NOT_FOUND', 'Document not found.');
+    assertVault(vault, row.vaultId);
+    await db.put('documents', {
+      ...row,
+      nameEnc: await enc(name, aad(vault, 'document', row.id, 'name')),
+      updatedAt: new Date().toISOString(),
+    });
   },
 
   async remove(documentId: string): Promise<void> {
@@ -654,6 +808,13 @@ export const documentRepository = {
       failureReason: status === 'failed' ? error : undefined,
     });
   },
+
+  async update(documentId: string, patch: Partial<Omit<DocumentRecord, 'id' | 'createdAt'>>): Promise<void> {
+    const db = await getDb();
+    const row = await db.get('documents', documentId);
+    if (!row) throw new FormFlowError('NOT_FOUND', 'Document not found.');
+    await db.put('documents', { ...row, ...patch, updatedAt: new Date().toISOString() });
+  },
 };
 
 export function toVaultDocument(row: DocumentRecord, name: string): VaultDocument {
@@ -676,6 +837,10 @@ export function toVaultDocument(row: DocumentRecord, name: string): VaultDocumen
     processingError: row.processingError,
     checksum: row.checksum,
     ocrUsed: row.ocrUsed,
+    extractedTextStatus: row.extractedTextStatus,
+    extractionVersion: row.extractionVersion,
+    extractedAt: row.extractedAt,
+    ocrRequired: row.ocrRequired,
     extractedCount: undefined,
     previewTone: undefined,
     linkedRecordId: undefined,

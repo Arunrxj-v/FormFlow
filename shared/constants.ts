@@ -21,6 +21,14 @@ export const DEFAULT_AUTO_LOCK_MINUTES = 15;
 export const PBKDF2_ITERATIONS = 600_000;
 
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+/** Formats the Phase 4.1 ingestion pipeline accepts from the UI. */
+export const INGESTIBLE_EXTENSIONS = ['pdf', 'docx', 'txt'] as const;
+export const INGESTIBLE_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+] as const;
+/** Retained for reading older backups that may contain image documents. */
 export const SUPPORTED_EXTENSIONS = ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png'] as const;
 export const SUPPORTED_MIME_TYPES = [
   'application/pdf',
@@ -36,6 +44,14 @@ export const OCR_LANGUAGES = [
   { id: 'eng+mal', label: 'English + Malayalam' },
   { id: 'eng+tam', label: 'English + Tamil' },
 ] as const;
+
+export const EXTRACTION_VERSION = 1;
+export const MAX_PDF_PAGES = 1_000;
+export const MAX_EXTRACTED_TEXT_CHARS = 10_000_000;
+export const MAX_EXTRACTION_WARNINGS = 100;
+export const MAX_EXTRACTION_TIMEOUT_MS = 60_000;
+export const MAX_DOCX_XML_BYTES = 24 * 1024 * 1024;
+export const MAX_DOCX_UNCOMPRESSED_BYTES = 96 * 1024 * 1024;
 
 export const MODEL_INFERENCE_TIMEOUT_MS = 120_000;
 export const MODEL_SELF_TEST_TIMEOUT_MS = 180_000;

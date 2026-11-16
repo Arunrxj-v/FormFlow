@@ -448,6 +448,30 @@ export async function checkVaultIntegrity(): Promise<VaultIntegrityReport> {
       row.documentId,
       'pageTexts',
     );
+    if (row.extractionEnc) {
+      await tryDecryptJson(
+        row.extractionEnc,
+        contextFor(vault, 'documentText', row.documentId, 'extraction'),
+        'Document extraction details',
+        'documentText',
+        row.documentId,
+        'extraction',
+      );
+    }
+  }
+  const textDocumentIds = new Set(text.map((row) => row.documentId));
+  for (const document of documents) {
+    if (document.extractedTextStatus === 'extracted' && !textDocumentIds.has(document.id)) {
+      reportIssue({
+        severity: document.extractionVersion ? 'error' : 'warning',
+        code: 'MISSING_DOCUMENT_TEXT',
+        recordType: 'document',
+        recordId: document.id,
+        message: document.extractionVersion
+          ? 'Document reports extracted text but its encrypted text record is missing.'
+          : 'Legacy document reports extracted text without an encrypted text record.',
+      });
+    }
   }
 
   return {

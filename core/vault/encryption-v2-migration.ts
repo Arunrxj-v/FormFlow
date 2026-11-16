@@ -650,6 +650,13 @@ async function verifyVault(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault: 
       { payload: row.textEnc, aad: context(vault, 'documentText', row.documentId, 'text'), label: `text ${row.documentId}` },
       { payload: row.pageTextsEnc, aad: context(vault, 'documentText', row.documentId, 'pageTexts'), label: `text ${row.documentId} pages` },
     );
+    if (row.extractionEnc) {
+      encryptedStrings.push({
+        payload: row.extractionEnc,
+        aad: context(vault, 'documentText', row.documentId, 'extraction'),
+        label: `text ${row.documentId} extraction`,
+      });
+    }
   }
 
   for (const entry of encryptedStrings) {

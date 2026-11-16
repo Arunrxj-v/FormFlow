@@ -16,6 +16,8 @@ import { vaultClient } from '@/services/vaultClient';
 import type { VaultStatus } from '@/services/vaultClientTypes';
 import type {
   ActivityItem,
+  DocumentUploadProgress,
+  DocumentUploadResult,
   DriveConnection,
   ExtensionConnection,
   Preferences,
@@ -58,8 +60,12 @@ interface AppContextValue {
   refreshDrive: () => Promise<DriveConnection>;
   updateProfile: (user: User) => void;
   addDriveDocuments: (files: Array<{ id: string; name: string; category: DocumentCategoryLike; subcategory: string }>) => Promise<VaultDocument[]>;
-  uploadDocuments: (files: File[]) => Promise<{ accepted: VaultDocument[]; rejected: string[]; duplicates: string[] }>;
-  retryDocument: (id: string) => Promise<void>;
+  uploadDocuments: (
+    files: File[],
+    options?: { onProgress?: (event: DocumentUploadProgress) => void },
+  ) => Promise<DocumentUploadResult>;
+  cancelDocumentUpload: (importId?: string) => Promise<void>;
+  retryDocument: (id: string, options?: { onProgress?: (event: DocumentUploadProgress) => void }) => Promise<void>;
   removeDocument: (id: string) => Promise<void>;
   renameDocument: (id: string, name: string) => Promise<void>;
   unlinkDocument: (id: string) => Promise<void>;
@@ -137,6 +143,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
   const lockTimer = useRef<number | null>(null);
   const encryptionUpgradeStarted = useRef(false);
+  const activeUploads = useRef(new Set<string>());
+  const uploadCancelled = useRef(false);
 
   const clearSensitive = useCallback(() => {
     revokeDocumentObjectUrls();
@@ -319,36 +327,107 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const addDriveDocuments = useCallback(async () => [], []);
 
-  const uploadDocuments = useCallback(async (files: File[]) => {
+  const uploadDocuments = useCallback(async (
+    files: File[],
+    options?: { onProgress?: (event: DocumentUploadProgress) => void },
+  ): Promise<DocumentUploadResult> => {
     const accepted: VaultDocument[] = [];
-    const rejected: string[] = [];
-    const duplicates: string[] = [];
-    for (const file of files) {
+    const acceptedIndices: number[] = [];
+    const rejected: DocumentUploadResult['rejected'] = [];
+    const duplicates: DocumentUploadResult['duplicates'] = [];
+    let cancelled = false;
+    uploadCancelled.current = false;
+    for (let index = 0; index < files.length; index += 1) {
+      if (uploadCancelled.current) {
+        cancelled = true;
+        break;
+      }
+      const file = files[index]!;
+      const importId = `import_${crypto.randomUUID()}`;
+      activeUploads.current.add(importId);
       try {
-        const result = await localDocumentService.importDocument(file);
-        if (result.duplicate) duplicates.push(file.name);
-        else accepted.push(result.document);
+        const result = await localDocumentService.importDocument(file, undefined, undefined, {
+          importId,
+          fileIndex: index,
+          fileCount: files.length,
+          onProgress: options?.onProgress,
+        });
+        if (result.duplicate) duplicates.push({ fileName: file.name, fileIndex: index, existingDocument: result.document });
+        else {
+          accepted.push(result.document);
+          acceptedIndices.push(index);
+        }
       } catch (error) {
-        rejected.push(file.name);
-        if (error instanceof Error) console.warn(`Import rejected: ${error.message}`);
+        const code = (error as { code?: string }).code ?? 'UNKNOWN';
+        if (code === 'CANCELLED' || uploadCancelled.current) {
+          cancelled = true;
+          break;
+        }
+        rejected.push({
+          fileName: file.name,
+          fileIndex: index,
+          code,
+          message: error instanceof Error ? error.message : 'Document import failed.',
+        });
+      } finally {
+        activeUploads.current.delete(importId);
       }
     }
     if (accepted.length) {
       await loadData();
-      toast({ tone: 'success', title: 'Document encrypted locally', message: `${accepted.length} document(s) added to your vault.` });
+      toast({
+        tone: 'success',
+        title: 'Documents stored securely',
+        message: `${accepted.length} document(s) and their extracted text were encrypted in this vault.`,
+      });
     }
     if (duplicates.length) {
-      toast({ tone: 'info', title: 'Duplicate files skipped', message: `${duplicates.length} identical file(s) already exist in this vault.` });
+      toast({
+        tone: 'info',
+        title: 'Duplicate files skipped',
+        message: duplicates.map((item) => `${item.fileName} already exists as ${item.existingDocument.name}`).join(' · '),
+      });
     }
     if (rejected.length) {
-      toast({ tone: 'error', title: 'Some files could not be imported', message: `${rejected.join(', ')} failed validation.` });
+      toast({
+        tone: 'error',
+        title: 'Some files could not be imported',
+        message: rejected.map((item) => `${item.fileName}: ${item.message}`).join(' · '),
+      });
     }
-    return { accepted, rejected, duplicates };
+    if (cancelled) {
+      toast({ tone: 'info', title: 'Import cancelled', message: 'No partial document or text was committed.' });
+    }
+    return { accepted, acceptedIndices, duplicates, rejected, cancelled };
   }, [loadData, toast]);
 
-  const retryDocument = useCallback(async (_id: string) => {
-    await loadData();
-  }, [loadData]);
+  const cancelDocumentUpload = useCallback(async (importId?: string) => {
+    uploadCancelled.current = true;
+    const targets = importId && activeUploads.current.has(importId)
+      ? [importId]
+      : Array.from(activeUploads.current);
+    await Promise.all(targets.map((id) => localDocumentService.cancelImport(id).catch(() => undefined)));
+  }, []);
+
+  const retryDocument = useCallback(async (
+    id: string,
+    options?: { onProgress?: (event: DocumentUploadProgress) => void },
+  ) => {
+    try {
+      await localDocumentService.retryExtraction(id, { onProgress: options?.onProgress });
+      await loadData();
+      toast({ tone: 'success', title: 'Extraction refreshed', message: 'The encrypted text was replaced in one transaction.' });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'CANCELLED') return;
+      toast({
+        tone: 'error',
+        title: 'Extraction failed',
+        message: error instanceof Error ? error.message : 'The document could not be reprocessed.',
+      });
+      throw error;
+    }
+  }, [loadData, toast]);
 
   const removeDocument = useCallback(async (id: string) => {
     await localDocumentService.remove(id);
@@ -446,6 +525,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateProfile,
     addDriveDocuments,
     uploadDocuments,
+    cancelDocumentUpload,
     retryDocument,
     removeDocument,
     renameDocument,
@@ -460,7 +540,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     vault, vaultStatus, vaultState, user, authState, serviceStatus, authError, authLoading, dataLoading,
     checkHealth, documents, fields, activity, preferences, drive, extension, createVault, migratePlaintextVault,
     unlockVault, lockVault, changePassphrase, login, signup, logout, handleAuthSuccess, refreshDrive,
-    updateProfile, addDriveDocuments, uploadDocuments, retryDocument, removeDocument, renameDocument,
+    updateProfile, addDriveDocuments, uploadDocuments, cancelDocumentUpload, retryDocument, removeDocument, renameDocument,
     unlinkDocument, addField, updateField, deleteField, resolveConflict, updatePreferences, loadData,
   ]);
 

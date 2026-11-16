@@ -1,6 +1,6 @@
 # FormFlow Security Architecture
 
-Status: Phase 3.1.2.1 final runtime security verification. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
+Status: Phase 4.1 local document ingestion. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
 
 ## 1. Threat model
 
@@ -138,7 +138,7 @@ Examples of `recordType` / `field`:
 | Collection | `collection` | `name`, `description`, `notes` |
 | Activity | `activity` | `title`, `detail` |
 | Form history | `formHistory` | `website`, `url`, `documentsUsed` |
-| Document text | `documentText` | `text`, `pageTexts` |
+| Document text | `documentText` | `text`, `pageTexts`, `extraction` |
 
 Changing a record ID, record type, field, vault ID, or schema version causes authentication failure. Ciphertexts cannot be moved between records, between fields, or between vaults and still decrypt.
 
@@ -162,7 +162,7 @@ Phase 3 records use envelope version 1 and the vault-wide AAD `formflow:vault:v1
 
 - Document title and original filename.
 - Original document bytes.
-- Extracted document text and page text.
+- Extracted document text, page text, extraction warnings, and extracted PDF/DOCX metadata.
 - Personal field labels and values.
 - Profile object and all profile record payloads (education, employment, skills, certifications, projects, addresses).
 - Collection names, descriptions, and notes.
@@ -191,7 +191,7 @@ These fields are needed for indexing, sorting, UI state, or integrity checks. Th
 ### Metadata classification
 
 - **Required operational:** IDs, field keys, categories, statuses, timestamps, MIME/extension, sizes, checksums, collection membership IDs, storage keys. These support indexes, relationships, sorting, and integrity checks.
-- **Encrypted:** filenames, titles, labels, values, profile data, collection text, activity/history text, document bytes, document text, and the vault display name.
+- **Encrypted:** filenames, titles, labels, values, profile data, collection text, activity/history text, document bytes, document text, extraction warnings/metadata, and the vault display name.
 - **Removed/replaced:** no additional removals in this phase; error messages avoid logging personal values, and dashboard responses are limited to operations the UI needs.
 
 Search is performed after decryption in the trusted extension context. There is no remote search and no plaintext search index.
@@ -223,6 +223,63 @@ Search is performed after decryption in the trusted extension context. There is 
 - Document preview object URLs are revoked on lock and after a timeout.
 
 JavaScript cannot guarantee that copies of a key or decrypted value have been erased from all engine memory.
+
+## 6.1 Local document ingestion (Phase 4.1)
+
+### Trust boundary
+
+```text
+Dashboard file picker
+  └── base64 import operation (typed background protocol)
+        └── service-worker ingestion coordinator
+              ├── validates format signature, size, MIME hint, and vault state
+              ├── computes SHA-256 and rejects duplicates
+              ├── encrypts original bytes with the documentFile AAD
+              ├── parser module (bytes only; no DEK/KEK/session/DB/network)
+              ├── normalizes text and page boundaries
+              ├── encrypts text/pageTexts/extraction details with documentText AAD
+              └── one strict IndexedDB transaction for document + file + text
+```
+
+The parser module receives only an `ArrayBuffer`, the format, a filename for diagnostics, an optional abort signal, and a page-progress callback. It has no vault handle, cryptographic key, AAD, session token, or storage access. It does not make network requests.
+
+MV3 service workers do not expose the `Worker` constructor, so the parser is a dedicated module running in the service-worker context. Parsing is therefore off the dashboard main thread, but it shares the service-worker event loop. An extension-API heartbeat runs during ingestion to reduce MV3 idle termination during long parses. A service-worker termination still aborts the import; because persistence is one transaction, no partial record is committed.
+
+### Format validation
+
+- PDF: `%PDF-` signature in the header (small leading whitespace tolerated), PDF.js parse, page limit, password/corruption classification.
+- DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, and structural XML parsing. A renamed ZIP or non-DOCX container is rejected.
+- TXT: strict UTF-8 decode, BOM detection, CRLF/CR/LF normalization, NUL/control-character rejection, and empty-content rejection.
+- Browser MIME and extension are cross-checked but are not trusted as the format authority.
+
+### Extraction behavior
+
+- PDF: per-page text, page count, page numbers, best-effort metadata, image-operator detection on pages with little/no text, and warnings. Empty, image-only, mixed text/image, password-protected, corrupted, and oversized PDFs are classified. Image-only pages are marked OCR-required; **OCR is not implemented**.
+- DOCX: paragraphs, headings, tables (tab-separated cells), line breaks, and document order. Mammoth validates the container and provides a raw-text fallback; the structural pass preserves headings/tables without using HTML rendering. DOCX page count is not reliable and is stored as one logical page with a warning.
+- TXT: UTF-8 text with preserved paragraphs and line breaks.
+
+### Encrypted persistence and atomicity
+
+- The document row (`documents`), original bytes (`documentFiles`), and extracted text (`documentText`) are encrypted before commit.
+- `StoredDocumentText.textEnc` uses AAD `documentText` / `text`; `pageTextsEnc` uses `pageTexts`; the optional `extractionEnc` uses `extraction`.
+- The `extractionEnc` payload contains warnings, pages requiring OCR, and PDF/DOCX metadata. It is never stored in plaintext record metadata or logs.
+- The three records are written in a single IndexedDB transaction with `durability: 'strict'`. Duplicate checksum validation happens before the record is created and again inside the transaction. A quota error, parser failure, lock, cancellation, or worker termination rolls back the whole transaction. The UI is not told that an import succeeded until after that transaction completes.
+- SHA-256 duplicate detection returns the existing document and never silently replaces it. The UI displays the existing document name.
+- Extraction retry reads the encrypted original, re-runs the parser, and replaces the text/extraction details in one transaction without creating a second document.
+- Progress is sent over an extension-origin-only `formflow-document-progress` port. It contains stage, percentage, file index/count, and page number only — no filename, extracted text, key, AAD, or metadata.
+
+### Limits
+
+- 20 MB per original document.
+- 1,000 PDF pages.
+- 10,000,000 extracted characters.
+- 24 MB per DOCX XML part and 96 MB total uncompressed DOCX content.
+- 100 extraction warnings per document.
+- 60-second ingestion timeout enforced by the coordinator. The parser receives an abort signal; the import is rejected and no record is committed.
+
+### Schema and backup compatibility
+
+The schema change is additive: optional `DocumentRecord.extractionVersion`, `extractedAt`, `ocrRequired`, and optional `StoredDocumentText.extractionEnc`. No database version bump is required. Existing documents without extraction data remain readable. Backup v3 exports/imports the extraction payload with the same AAD; older v1/v2/v3 archives without `extraction` still import. The integrity checker decrypts `extractionEnc` when present and warns about legacy documents marked extracted without a text row.
 
 ## 7. Vault migrations
 
@@ -393,6 +450,9 @@ The checker reports issues and never deletes or rewrites corrupted records. The 
 - Chromium E2E with a real PDF, DEK absence in dashboard/popup storage, generic-operation rejection, ciphertext inspection, tamper test, upload-versus-lock draining, passphrase rotation, v3 header tamper, valid v3 import, genuine v1/v2 imports, restore journal recovery, CSP enforcement, and XSS payload rendering.
 - A real Chromium process kill during backup restore, followed by restart, journal inspection, and successful retry.
 - A real Chromium SIGKILL during v1→v2 migration after a committed `documents` journal batch, followed by restart, resume, integrity verification, record-count comparison, duplicate detection, ciphertext inspection, and document-blob access.
+- Real Chromium Phase 4.1 ingestion: a Chromium-generated multi-page PDF, DOCX headings/tables, BOM/CRLF TXT, image-only OCR-required PDF, corrupted PDF, and password-protected PDF; encrypted-at-rest text and v2 AAD verified; duplicate, retry, cancellation, progress, and dashboard states verified.
+- Real Chromium interruption during an 18 MB ingestion: extension disabled, worker terminated, re-enabled, unlocked, and no partial document/file/text triple found; a later import succeeded atomically.
+- Atomic ingestion rollback for parser failure, cancellation, vault lock, and quota failure; backup v3 round-trip preserves encrypted extraction details.
 - An in-place extension disable/re-enable lifecycle using a test-only management helper: worker restart, no persisted DEK, dashboard/popup locked UI, unlock persistence, and interruption of a 20 MB document mutation without a partial document/file pair.
 - Runtime HTTP and HTTPS page isolation: content script absent, no extension APIs/session storage/vault IndexedDB/page-world bridge.
 - Runtime Google Forms-origin injection and background scan through the real content script.
@@ -404,6 +464,7 @@ The migration fixture is generated by test-only files (`extension/src/background
 - Migration crash boundaries are also covered by deterministic fault injection, which complements the real migration SIGKILL test.
 - Storage quota is simulated by throwing `QuotaExceededError` from IndexedDB `put`; it is not a physical disk-full test.
 - The 200 MB boundary uses synthetic `Blob` size/text shims and a small valid archive; it does not allocate a 200 MB fixture.
+- The ingestion timeout is unit-tested with a short bounded parser stub; a real 60-second parser stall is not exercised in Chromium.
 - The extension reload test uses `chrome.management.setEnabled(false/true)` with a test-only helper extension, not `chrome.runtime.reload()`, because the Playwright `--load-extension` harness blocks extension navigation after `runtime.reload()`. It preserves extension ID/storage and restarts the worker, exercising the same DEK-loss and lock behavior.
 - The Google Forms runtime page is served at the real `https://docs.google.com/forms/...` origin through Playwright route interception, not fetched from Google's production servers.
 
@@ -428,6 +489,10 @@ The migration fixture is generated by test-only files (`extension/src/background
 7. **Backup legacy headers.** V3 headers are fully authenticated. Legacy v1/v2 archives retain their original weaker AAD for compatibility and are imported only after their existing structural and relationship validation.
 8. **JavaScript memory.** Decrypted values and keys may remain in engine memory until garbage collection. Lock clears references and session storage, not all possible copies.
 9. **Service-worker termination locks the vault.** This is the deliberate consequence of keeping the DEK out of extension-readable storage. Frequent MV3 worker termination can interrupt a long idle session; an active dashboard connection reduces this in practice.
+10. **OCR is not implemented.** Scanned/image-only PDFs are stored and marked `ocrRequired`; their image text is not extracted, and no external OCR service is called.
+11. **DOCX page boundaries are approximate.** DOCX is stored as one logical page because the format does not expose reliable page count/layout without a renderer.
+12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, and complex table styling are normalized to text; the original file remains available for fidelity.
+13. **Parsers share the service-worker context.** MV3 service workers do not expose the `Worker` constructor, so PDF.js/Mammoth run in the background service-worker context while holding no key argument, DB handle, or session secret. A memory-safety exploit in a parser would be inside the privileged extension process. Moving parsing to an offscreen document/worker would add isolation but would raise the Chrome minimum version and add another privileged surface; it is not implemented in Phase 4.1.
 10. **Transitional v1 fallback.** Readers accept legacy v1 envelopes while a vault is being upgraded. The migration verifies that no v1 field remains before setting the v2 marker, after which integrity checks flag any legacy envelope.
 11. **Auto-lock precision.** The dashboard timer handles the interactive interval; the background alarm is a backstop with Chrome alarm granularity.
 12. **AAD schema source.** The schema version in the AAD comes from the active vault record. If that metadata is corrupted, records fail closed rather than decrypting under a different context.

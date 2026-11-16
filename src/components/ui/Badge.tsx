@@ -25,9 +25,11 @@ export function StatusBadge({ status }: { status: string }) {
         ? 'primary'
         : status === 'failed' || status === 'Failed'
           ? 'danger'
-          : status === 'needs_attention' || status === 'Cancelled'
+          : status === 'needs_attention' || status === 'Cancelled' || status === 'review_required'
             ? 'warning'
-            : 'neutral';
+            : status === 'stored'
+              ? 'success'
+              : 'neutral';
   const label =
     status === 'needs_attention'
       ? 'Needs attention'
@@ -41,8 +43,12 @@ export function StatusBadge({ status }: { status: string }) {
               ? 'Processed'
               : status === 'queued' || status === 'uploaded'
                 ? 'Queued'
-                : status === 'failed' || status === 'Failed'
-                  ? 'Processing failed'
-                  : status;
+                : status === 'stored'
+                  ? 'Stored locally'
+                  : status === 'review_required'
+                    ? 'Review required'
+                    : status === 'failed' || status === 'Failed'
+                      ? 'Processing failed'
+                      : status;
   return <Badge tone={tone}>{label}</Badge>;
 }

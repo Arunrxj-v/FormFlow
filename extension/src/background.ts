@@ -1,9 +1,11 @@
 import {
+  DOCUMENT_PROGRESS_EVENT,
   MESSAGE,
   type ScanPayload,
 } from '@shared/messages';
 import type {
   AddressRecord,
+  DocumentIngestionProgress,
   CertificationRecord,
   EducationRecord,
   EmploymentRecord,
@@ -25,6 +27,8 @@ import { VaultOperationCoordinator, type VaultOperationKind } from '../../core/v
 import { vaultService } from '../../core/application/vault-service';
 import { profileService } from '../../core/application/profile-service';
 import { documentService } from '../../core/application/document-service';
+import { parseDocument } from '../../core/documents/parsers';
+import type { DocumentParseInput } from '../../core/documents/parsers/types';
 import { dashboardService } from '../../core/application/dashboard-service';
 import { vaultExportService } from '../../core/storage/vault-export';
 import { profileRecordService } from '../../core/application/profile-service';
@@ -44,6 +48,43 @@ import {
 
 const VERSION = chrome.runtime.getManifest().version;
 const AUTO_LOCK_ALARM = 'formflow-auto-lock';
+const activeDocumentImports = new Map<string, AbortController>();
+const documentProgressPorts = new Map<string, chrome.runtime.Port>();
+
+function publishDocumentProgress(
+  importId: string,
+  fileIndex: number,
+  fileCount: number,
+  event: DocumentIngestionProgress,
+): void {
+  const port = documentProgressPorts.get(importId);
+  if (!port) return;
+  try {
+    port.postMessage({
+      type: DOCUMENT_PROGRESS_EVENT,
+      importId,
+      fileIndex,
+      fileCount,
+      ...event,
+      at: Date.now(),
+    });
+  } catch {
+    documentProgressPorts.delete(importId);
+  }
+}
+
+async function documentParser(input: DocumentParseInput) {
+  return parseDocument(input);
+}
+
+function startImportHeartbeat(): () => void {
+  const timer = setInterval(() => {
+    // Extension API activity resets the MV3 service-worker idle timer while a
+    // long local parse is running. It performs no network request.
+    void chrome.runtime.getPlatformInfo().catch(() => undefined);
+  }, 20_000);
+  return () => clearInterval(timer);
+}
 
 let lastPublishedState: 'locked' | 'unlocked' | 'locking' | null = null;
 
@@ -535,6 +576,24 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       if (!row) throw new Error('Document not found.');
       return toVaultDocument(row.row, row.name);
     }
+    case MESSAGE.GET_DOCUMENT_TEXT: {
+      await ensureUnlocked();
+      const documentId = requireString(payload, 'documentId', 1, 160);
+      const result = await documentService.getText(documentId);
+      if (!result) throw new FormFlowError('NOT_FOUND', 'Extracted text is not available for this document.');
+      const requested = typeof payload.maxChars === 'number' && Number.isFinite(payload.maxChars)
+        ? Math.trunc(payload.maxChars)
+        : 200_000;
+      const maxChars = Math.max(1_000, Math.min(10_000_000, requested));
+      const pageBudget = Math.max(1_000, Math.floor(maxChars / Math.max(1, result.pageTexts.length)));
+      const pageTexts = result.pageTexts.map((page) => page.length > pageBudget ? page.slice(0, pageBudget) : page);
+      return {
+        ...result,
+        text: result.text.slice(0, maxChars),
+        pageTexts,
+        truncated: result.text.length > maxChars || pageTexts.some((page, index) => page.length < result.pageTexts[index]!.length),
+      };
+    }
     case MESSAGE.IMPORT_DOCUMENT: {
       await ensureUnlocked();
       const name = requireString(payload, 'name', 1, 255);
@@ -545,7 +604,55 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const file = new File([bytes], name, { type: mimeType });
       const category = optionalString(payload, 'category', 100) as Parameters<typeof documentService.importDocument>[0]['category'];
       const subcategory = optionalString(payload, 'subcategory', 200);
-      return documentService.importDocument({ file, category, subcategory });
+      const importId = optionalString(payload, 'importId', 160) ?? request.requestId;
+      const fileIndex = typeof payload.fileIndex === 'number' ? Math.max(0, Math.trunc(payload.fileIndex)) : 0;
+      const fileCount = typeof payload.fileCount === 'number' ? Math.max(1, Math.trunc(payload.fileCount)) : 1;
+      if (activeDocumentImports.has(importId)) {
+        throw new FormFlowError('VALIDATION_FAILED', 'A document with this import id is already being processed.');
+      }
+      const controller = new AbortController();
+      activeDocumentImports.set(importId, controller);
+      const stopHeartbeat = startImportHeartbeat();
+      try {
+        return await documentService.importDocument(
+          { file, category, subcategory, signal: controller.signal },
+          {
+            parse: documentParser,
+            signal: controller.signal,
+            onProgress: (event) => publishDocumentProgress(importId, fileIndex, fileCount, event),
+          },
+        );
+      } finally {
+        stopHeartbeat();
+        activeDocumentImports.delete(importId);
+        documentProgressPorts.delete(importId);
+      }
+    }
+    case MESSAGE.CANCEL_DOCUMENT_IMPORT: {
+      const importId = requireString(payload, 'importId', 1, 160);
+      const controller = activeDocumentImports.get(importId);
+      if (!controller) return { cancelled: false };
+      controller.abort();
+      return { cancelled: true };
+    }
+    case MESSAGE.RETRY_DOCUMENT_EXTRACTION: {
+      await ensureUnlocked();
+      const documentId = requireString(payload, 'documentId', 1, 160);
+      const importId = optionalString(payload, 'importId', 160) ?? request.requestId;
+      const controller = new AbortController();
+      activeDocumentImports.set(importId, controller);
+      const stopHeartbeat = startImportHeartbeat();
+      try {
+        return await documentService.retryExtraction(documentId, {
+          parse: documentParser,
+          signal: controller.signal,
+          onProgress: (event) => publishDocumentProgress(importId, 0, 1, event),
+        });
+      } finally {
+        stopHeartbeat();
+        activeDocumentImports.delete(importId);
+        documentProgressPorts.delete(importId);
+      }
     }
     case MESSAGE.DELETE_DOCUMENT: {
       await ensureUnlocked();
@@ -739,6 +846,7 @@ const SESSION_STABLE_EXEMPT = new Set<string>([
   'MODEL_STATUS',
   'GET_ENCRYPTION_STATUS',
   'MIGRATE_ENCRYPTION',
+  'CANCEL_DOCUMENT_IMPORT',
 ]);
 
 const LEASE_KINDS: Record<string, VaultOperationKind> = {
@@ -759,8 +867,10 @@ const LEASE_KINDS: Record<string, VaultOperationKind> = {
   [MESSAGE.VAULT_TOUCH]: 'mutation',
   [MESSAGE.LIST_DOCUMENTS]: 'read',
   [MESSAGE.GET_DOCUMENT_METADATA]: 'read',
+  [MESSAGE.GET_DOCUMENT_TEXT]: 'read',
   [MESSAGE.GET_DOCUMENT_BLOB]: 'read',
   [MESSAGE.IMPORT_DOCUMENT]: 'mutation',
+  [MESSAGE.RETRY_DOCUMENT_EXTRACTION]: 'mutation',
   [MESSAGE.RENAME_DOCUMENT]: 'mutation',
   [MESSAGE.DELETE_DOCUMENT]: 'mutation',
   [MESSAGE.LIST_COLLECTIONS]: 'read',
@@ -861,8 +971,26 @@ void (async () => {
 })();
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'formflow-vault-keepalive') return;
   if (!port.sender?.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`)) {
+    port.disconnect();
+    return;
+  }
+  if (port.name === 'formflow-document-progress') {
+    let watchedImport: string | null = null;
+    port.onMessage.addListener((message: unknown) => {
+      if (!message || typeof message !== 'object') return;
+      const event = message as { type?: unknown; importId?: unknown };
+      if (event.type !== 'watch' || typeof event.importId !== 'string' || event.importId.length > 160) return;
+      watchedImport = event.importId;
+      documentProgressPorts.set(event.importId, port);
+      port.postMessage({ type: 'ready', importId: event.importId });
+    });
+    port.onDisconnect.addListener(() => {
+      if (watchedImport) documentProgressPorts.delete(watchedImport);
+    });
+    return;
+  }
+  if (port.name !== 'formflow-vault-keepalive') {
     port.disconnect();
     return;
   }

@@ -1,6 +1,8 @@
 import type {
   ActivityItem,
   Collection,
+  DocumentIngestionProgress,
+  DocumentTextResult,
   FormHistoryItem,
   Preferences,
   StorageEstimate,
@@ -78,6 +80,19 @@ export interface DocumentImportResult {
   duplicate: boolean;
 }
 
+export interface DocumentProgressEvent extends DocumentIngestionProgress {
+  importId: string;
+  fileIndex: number;
+  fileCount: number;
+}
+
+export interface DocumentImportOptions {
+  importId?: string;
+  fileIndex?: number;
+  fileCount?: number;
+  onProgress?: (event: DocumentProgressEvent) => void;
+}
+
 export interface VaultImportResult {
   imported: boolean;
   documents: number;
@@ -135,7 +150,18 @@ export interface VaultClientApi {
   resolveConflict(id: string, value: string): Promise<VaultField>;
   listDocuments(): Promise<VaultDocument[]>;
   getDocument(id: string): Promise<VaultDocument | null>;
-  importDocument(file: File, category?: VaultDocument['category'], subcategory?: string): Promise<DocumentImportResult>;
+  importDocument(
+    file: File,
+    category?: VaultDocument['category'],
+    subcategory?: string,
+    options?: DocumentImportOptions,
+  ): Promise<DocumentImportResult>;
+  cancelDocumentImport(importId: string): Promise<{ cancelled: boolean }>;
+  retryDocumentExtraction(
+    id: string,
+    options?: DocumentImportOptions,
+  ): Promise<{ document: VaultDocument }>;
+  getDocumentText(id: string, maxChars?: number): Promise<DocumentTextResult | null>;
   renameDocument(id: string, name: string): Promise<VaultDocument>;
   deleteDocument(id: string): Promise<void>;
   getDocumentBlob(id: string): Promise<{ blob: Blob; mimeType: string } | null>;

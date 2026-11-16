@@ -2,6 +2,56 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 4.1 — Local document ingestion (complete)
+
+Phase 4.1 adds a local ingestion pipeline for PDF, DOCX, and TXT without adding cloud processing, OCR, model downloads, ONNX, or AI extraction.
+
+Implemented:
+
+- Signature/content validation for PDF (`%PDF-`), DOCX (ZIP container plus `word/document.xml`), and strict UTF-8 TXT. File extensions and browser MIME types are treated as hints, not authority.
+- SHA-256 content digests with duplicate detection before a new record is created. The existing record is returned by name; no file is overwritten.
+- PDF.js extraction of text, page count, per-page text, page numbers, and best-effort PDF metadata. Image-only, scanned, mixed text/image, empty, password-protected, corrupted, and oversized PDFs are classified. Scanned documents are marked OCR-required; OCR is **not implemented**.
+- DOCX extraction with Mammoth validation plus a WordprocessingML structure pass for paragraphs, headings, tables, line breaks, and document order. Table cells are preserved as tab-separated rows.
+- Strict UTF-8 TXT handling with BOM detection, CRLF/CR/LF normalization, invalid-encoding rejection, binary-control rejection, and paragraph preservation.
+- Atomic encrypted persistence: the document row, encrypted original bytes, encrypted extracted text, and encrypted extraction details are written in one strict IndexedDB transaction. A quota error, lock, parser failure, cancellation, or service-worker termination cannot leave a successful document without its text or file.
+- Parser module receives document bytes only. It has no vault session, DEK, KEK, AAD, database handle, or network access. Parsing runs in the background service-worker context, not the dashboard main thread. MV3 service workers do not expose the `Worker` constructor, so a nested parser worker is not used; an extension-API heartbeat keeps long parses alive.
+- Extraction details (warnings, PDF/DOCX metadata, pages requiring OCR) are encrypted under the existing `documentText` record with the distinct AAD field `extraction`. No extracted text or sensitive metadata is stored in plaintext.
+- Typed protocol operations for document text retrieval, extraction retry, cancellation, and progress. Progress travels over an extension-origin-only port and contains only stage, page, file index, and percentage — no filename, text, key, or metadata.
+- Dashboard upload dialog shows real validation/extraction/encryption/storage stages, page count, duplicate name, OCR-required state, warnings, retry, cancellation, and clear errors.
+- Inspector shows decrypted text preview per page, page navigation, extraction status/timestamp, warnings, and OCR-required state without storing plaintext in the list payload.
+- Optional document fields (`extractionVersion`, `extractedAt`, `ocrRequired`) and optional `documentText.extractionEnc` preserve compatibility with existing documents, migrations, and v1/v2/v3 backups. Backup v3 now carries extraction details; older backups without them still import.
+
+Verification results:
+
+| Command / test | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 70 files |
+| `npm run test:local` | 113/113 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | Pass |
+| `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
+| `scripts/dev/e2e-phase4-ingestion.mjs` | 29/29 pass |
+| `scripts/dev/e2e-phase4-interruption.mjs` | 10/10 pass |
+| `scripts/dev/e2e-migration-crash.mjs` | 23/23 pass |
+| `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
+| `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
+| `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
+
+Browser: Google Chrome for Testing 156.0.8078.4, Playwright persistent profiles, production extension build. The ingestion E2E imports a real Chromium-generated multi-page PDF, a DOCX with headings/tables, a BOM/CRLF TXT, an image-only PDF, a corrupted PDF, and a password-protected PDF; it verifies encrypted-at-rest text, v2 AAD, duplicates, OCR state, retry, cancellation, real progress, and the dashboard upload dialog. The interruption E2E disables the extension during an 18 MB import, re-enables it, unlocks, and verifies that no partial document/file/text triple exists.
+
+Known Phase 4.1 limitations:
+
+- **OCR is not implemented.** Image-only PDFs are stored and marked `ocrRequired`; no text is fabricated.
+- DOCX page boundaries are not reliable in the format; DOCX is stored as one logical page with a warning.
+- Complex PDF layout and DOCX table/heading structure are normalized to text; visual layout is not reproduced.
+- PDF metadata extraction is best-effort and may be absent.
+- Password-protected PDFs are rejected rather than decrypted.
+- PDF/DOCX parsing runs in the service worker (not a nested worker) because MV3 service workers do not expose `Worker`. It is off the dashboard thread but shares the service-worker event loop.
+- Local OCR/field extraction, ONNX, model downloads, Qwen inference, intelligent extraction, and autofill are out of scope for this phase.
+
 ## Phase 3.1.2.1 — Final runtime security verification (complete)
 
 The three Phase 3.1.2 verification gaps were closed with actual Chromium automation:
@@ -172,9 +222,9 @@ The browser E2E is reproducible with `CHROME_PATH="/path/to/Chrome for Testing" 
 - A random AES-256-GCM data key is wrapped by the key-encryption key.
 - Every encryption uses a fresh 12-byte nonce.
 - Encrypted records use authenticated encryption with associated data.
-- The raw data key is held in `chrome.storage.session` for the active browser session only. It is not written to IndexedDB or `chrome.storage.local`.
-- Locking clears the session key.
-- Browser restart clears `chrome.storage.session` and requires unlock.
+- The raw data key is held only in service-worker memory. It is not written to IndexedDB, `chrome.storage.local`, or `chrome.storage.session`.
+- Locking clears the in-memory key and publishes only the non-secret lock state.
+- Browser restart and service-worker termination lose the key and require unlock.
 - Content scripts never access the vault key or the full vault.
 - The popup and dashboard are trusted extension pages and access the vault through the shared security layer and service worker.
 - Document blobs are encrypted with the same vault data key.
@@ -189,7 +239,7 @@ The browser E2E is reproducible with `CHROME_PATH="/path/to/Chrome for Testing" 
 - Automatic lock is implemented in the dashboard and in the extension background alarm. The alarm uses the configured inactivity interval.
 - There is no passphrase recovery mechanism. Losing the passphrase makes the vault unrecoverable.
 - The legacy Google Drive, backend, and old auth source files remain in the repository but are not used by the extension vault workflow.
-- Document text extraction, OCR, and AI processing are still future phases.
+- Local text extraction is implemented for PDF, DOCX, and TXT. OCR, AI field extraction, and AI processing remain future phases.
 - The extension dashboard is the production dashboard. The localhost dashboard remains a development and migration surface.
 
 ## Phase 1 — Recovery and build foundation (complete)
@@ -315,11 +365,9 @@ Completed. IndexedDB repositories and services are wired into the dashboard. Loc
 
 ### Phase 4 — Document ingestion
 
-- Real PDF processing.
-- Real DOCX processing.
-- Real image and scanned-PDF OCR.
-- Document ingestion workflow and processing statuses.
-- Source attribution.
+- Phase 4.1 local PDF, DOCX, and TXT ingestion is complete.
+- Real image and scanned-PDF OCR remains future work; OCR is explicitly not implemented.
+- Intelligent field extraction and source attribution remain future work.
 
 ### Phase 5 — Form intelligence
 

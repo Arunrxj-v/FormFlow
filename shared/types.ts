@@ -84,7 +84,12 @@ export interface VaultDocument {
   previewTone?: string;
   checksum?: string;
   ocrUsed?: boolean;
+  extractedTextStatus?: 'pending' | 'extracted' | 'failed';
   extractedText?: string;
+  extractionVersion?: number;
+  extractedAt?: string;
+  ocrRequired?: boolean;
+  extractionWarnings?: ExtractionWarning[];
   extractedEntities?: ExtractedFactEntity[];
   processingHistory?: DocumentHistoryEntry[];
   autofillRules?: string[];
@@ -343,6 +348,71 @@ export interface VaultFieldInput {
   userModified?: boolean;
 }
 
+export interface ExtractionWarning {
+  code: string;
+  message: string;
+  page?: number;
+}
+
+export interface DocumentExtractionMetadata {
+  title?: string;
+  author?: string;
+  subject?: string;
+  keywords?: string;
+  creator?: string;
+  producer?: string;
+  creationDate?: string;
+  modDate?: string;
+  headings?: Array<{ level: number; text: string }>;
+  tableCount?: number;
+  rowCount?: number;
+  encoding?: string;
+  bom?: boolean;
+  lineEndings?: 'lf' | 'crlf' | 'mixed';
+}
+
+export interface DocumentExtractionDetails {
+  version: number;
+  ocrRequired: boolean;
+  pagesNeedingOcr: number[];
+  warnings: ExtractionWarning[];
+  metadata: DocumentExtractionMetadata;
+}
+
+export type DocumentIngestionStage =
+  | 'validating'
+  | 'checksumming'
+  | 'duplicate'
+  | 'encrypting'
+  | 'extracting_text'
+  | 'encrypting_text'
+  | 'storing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface DocumentIngestionProgress {
+  stage: DocumentIngestionStage;
+  progress: number;
+  message: string;
+  page?: number;
+  totalPages?: number;
+}
+
+export interface DocumentTextResult {
+  documentId: string;
+  text: string;
+  pageTexts: string[];
+  pageCount: number;
+  method: StoredDocumentText['method'];
+  warnings: ExtractionWarning[];
+  metadata: DocumentExtractionMetadata;
+  ocrRequired: boolean;
+  extractionVersion?: number;
+  extractedAt?: string;
+  truncated: boolean;
+}
+
 export interface DocumentRecord {
   id: string;
   vaultId: string;
@@ -362,6 +432,9 @@ export interface DocumentRecord {
   pageCount?: number;
   ocrUsed: boolean;
   extractedTextStatus: 'pending' | 'extracted' | 'failed';
+  extractionVersion?: number;
+  extractedAt?: string;
+  ocrRequired?: boolean;
   metadata?: Record<string, unknown>;
   confidence?: number;
   failureReason?: string;
@@ -416,6 +489,8 @@ export interface StoredDocumentText {
   pageTextsEnc: string;
   pageCount: number;
   method: 'pdf-text' | 'docx' | 'ocr' | 'txt' | 'mixed';
+  /** Optional encrypted extraction warnings/metadata; never plaintext. */
+  extractionEnc?: string;
   createdAt: string;
 }
 

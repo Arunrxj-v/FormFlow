@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -28,12 +28,12 @@ import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
 import { useToast } from '@/context/ToastContext';
 import { documentService as localDocumentService } from '@/services/documentService';
-import type { VaultDocument } from '@/services/types';
+import type { DocumentTextResult, VaultDocument } from '@/services/types';
 
 interface DocumentInspectorProps {
   document: VaultDocument;
   onRemove: () => void;
-  onRetry: () => void;
+  onRetry: () => Promise<void> | void;
   onRename?: () => void;
   onUnlink: () => void;
   onOpenRecord: () => void;
@@ -54,12 +54,55 @@ export function DocumentInspector({
   const [currentPage, setCurrentPage] = useState(1);
   const [downloading, setDownloading] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [textResult, setTextResult] = useState<DocumentTextResult | null>(null);
+  const [textLoading, setTextLoading] = useState(false);
+  const [textError, setTextError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
-  const totalPages = document.pageCount ?? 1;
+  useEffect(() => {
+    let active = true;
+    setCurrentPage(1);
+    setTextResult(null);
+    setTextError(null);
+    if (document.extractedTextStatus !== 'extracted') {
+      setTextLoading(false);
+      return () => { active = false; };
+    }
+    setTextLoading(true);
+    void localDocumentService.getText(document.id, 400_000)
+      .then((result) => {
+        if (active) setTextResult(result);
+      })
+      .catch((error) => {
+        if (active) setTextError(error instanceof Error ? error.message : 'Extracted text could not be loaded.');
+      })
+      .finally(() => {
+        if (active) setTextLoading(false);
+      });
+    return () => { active = false; };
+  }, [document.id, document.extractedTextStatus, document.extractedAt, document.modifiedAt]);
+
+  const totalPages = document.pageCount ?? textResult?.pageCount ?? 1;
   const isPdf = document.fileType === 'pdf';
   const entities = document.extractedEntities ?? [];
   const history = document.processingHistory ?? [];
   const rules = document.autofillRules ?? ['Personal document', 'Identity reference'];
+  const extractedText = textResult?.text ?? document.extractedText ?? '';
+  const warnings = textResult?.warnings ?? document.extractionWarnings ?? [];
+  const ocrRequired = Boolean(document.ocrRequired ?? textResult?.ocrRequired);
+  const pageText = textResult?.pageTexts[currentPage - 1] ?? (currentPage === 1 ? extractedText : '');
+  const extractionFailed = document.status === 'failed' || document.extractedTextStatus === 'failed';
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await onRetry();
+    } catch {
+      // The app-level toast reports the failure; keep the inspector usable.
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -110,13 +153,34 @@ export function DocumentInspector({
         </div>
       </div>
 
-      {document.status === 'failed' && (
+      {extractionFailed && (
         <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--ff-danger-bg, #fef2f2)', border: '1px solid var(--ff-danger-border, #fecaca)', borderRadius: 6, color: 'var(--ff-danger, #b91c1c)', fontSize: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 2 }}>Processing failed</div>
           <div style={{ wordBreak: 'break-word' }}>{document.processingError || document.failureReason || 'Document could not be processed.'}</div>
-          <div style={{ marginTop: 6, fontSize: 11 }}>Local document processing will be added in a later phase.</div>
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            loading={retrying}
+            onClick={() => void handleRetry()}
+            style={{ marginTop: 7 }}
+          >
+            Retry local extraction
+          </Button>
         </div>
       )}
+
+      {!extractionFailed && ocrRequired && (
+        <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--ff-warning-bg, #fffbeb)', border: '1px solid var(--ff-warning-border, #fde68a)', borderRadius: 6, color: 'var(--ff-warning, #92400e)', fontSize: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>OCR required</div>
+          <div>One or more pages contain little or no extractable text. The original file is stored, but OCR is not implemented in Phase 4.1, so image text will not appear here.</div>
+        </div>
+      )}
+
+      {textError ? (
+        <div className="ff-note" style={{ margin: '8px 0', color: 'var(--ff-danger)', fontSize: 11 }}>
+          Extracted text could not be loaded: {textError}
+        </div>
+      ) : null}
 
       {/* Tabs */}
       <div className="ff-tabs ff-mb-10" style={{ borderBottom: '1px solid var(--ff-border)' }}>
@@ -151,16 +215,24 @@ export function DocumentInspector({
         <div>
           <div className="ff-doc-preview" style={{ position: 'relative' }}>
             <div className="ff-doc-preview__paper">
-              {document.extractedText ? (
-                <div style={{ fontSize: 9, lineHeight: 1.4, color: '#334155', maxHeight: 85, overflow: 'hidden' }}>
-                  <div style={{ fontWeight: 600, color: 'var(--ff-primary)', marginBottom: 2 }}>
-                    {document.name}
-                  </div>
-                  <div style={{ opacity: 0.85, whiteSpace: 'pre-line' }}>
-                    {document.extractedText.slice(0, 240)}…
-                  </div>
+              <div style={{ fontSize: 9, lineHeight: 1.4, color: '#334155', maxHeight: 110, overflow: 'hidden' }}>
+                <div style={{ fontWeight: 600, color: 'var(--ff-primary)', marginBottom: 2 }}>
+                  {document.name}
                 </div>
-              ) : null}
+                {textLoading ? (
+                  <div className="ff-row ff-gap-4" style={{ opacity: 0.75 }}>
+                    <Loader2 size={11} className="ff-spin" /> Loading extracted text…
+                  </div>
+                ) : pageText ? (
+                  <div style={{ opacity: 0.88, whiteSpace: 'pre-line' }}>
+                    {pageText.slice(0, 1_200)}{pageText.length > 1_200 ? '…' : ''}
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.75 }}>
+                    {ocrRequired ? 'No extractable text on this page. OCR is not implemented.' : 'No extracted text is available for this page.'}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="ff-doc-preview__seal" />
             <div className="ff-doc-preview__label">
@@ -197,14 +269,16 @@ export function DocumentInspector({
             <span className="ff-uppercase" style={{ fontSize: 9 }}>File metadata</span>
             <dl className="ff-meta-grid ff-mt-8">
               <div><dt>File size</dt><dd>{document.sizeLabel}</dd></div>
-              <div><dt>Uploaded date</dt><dd>{document.uploadedAt}</dd></div>
+              <div><dt>Pages</dt><dd>{totalPages}</dd></div>
               <div><dt>MIME type</dt><dd className="ff-truncate">{document.mimeType}</dd></div>
               <div>
-                <dt>Confidence</dt>
-                <dd style={{ color: document.confidence && document.confidence >= 90 ? 'var(--ff-success)' : 'var(--ff-warning)', fontWeight: 600 }}>
-                  {document.confidence ? `${document.confidence}%` : 'Pending'}
+                <dt>Extraction</dt>
+                <dd style={{ color: extractionFailed ? 'var(--ff-danger)' : ocrRequired ? 'var(--ff-warning)' : 'var(--ff-success)', fontWeight: 600 }}>
+                  {extractionFailed ? 'Failed' : ocrRequired ? 'OCR required' : document.extractedTextStatus === 'extracted' ? 'Extracted' : 'Pending'}
                 </dd>
               </div>
+              <div><dt>Warnings</dt><dd>{warnings.length}</dd></div>
+              <div><dt>Extracted</dt><dd>{document.extractedAt ? new Date(document.extractedAt).toLocaleString() : 'Not available'}</dd></div>
               <div className="ff-meta-full">
                 <dt>Local storage key</dt>
                 <dd className="ff-row ff-gap-4" style={{ fontWeight: 500 }}>
@@ -260,10 +334,23 @@ export function DocumentInspector({
               ))}
             </div>
           ) : (
-            <div className="ff-note">No structured facts extracted yet. Click Reprocess to run extraction.</div>
+            <div className="ff-note">No structured facts are extracted in Phase 4.1. Text extraction results are shown below; field extraction belongs to a later phase.</div>
           )}
 
-          {document.extractedText && (
+          {warnings.length ? (
+            <div className="ff-mt-10">
+              <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>Extraction warnings</span>
+              <div className="ff-stack ff-gap-4" style={{ marginTop: 4 }}>
+                {warnings.map((item, index) => (
+                  <div key={`${item.code}-${item.page ?? 'doc'}-${index}`} className="ff-body-sm" style={{ color: 'var(--ff-warning, #92400e)' }}>
+                    {item.page ? `Page ${item.page}: ` : ''}{item.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {extractedText ? (
             <div className="ff-mt-10">
               <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>Extracted Text</span>
               <pre
@@ -275,13 +362,17 @@ export function DocumentInspector({
                   background: 'var(--ff-surface-low)',
                   border: '1px solid var(--ff-border)',
                   whiteSpace: 'pre-wrap',
-                  maxHeight: 120,
+                  maxHeight: 160,
                   overflowY: 'auto',
                   marginTop: 4,
                 }}
               >
-                {document.extractedText}
+                {extractedText}
               </pre>
+            </div>
+          ) : (
+            <div className="ff-note" style={{ marginTop: 10 }}>
+              {ocrRequired ? 'No extractable text. This document is marked OCR-required; OCR is not implemented in Phase 4.1.' : 'No extracted text is available.'}
             </div>
           )}
         </div>
@@ -366,6 +457,7 @@ export function DocumentInspector({
           Download Document
         </Button>
         <IconButton icon={Download} label="Download original document" onClick={handleDownload} />
+        <IconButton icon={RefreshCw} label="Reprocess text extraction" onClick={() => void handleRetry()} />
         {onRename && (
           <IconButton icon={Pencil} label="Rename document" onClick={onRename} />
         )}

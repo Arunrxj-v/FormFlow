@@ -2,6 +2,7 @@ import type { FormFlowErrorCode } from '@shared/errors';
 import type {
   ActivityItem,
   Collection,
+  DocumentTextResult,
   FormHistoryItem,
   Preferences,
   StorageEstimate,
@@ -11,11 +12,13 @@ import type {
   VaultProfile,
   VaultRecord,
 } from '@shared/types';
-import { MESSAGE } from '@shared/messages';
+import { DOCUMENT_PROGRESS_EVENT, MESSAGE } from '@shared/messages';
 import { LEGACY_VAULT_SESSION_KEY, VAULT_STATE_KEY } from '@shared/constants';
 import type {
   DashboardPayload,
+  DocumentImportOptions,
   DocumentImportResult,
+  DocumentProgressEvent,
   EncryptionStatus,
   LegacyMigrationSummary,
   ProfileRecordType,
@@ -27,6 +30,63 @@ import type {
 } from './vaultClientTypes';
 
 const PROTOCOL_VERSION = 1;
+async function openDocumentProgressPort(
+  importId: string,
+  onProgress?: (event: DocumentProgressEvent) => void,
+): Promise<chrome.runtime.Port | null> {
+  if (!onProgress || typeof chrome === 'undefined' || !chrome.runtime?.connect) return null;
+  let port: chrome.runtime.Port;
+  try {
+    port = chrome.runtime.connect({ name: 'formflow-document-progress' });
+  } catch {
+    return null;
+  }
+  return await new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        port.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+      resolve(null);
+    }, 2_000);
+    port.onMessage.addListener((message: unknown) => {
+      if (!message || typeof message !== 'object') return;
+      const event = message as DocumentProgressEvent & { type?: string; importId?: string };
+      if (event.type === 'ready' && event.importId === importId) {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(port);
+        }
+        return;
+      }
+      if (event.type !== DOCUMENT_PROGRESS_EVENT || event.importId !== importId) return;
+      onProgress(event);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('formflow:document-progress', { detail: event }));
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(null);
+    });
+    try {
+      port.postMessage({ type: 'watch', importId });
+    } catch {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(null);
+      }
+    }
+  });
+}
 
 // Remove any Phase 3 raw session key as soon as an extension page starts.
 if (typeof chrome !== 'undefined' && chrome.storage?.session) {
@@ -140,19 +200,68 @@ export const vaultClient: VaultClientApi = {
       throw error;
     }
   },
-  importDocument: async (file, category, subcategory) => {
+  importDocument: async (file, category, subcategory, options) => {
     const dataBase64 = await blobToBase64(file);
-    return send<DocumentImportResult>(
-      MESSAGE.IMPORT_DOCUMENT,
-      {
-        name: file.name,
-        mimeType: file.type,
-        dataBase64,
-        category,
-        subcategory,
-      },
-      300_000,
-    );
+    const importId = options?.importId ?? `import_${crypto.randomUUID()}`;
+    const progressPort = await openDocumentProgressPort(importId, options?.onProgress);
+    try {
+      return await send<DocumentImportResult>(
+        MESSAGE.IMPORT_DOCUMENT,
+        {
+          name: file.name,
+          mimeType: file.type,
+          dataBase64,
+          category,
+          subcategory,
+          importId,
+          fileIndex: options?.fileIndex ?? 0,
+          fileCount: options?.fileCount ?? 1,
+        },
+        300_000,
+      );
+    } finally {
+      // Progress messages travel over a port while the result travels over the
+      // request channel. Allow the final progress event to arrive before the
+      // page disconnects the observer port.
+      if (progressPort) await new Promise((resolve) => setTimeout(resolve, 150));
+      try {
+        progressPort?.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+  },
+  cancelDocumentImport: async (importId) =>
+    send<{ cancelled: boolean }>(MESSAGE.CANCEL_DOCUMENT_IMPORT, { importId }, 30_000),
+  retryDocumentExtraction: async (id, options) => {
+    const importId = options?.importId ?? `retry_${crypto.randomUUID()}`;
+    const progressPort = await openDocumentProgressPort(importId, options?.onProgress);
+    try {
+      return await send<{ document: VaultDocument }>(
+        MESSAGE.RETRY_DOCUMENT_EXTRACTION,
+        { documentId: id, importId },
+        300_000,
+      );
+    } finally {
+      if (progressPort) await new Promise((resolve) => setTimeout(resolve, 150));
+      try {
+        progressPort?.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+  },
+  getDocumentText: async (id, maxChars) => {
+    try {
+      return await send<DocumentTextResult>(
+        MESSAGE.GET_DOCUMENT_TEXT,
+        { documentId: id, maxChars },
+        120_000,
+      );
+    } catch (error) {
+      if (error instanceof ExtensionRequestError && /not available|not found/i.test(error.message)) return null;
+      throw error;
+    }
   },
   renameDocument: (id, name) => send<VaultDocument>(MESSAGE.RENAME_DOCUMENT, { documentId: id, name }),
   deleteDocument: (id) => send<void>(MESSAGE.DELETE_DOCUMENT, { documentId: id }),

@@ -101,11 +101,10 @@ try {
   const documents = [];
   for (let index = 0; index < 25; index += 1) {
     const size = index === 0 ? 8 * 1024 * 1024 : 1024 + index;
-    const bytes = Buffer.alloc(size);
-    for (let offset = 0; offset < size; offset += 1) bytes[offset] = (offset + index) & 0xff;
+    const bytes = Buffer.alloc(size, 0x61);
     const imported = await message(page, `mc_import_${index}`, 'IMPORT_DOCUMENT', {
-      name: `migration-doc-${index}.pdf`,
-      mimeType: 'application/pdf',
+      name: `migration-doc-${index}.txt`,
+      mimeType: 'text/plain',
       dataBase64: bytes.toString('base64'),
     });
     if (!imported?.ok) throw new Error(imported?.error ?? `import ${index} failed`);
@@ -261,7 +260,7 @@ try {
   check(
     'no plaintext fixture values remain at rest',
     !JSON.stringify(recoveredState).includes('migration-crash@example.com') &&
-      !JSON.stringify(recoveredState).includes('migration-doc-0.pdf') &&
+      !JSON.stringify(recoveredState).includes('migration-doc-0.txt') &&
       !JSON.stringify(recoveredState).includes('Crash University') &&
       !JSON.stringify(recoveredState).includes('Migration crash vault'),
   );

@@ -1,6 +1,6 @@
 # FormFlow
 
-> **Migration status:** Phase 3.1.2.1 final runtime security verification is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels, filenames and vault display names, versioned migrations, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, atomic journaled restore, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Remote AI, document extraction, and OCR are still future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) and [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
+> **Migration status:** Phase 4.1 local document ingestion is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels, filenames and vault display names, versioned migrations, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, atomic journaled restore, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Local PDF, DOCX, and TXT text extraction is implemented; OCR, ONNX/model downloads, AI field extraction, and autofill intelligence remain future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) and [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
 
 FormFlow is a personal document intelligence and form-filling platform. This repository contains:
 
@@ -163,7 +163,8 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 | SQLite API | Legacy and development only; not required by the extension vault |
 | Legacy password auth | Legacy API only; production access uses the local vault passphrase |
 | Google OAuth / Drive API | **Not connected.** Legacy source files remain but the extension vault workflow does not use them. |
-| PDF/DOCX/OCR extraction | **Not implemented.** Documents are stored encrypted; extraction is a future phase. |
+| PDF/DOCX/TXT text extraction | **Implemented locally.** Signature/content validation, page-aware extraction, encrypted persistence, scanned-PDF detection, and extraction status. |
+| OCR | **Not implemented.** Image-only PDFs are stored and marked `ocrRequired`; no image text is fabricated or sent to an external service. |
 | AI provider | **Not used in production.** Legacy server-side provider code remains; the extension does not call external AI. |
 | Dashboard → API wiring | **Not used.** The dashboard reads and writes the local vault. |
 | Extension → API auth | **Not used.** The popup reads the extension vault through controlled background messaging. |
@@ -173,7 +174,7 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 - Vault contents, document blobs, personal values, collections, history, and profile records are encrypted with AES-256-GCM.
 - PBKDF2-SHA256 derives a key-encryption key from the vault passphrase; a random data key is wrapped by it.
 - The passphrase and plaintext data key are never written to IndexedDB or `chrome.storage.local`.
-- The data key is held in `chrome.storage.session` for the active browser session and cleared on lock.
+- The data key is held only in service-worker memory and is cleared on lock or service-worker termination.
 - Locking blocks dashboard access, profile reads, document access, export, and autofill.
 - Extension messages require a protocol version, request ID, known operation, and validated payload.
 - Only extension-owned pages are accepted as privileged senders; arbitrary webpages and content scripts cannot query the vault.
@@ -185,7 +186,9 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 ## Known limitations
 
 - Structural metadata (record IDs, field keys, categories, statuses, sizes, MIME types, checksums, vault name) remains plaintext by design.
-- PDF/DOCX text extraction, OCR, and AI processing are future phases. Documents are stored and retrieved as encrypted bytes.
+- PDF, DOCX, and TXT text extraction is local and page-aware; OCR and AI field extraction are not implemented.
+- DOCX files do not expose reliable page boundaries, so they are stored as one logical page with a warning.
+- Complex PDF/DOCX layout is normalized to text; the encrypted original file is retained for fidelity.
 - Encrypted backup import requires a target with no documents, values, or collections and an unmodified default profile; the archive's profile replaces the local profile.
 - The backup format is a JSON envelope with base64 document payloads and a 200 MB import limit.
 - Auto-lock runs in the dashboard and the extension alarm; perfect memory erasure is not possible in JavaScript.

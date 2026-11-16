@@ -1,5 +1,6 @@
 import { vaultClient } from '@/services/vaultClient';
-import type { DocumentCategory, VaultDocument } from '../../shared/types';
+import type { DocumentCategory, DocumentTextResult, VaultDocument } from '../../shared/types';
+import type { DocumentImportOptions } from './vaultClientTypes';
 
 const objectUrls = new Set<string>();
 
@@ -27,8 +28,25 @@ export const documentService = {
     return vaultClient.getDocument(id);
   },
 
-  importDocument(file: File, category?: DocumentCategory, subcategory?: string) {
-    return vaultClient.importDocument(file, category, subcategory);
+  importDocument(
+    file: File,
+    category?: DocumentCategory,
+    subcategory?: string,
+    options?: DocumentImportOptions,
+  ) {
+    return vaultClient.importDocument(file, category, subcategory, options);
+  },
+
+  cancelImport(importId: string) {
+    return vaultClient.cancelDocumentImport(importId);
+  },
+
+  getText(id: string, maxChars?: number): Promise<DocumentTextResult | null> {
+    return vaultClient.getDocumentText(id, maxChars);
+  },
+
+  retryExtraction(id: string, options?: DocumentImportOptions) {
+    return vaultClient.retryDocumentExtraction(id, options);
   },
 
   async openInBrowser(id: string): Promise<void> {

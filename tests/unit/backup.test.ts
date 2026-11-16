@@ -41,7 +41,20 @@ const document = await documentRepository.create(
   'backup.txt',
 );
 await documentStorage.save(document.id, new Blob(['hello world'], { type: 'text/plain' }), 'text/plain');
-await documentRepository.update(document.id, { storageKey: `file_${document.id}` });
+await documentRepository.update(document.id, {
+  storageKey: `file_${document.id}`,
+  extractedTextStatus: 'extracted',
+  extractionVersion: 1,
+  extractedAt: new Date().toISOString(),
+  ocrRequired: false,
+});
+await documentRepository.saveText(document.id, 'hello world', ['hello world'], 'txt', {
+  version: 1,
+  ocrRequired: false,
+  pagesNeedingOcr: [],
+  warnings: [{ code: 'BACKUP_FIXTURE', message: 'Encrypted extraction warning fixture' }],
+  metadata: { encoding: 'utf-8', bom: false, lineEndings: 'lf' },
+});
 await vaultRepository.addField({
   key: 'contact.email',
   label: 'Email address',
@@ -90,6 +103,12 @@ test('rejects a wrong backup passphrase and imports into an empty vault', async 
   const file = await documentRepository.getOriginalFile(importedDoc.row.id);
   assert.ok(file);
   assert.equal(await file.text(), 'hello world');
+  const text = await documentRepository.getText(importedDoc.row.id);
+  assert.ok(text);
+  assert.equal(text.text, 'hello world');
+  assert.deepEqual(text.pageTexts, ['hello world']);
+  assert.equal(text.extraction?.metadata.encoding, 'utf-8');
+  assert.equal(text.extraction?.warnings[0]?.code, 'BACKUP_FIXTURE');
   const fields = await vaultRepository.listFields();
   assert.equal(fields[0]!.value, 'backup@example.com');
 });

@@ -74,11 +74,10 @@ try {
   const sourceDashboard = `chrome-extension://${source.extensionId}/dashboard.html`;
   const sourcePage = await context.newPage();
   await createVault(sourcePage, sourceDashboard, 'Crash source vault', sourcePass);
-  const bytes = Buffer.alloc(8 * 1024 * 1024);
-  for (let index = 0; index < bytes.length; index += 1) bytes[index] = index & 0xff;
+  const bytes = Buffer.alloc(8 * 1024 * 1024, 0x61);
   const imported = await message(sourcePage, 'crash_source_import', 'IMPORT_DOCUMENT', {
-    name: 'crash-large.pdf',
-    mimeType: 'application/pdf',
+    name: 'crash-large.txt',
+    mimeType: 'text/plain',
     dataBase64: bytes.toString('base64'),
   });
   check('source large document imported', imported?.ok === true, imported?.error);

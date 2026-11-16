@@ -10,6 +10,7 @@ import {
   MAX_BACKUP_TEXT_RECORDS,
   MAX_BACKUP_VALUES,
   MAX_DOCUMENT_BYTES,
+  MAX_EXTRACTED_TEXT_CHARS,
   PBKDF2_ITERATIONS,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
@@ -19,6 +20,7 @@ import type {
   CollectionDocumentRow,
   CollectionRow,
   ConflictRecord,
+  DocumentExtractionDetails,
   DocumentRecord,
   ExtractedValueRecord,
   FormHistoryRow,
@@ -103,9 +105,10 @@ export interface PortableHistory {
 }
 
 export interface PortableText {
-  record: Omit<StoredDocumentText, 'textEnc' | 'pageTextsEnc'>;
+  record: Omit<StoredDocumentText, 'textEnc' | 'pageTextsEnc' | 'extractionEnc'>;
   text: string;
   pageTexts: string[];
+  extraction?: DocumentExtractionDetails | null;
 }
 
 export interface PortableVaultPayload {
@@ -396,8 +399,8 @@ function validateProfile(value: unknown): VaultProfile {
 const DOCUMENT_KEYS = [
   'id', 'vaultId', 'mimeType', 'extension', 'category', 'subcategory', 'status', 'fileType',
   'sizeBytes', 'sizeLabel', 'checksum', 'storageKey', 'source', 'pageCount', 'ocrUsed',
-  'extractedTextStatus', 'metadata', 'confidence', 'failureReason', 'processingError',
-  'stageDetail', 'createdAt', 'updatedAt',
+  'extractedTextStatus', 'extractionVersion', 'extractedAt', 'ocrRequired', 'metadata',
+  'confidence', 'failureReason', 'processingError', 'stageDetail', 'createdAt', 'updatedAt',
 ] as const;
 
 function validateDocumentRecord(value: unknown): Omit<DocumentRecord, 'nameEnc' | 'originalFilenameEnc'> {
@@ -435,6 +438,11 @@ function validateDocumentRecord(value: unknown): Omit<DocumentRecord, 'nameEnc' 
     pageCount: optionalInteger(record.pageCount, 'Backup document page count', 0, 100_000),
     ocrUsed: boolean(record.ocrUsed, 'Backup document OCR flag'),
     extractedTextStatus: enumeration(record.extractedTextStatus, 'Backup document text status', new Set(['pending', 'extracted', 'failed'])) as DocumentRecord['extractedTextStatus'],
+    extractionVersion: optionalInteger(record.extractionVersion, 'Backup document extraction version', 1, 1_000),
+    extractedAt: optionalTimestamp(record.extractedAt, 'Backup document extraction timestamp'),
+    ocrRequired: record.ocrRequired === undefined
+      ? undefined
+      : boolean(record.ocrRequired, 'Backup document OCR-required flag'),
     metadata: metadata as Record<string, unknown> | undefined,
     confidence: optionalNumber(record.confidence, 'Backup document confidence', 0, 100),
     failureReason: optionalString(record.failureReason, 'Backup document failure reason', 2_000),
@@ -556,7 +564,7 @@ function validateHistoryRecord(value: unknown): Omit<FormHistoryRow, 'websiteEnc
   };
 }
 
-function validateTextRecord(value: unknown): Omit<StoredDocumentText, 'textEnc' | 'pageTextsEnc'> {
+function validateTextRecord(value: unknown): Omit<StoredDocumentText, 'textEnc' | 'pageTextsEnc' | 'extractionEnc'> {
   const record = object(value, 'Backup text record');
   allowedKeys(record, ['documentId', 'pageCount', 'method', 'createdAt'], 'Backup text record');
   return {
@@ -564,6 +572,64 @@ function validateTextRecord(value: unknown): Omit<StoredDocumentText, 'textEnc' 
     pageCount: integer(record.pageCount, 'Backup text page count', 0, 100_000),
     method: enumeration(record.method, 'Backup text method', new Set(['pdf-text', 'docx', 'ocr', 'txt', 'mixed'])) as StoredDocumentText['method'],
     createdAt: timestamp(record.createdAt, 'Backup text createdAt'),
+  };
+}
+
+function validateExtractionDetails(value: unknown): DocumentExtractionDetails {
+  const details = object(value, 'Backup extraction details');
+  allowedKeys(details, ['version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata'], 'Backup extraction details');
+  const warnings = array(details.warnings, 'Backup extraction warnings', 100).map((entry, index) => {
+    const item = object(entry, `Backup extraction warning ${index}`);
+    allowedKeys(item, ['code', 'message', 'page'], `Backup extraction warning ${index}`);
+    return {
+      code: string(item.code, `Backup extraction warning ${index} code`, 80, 1),
+      message: string(item.message, `Backup extraction warning ${index} message`, 500, 1),
+      ...(item.page === undefined ? {} : { page: integer(item.page, `Backup extraction warning ${index} page`, 1, 100_000) }),
+    };
+  });
+  const metadata = object(details.metadata, 'Backup extraction metadata');
+  allowedKeys(
+    metadata,
+    ['title', 'author', 'subject', 'keywords', 'creator', 'producer', 'creationDate', 'modDate', 'headings', 'tableCount', 'rowCount', 'encoding', 'bom', 'lineEndings'],
+    'Backup extraction metadata',
+  );
+  const optionalText = (key: string, max: number): string | undefined =>
+    metadata[key] === undefined ? undefined : string(metadata[key], `Backup extraction metadata ${key}`, max);
+  const headings = metadata.headings === undefined
+    ? undefined
+    : array(metadata.headings, 'Backup extraction headings', 200).map((entry, index) => {
+      const heading = object(entry, `Backup extraction heading ${index}`);
+      allowedKeys(heading, ['level', 'text'], `Backup extraction heading ${index}`);
+      return {
+        level: integer(heading.level, `Backup extraction heading ${index} level`, 1, 9),
+        text: string(heading.text, `Backup extraction heading ${index} text`, 500),
+      };
+    });
+  const lineEndings = metadata.lineEndings === undefined
+    ? undefined
+    : enumeration(metadata.lineEndings, 'Backup extraction line endings', new Set(['lf', 'crlf', 'mixed'])) as 'lf' | 'crlf' | 'mixed';
+  return {
+    version: integer(details.version, 'Backup extraction version', 1, 1_000),
+    ocrRequired: boolean(details.ocrRequired, 'Backup extraction OCR flag'),
+    pagesNeedingOcr: array(details.pagesNeedingOcr, 'Backup extraction OCR pages', 100_000)
+      .map((page, index) => integer(page, `Backup extraction OCR page ${index}`, 1, 100_000)),
+    warnings,
+    metadata: {
+      ...(optionalText('title', 500) !== undefined ? { title: optionalText('title', 500) } : {}),
+      ...(optionalText('author', 300) !== undefined ? { author: optionalText('author', 300) } : {}),
+      ...(optionalText('subject', 1000) !== undefined ? { subject: optionalText('subject', 1000) } : {}),
+      ...(optionalText('keywords', 1000) !== undefined ? { keywords: optionalText('keywords', 1000) } : {}),
+      ...(optionalText('creator', 300) !== undefined ? { creator: optionalText('creator', 300) } : {}),
+      ...(optionalText('producer', 300) !== undefined ? { producer: optionalText('producer', 300) } : {}),
+      ...(optionalText('creationDate', 80) !== undefined ? { creationDate: optionalText('creationDate', 80) } : {}),
+      ...(optionalText('modDate', 80) !== undefined ? { modDate: optionalText('modDate', 80) } : {}),
+      ...(optionalText('encoding', 40) !== undefined ? { encoding: optionalText('encoding', 40) } : {}),
+      ...(headings !== undefined ? { headings } : {}),
+      ...(metadata.tableCount === undefined ? {} : { tableCount: integer(metadata.tableCount, 'Backup extraction table count', 0, 100_000) }),
+      ...(metadata.rowCount === undefined ? {} : { rowCount: integer(metadata.rowCount, 'Backup extraction row count', 0, 1_000_000) }),
+      ...(metadata.bom === undefined ? {} : { bom: boolean(metadata.bom, 'Backup extraction BOM flag') }),
+      ...(lineEndings !== undefined ? { lineEndings } : {}),
+    },
   };
 }
 
@@ -692,16 +758,17 @@ function validatePayload(value: unknown, envelope: EncryptedBackupEnvelope): Por
 
   const text: PortableText[] = textRaw.map((entry, index) => {
     const item = object(entry, `Backup text ${index}`);
-    allowedKeys(item, ['record', 'text', 'pageTexts'], `Backup text ${index}`);
+    allowedKeys(item, ['record', 'text', 'pageTexts', 'extraction'], `Backup text ${index}`);
     const record = validateTextRecord(item.record);
     const pageTexts = array(item.pageTexts, 'Backup page texts', 100_000).map((page, pageIndex) =>
-      string(page, `Backup page text ${pageIndex}`, 1_000_000),
+      string(page, `Backup page text ${pageIndex}`, MAX_EXTRACTED_TEXT_CHARS),
     );
     if (pageTexts.length !== record.pageCount) invalid('Backup page text count does not match its metadata.');
     return {
       record,
-      text: string(item.text, 'Backup text', 10_000_000),
+      text: string(item.text, 'Backup text', MAX_EXTRACTED_TEXT_CHARS),
       pageTexts,
+      ...(item.extraction === undefined ? {} : { extraction: validateExtractionDetails(item.extraction) }),
     };
   });
 
@@ -1187,6 +1254,12 @@ async function verifyPreparedImport(
     if (!source) invalid('Prepared text is missing its source representation.');
     await checkJson(item.textEnc, source.text, 'documentText', item.documentId, 'text');
     await checkJson(item.pageTextsEnc, source.pageTexts, 'documentText', item.documentId, 'pageTexts');
+    if (source.extraction !== undefined) {
+      if (!item.extractionEnc) invalid('Prepared text is missing its encrypted extraction details.');
+      await checkJson(item.extractionEnc, source.extraction, 'documentText', item.documentId, 'extraction');
+    } else if (item.extractionEnc) {
+      invalid('Prepared text contains extraction details that were not in the backup.');
+    }
   }
 }
 
@@ -1391,7 +1464,7 @@ export const vaultExportService = {
 
     const portableText: PortableText[] = [];
     for (const record of text as StoredDocumentText[]) {
-      const { textEnc, pageTextsEnc, ...rest } = record;
+      const { textEnc, pageTextsEnc, extractionEnc, ...rest } = record;
       portableText.push({
         record: rest,
         text: await decryptJsonWithKey<string>(
@@ -1404,6 +1477,15 @@ export const vaultExportService = {
           pageTextsEnc,
           contextFor(activeVault, 'documentText', record.documentId, 'pageTexts'),
         ),
+        ...(extractionEnc
+          ? {
+            extraction: await decryptJsonWithKey<DocumentExtractionDetails>(
+              await vaultSession.getDataKey(),
+              extractionEnc,
+              contextFor(activeVault, 'documentText', record.documentId, 'extraction'),
+            ),
+          }
+          : {}),
       });
     }
 
@@ -1768,6 +1850,9 @@ export const vaultExportService = {
         ...item.record,
         textEnc: await encryptJsonWithKey(key, item.text, context('documentText', item.record.documentId, 'text')),
         pageTextsEnc: await encryptJsonWithKey(key, item.pageTexts, context('documentText', item.record.documentId, 'pageTexts')),
+        ...(item.extraction
+          ? { extractionEnc: await encryptJsonWithKey(key, item.extraction, context('documentText', item.record.documentId, 'extraction')) }
+          : {}),
       });
     }
 

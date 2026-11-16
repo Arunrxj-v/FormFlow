@@ -1,55 +1,20 @@
 import { FormFlowError } from '@shared/errors';
-import type { DocumentCategory, DocumentRecord, VaultDocument, DocumentStatus, FileKind } from '@shared/types';
-import { MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from '@shared/constants';
-import { sha256Hex } from '../encryption/crypto-service';
+import type { DocumentStatus, VaultDocument } from '@shared/types';
 import { documentRepository, toVaultDocument, activityRepository } from '../database/repositories';
-import { vaultRepository as vaultRecordRepository } from '../database/vault-repository';
 import { documentStorage } from '../storage/document-storage';
-import { inferFileKind, validateDocumentFile, formatSize, type ValidatedFile } from '../documents/validation';
-import { asStorageError } from '../storage/storage-errors';
+import {
+  ingestDocument,
+  retryDocumentExtraction,
+  type DocumentImportInput,
+  type DocumentImportOutcome,
+  type DocumentIngestionDependencies,
+} from './document-ingestion-service';
 
-const MIME_ALIASES: Record<string, string[]> = {
-  'application/pdf': ['pdf'],
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
-  'text/plain': ['txt'],
-  'image/jpeg': ['jpg', 'jpeg'],
-  'image/png': ['png'],
-};
-
-const EXTENSION_MIME: Record<string, string> = {
-  pdf: 'application/pdf',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  txt: 'text/plain',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-};
-
-export interface DocumentImportInput {
-  file: File;
-  category?: DocumentCategory;
-  subcategory?: string;
-  metadata?: Record<string, unknown>;
-}
+export type { DocumentImportInput, DocumentImportOutcome };
+export type { DocumentIngestionDependencies } from './document-ingestion-service';
 
 export function inferExtension(fileName: string): string {
   return fileName.split('.').pop()?.toLowerCase() ?? '';
-}
-
-function mimeMatchesExtension(mimeType: string, extension: string): boolean {
-  const normalized = mimeType.toLowerCase().split(';')[0]?.trim() ?? '';
-  if (MIME_ALIASES[normalized]?.includes(extension)) return true;
-  return EXTENSION_MIME[extension] === normalized;
-}
-
-function inferCategoryFromName(name: string): DocumentCategory {
-  const lower = name.toLowerCase();
-  if (/degree|certificate|mark|school|college|university|transcript/.test(lower)) return 'Education';
-  if (/passport|aadhaar|aadhar|pan|licen|id|voter/.test(lower)) return 'Identity';
-  if (/resume|offer|employ|intern|cv|recommendation/.test(lower)) return 'Employment';
-  if (/bill|utility|statement|invoice|tax/.test(lower)) return 'Financial';
-  if (/address|proof|residence/.test(lower)) return 'Address proofs';
-  return 'Other';
 }
 
 export const documentService = {
@@ -63,82 +28,37 @@ export const documentService = {
     return row ? toVaultDocument(row.row, row.name) : null;
   },
 
-  async importDocument(input: DocumentImportInput): Promise<{ document: VaultDocument; duplicate: boolean }> {
-    const validated = validateDocumentFile(input.file);
-    const extension = inferExtension(validated.file.name);
-    if (!SUPPORTED_EXTENSIONS.includes(extension as (typeof SUPPORTED_EXTENSIONS)[number])) {
-      throw new FormFlowError('UNSUPPORTED_FILE', `${validated.file.name} is not a supported format.`);
-    }
-    if (validated.file.size > MAX_DOCUMENT_BYTES) {
-      throw new FormFlowError('FILE_TOO_LARGE', `${validated.file.name} is larger than the 20 MB local limit.`);
-    }
-    if (!mimeMatchesExtension(validated.mimeType, extension)) {
-      throw new FormFlowError('UNSUPPORTED_FILE', `${validated.file.name} has a mismatched MIME type.`);
-    }
+  async importDocument(
+    input: DocumentImportInput,
+    dependencies: DocumentIngestionDependencies = {},
+  ): Promise<DocumentImportOutcome> {
+    return ingestDocument(input, dependencies);
+  },
 
-    const checksum = await sha256Hex(await validated.file.arrayBuffer());
-    const duplicate = await documentRepository.findByChecksum(checksum);
-    if (duplicate) {
-      const vault = await vaultRecordRepository.getActive();
-      const row = await documentRepository.get(duplicate.id);
-      return {
-        document: toVaultDocument(duplicate, row?.name ?? validated.file.name),
-        duplicate: true,
-      };
-    }
+  async getText(documentId: string) {
+    const row = await documentRepository.get(documentId);
+    if (!row) return null;
+    const text = await documentRepository.getText(documentId);
+    if (!text) return null;
+    return {
+      documentId,
+      text: text.text,
+      pageTexts: text.pageTexts,
+      pageCount: row.row.pageCount ?? text.pageTexts.length,
+      method: text.method,
+      warnings: text.extraction?.warnings ?? [],
+      metadata: text.extraction?.metadata ?? {},
+      ocrRequired: row.row.ocrRequired ?? text.extraction?.ocrRequired ?? false,
+      extractionVersion: row.row.extractionVersion ?? text.extraction?.version,
+      extractedAt: row.row.extractedAt,
+    };
+  },
 
-    const vault = await vaultRecordRepository.getActive();
-    if (!vault) throw new FormFlowError('VAULT_LOCKED', 'Create a local vault before importing documents.');
-    const fileType = inferFileKind(validated.file.name);
-    const category = input.category ?? inferCategoryFromName(validated.file.name);
-    let row: DocumentRecord | null = null;
-    try {
-      row = await documentRepository.create(
-        {
-          vaultId: vault.id,
-          mimeType: validated.mimeType,
-          extension,
-          category,
-          subcategory: input.subcategory ?? '',
-          status: 'selected',
-          fileType: fileType as FileKind,
-          sizeBytes: validated.file.size,
-          sizeLabel: formatSize(validated.file.size),
-          checksum,
-          storageKey: '',
-          source: 'device',
-          ocrUsed: false,
-          extractedTextStatus: 'pending',
-          metadata: input.metadata,
-        },
-        validated.file.name,
-      );
-
-      const storageKey = `file_${row.id}`;
-      await documentStorage.save(row.id, validated.file, validated.mimeType);
-      await documentRepository.update(row.id, { storageKey, status: 'stored' });
-      await activityRepository.record(
-        'document_added',
-        validated.file.name,
-        `${category} · Imported from device`,
-      );
-    } catch (error) {
-      // A quota or transaction failure must not leave a document without its
-      // original file. Deletion is normally available even when writes fail.
-      if (row) {
-        try {
-          await documentRepository.remove(row.id);
-        } catch {
-          // Preserve the original failure; the integrity checker will report
-          // any orphan if deletion was also blocked.
-        }
-      }
-      throw asStorageError(error);
-    }
-    if (!row) throw new FormFlowError('NOT_FOUND', 'Document was not created.');
-    const saved = await documentRepository.get(row.id);
-    if (!saved) throw new FormFlowError('NOT_FOUND', 'Document disappeared after storage.');
-    return { document: toVaultDocument(saved.row, saved.name), duplicate: false };
+  async retryExtraction(
+    documentId: string,
+    dependencies: DocumentIngestionDependencies = {},
+  ): Promise<{ document: VaultDocument }> {
+    return retryDocumentExtraction(documentId, dependencies);
   },
 
   async getBlob(documentId: string): Promise<Blob | null> {
@@ -166,5 +86,3 @@ export const documentService = {
     return documentStorage.estimate();
   },
 };
-
-export type { ValidatedFile };

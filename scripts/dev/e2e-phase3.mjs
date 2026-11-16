@@ -105,7 +105,7 @@ try {
 } catch {
   await writeFile(
     testPdf,
-    '%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n',
+    '%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n4 0 obj << /Length 45 >>\nstream\nBT /F1 18 Tf 72 720 Td (Phase 3 fixture) Tj ET\nendstream\nendobj\n5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n',
   );
 }
 const backupPath = path.join(tempDir, 'phase3-backup.json');
@@ -435,19 +435,10 @@ try {
 
   // Start a large mutation, then lock. The lock must drain the mutation and no
   // later mutation may start while the vault is locked.
-  const racePayload = await page.evaluate(() => {
-    const bytes = new Uint8Array(8 * 1024 * 1024);
-    for (let index = 0; index < bytes.length; index += 1) bytes[index] = index & 0xff;
-    let binary = '';
-    const chunk = 0x8000;
-    for (let index = 0; index < bytes.length; index += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
-    }
-    return btoa(binary);
-  });
+  const racePayload = Buffer.alloc(8 * 1024 * 1024, 0x61).toString('base64');
   const raceImport = message(page, 'e2e_race_import', 'IMPORT_DOCUMENT', {
-    name: 'lock-race.pdf',
-    mimeType: 'application/pdf',
+    name: 'lock-race.txt',
+    mimeType: 'text/plain',
     dataBase64: racePayload,
   });
   await page.waitForTimeout(5);
@@ -464,7 +455,7 @@ try {
   const raceUnlock = await message(page, 'e2e_race_unlock', 'VAULT_UNLOCK', { passphrase: sourcePass });
   check('vault unlocks after the drained upload', raceUnlock?.ok === true && raceUnlock.data?.unlocked === true, raceUnlock?.error);
   const raceDocuments = await message(page, 'e2e_race_docs', 'LIST_DOCUMENTS');
-  const raceDocument = raceDocuments?.data?.documents?.find((document) => document.name === 'lock-race.pdf');
+  const raceDocument = raceDocuments?.data?.documents?.find((document) => document.name === 'lock-race.txt');
   check('race upload committed exactly once', Boolean(raceDocument) && raceDocuments.data?.count === 2);
   if (raceDocument) await message(page, 'e2e_race_delete', 'DELETE_DOCUMENT', { documentId: raceDocument.id });
 

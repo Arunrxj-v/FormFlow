@@ -245,7 +245,7 @@ export function DocumentsPage() {
             <EmptyState
               icon={FolderOpen}
               title="No documents match this view"
-              description="Try a different search or category. You can also import a document from Drive."
+              description="Try a different search or category, or upload a PDF, DOCX, or TXT file."
               action={<Button variant="primary" icon={Upload} onClick={() => setUploadOpen(true)}>Add a document</Button>}
             />
           ) : view === 'grid' ? (
@@ -265,8 +265,8 @@ export function DocumentsPage() {
                   <div className="ff-label ff-truncate ff-mt-8">{doc.name}</div>
                   <div className="ff-body-sm ff-muted ff-mt-4">{doc.subcategory}</div>
                   <div className="ff-row ff-between ff-mt-12">
-                    <span className="ff-code ff-muted">{doc.sizeLabel}</span>
-                    <span className="ff-code ff-muted">{doc.uploadedAt}</span>
+                    <span className="ff-code ff-muted">{doc.pageCount ? `${doc.pageCount} page${doc.pageCount === 1 ? '' : 's'}` : doc.sizeLabel}</span>
+                    <span className="ff-code ff-muted">{doc.ocrRequired ? 'OCR required' : doc.extractedTextStatus === 'extracted' ? 'Text extracted' : doc.uploadedAt}</span>
                   </div>
                 </button>
               ))}
@@ -294,7 +294,13 @@ export function DocumentsPage() {
                           <div style={{ minWidth: 0 }}>
                             <div className="ff-label ff-truncate" style={{ maxWidth: 210 }}>{doc.name}</div>
                             <div className="ff-row ff-gap-4 ff-code ff-muted" style={{ fontSize: 9 }}>
-                              {doc.status === 'stored' || doc.status === 'completed' ? <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Linked to profile</> : <StatusBadge status={doc.status} />}
+                              {doc.ocrRequired ? (
+                                <Badge tone="warning">OCR required</Badge>
+                              ) : doc.extractedTextStatus === 'extracted' || doc.status === 'completed' ? (
+                                <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Text extracted · encrypted</>
+                              ) : (
+                                <StatusBadge status={doc.status} />
+                              )}
                             </div>
                           </div>
                         </div>

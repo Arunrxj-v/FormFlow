@@ -86,8 +86,41 @@ export const vaultClient: VaultClientApi = {
   resolveConflict: (id, value) => profileService.resolveConflict(id, value),
   listDocuments: () => documentService.list(),
   getDocument: (id) => documentService.get(id),
-  importDocument: (file, category, subcategory): Promise<DocumentImportResult> =>
-    documentService.importDocument({ file, category, subcategory }),
+  importDocument: (file, category, subcategory, options): Promise<DocumentImportResult> =>
+    documentService.importDocument({
+      file,
+      category,
+      subcategory,
+      onProgress: options?.onProgress
+        ? (event) => options.onProgress!({
+          ...event,
+          importId: options.importId ?? 'local',
+          fileIndex: options.fileIndex ?? 0,
+          fileCount: options.fileCount ?? 1,
+        })
+        : undefined,
+    }),
+  cancelDocumentImport: async () => ({ cancelled: false }),
+  retryDocumentExtraction: (id, options) => documentService.retryExtraction(id, {
+    onProgress: options?.onProgress
+      ? (event) => options.onProgress!({
+        ...event,
+        importId: options.importId ?? 'local-retry',
+        fileIndex: 0,
+        fileCount: 1,
+      })
+      : undefined,
+  }),
+  getDocumentText: async (id, maxChars) => {
+    const result = await documentService.getText(id);
+    if (!result) return null;
+    const limit = typeof maxChars === 'number' ? Math.max(1_000, Math.min(10_000_000, maxChars)) : 200_000;
+    return {
+      ...result,
+      text: result.text.slice(0, limit),
+      truncated: result.text.length > limit,
+    };
+  },
   renameDocument: (id, name) => documentService.rename(id, name),
   deleteDocument: (id) => documentService.remove(id),
   getDocumentBlob: async (id) => {

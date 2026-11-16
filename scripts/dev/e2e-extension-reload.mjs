@@ -69,10 +69,10 @@ try {
   await dashboard.waitForURL(/#\/dashboard$/);
   await dashboard.waitForTimeout(900);
 
-  const bytes = Buffer.alloc(1024, 7);
+  const bytes = Buffer.from('reload document text content', 'utf8');
   const imported = await message(dashboard, 'reload_import', 'IMPORT_DOCUMENT', {
-    name: 'reload-document.pdf',
-    mimeType: 'application/pdf',
+    name: 'reload-document.txt',
+    mimeType: 'text/plain',
     dataBase64: bytes.toString('base64'),
   });
   check('document imported before reload', imported?.ok === true, imported?.error);
@@ -82,7 +82,7 @@ try {
       label: 'Reload value',
       value: 'persisted-across-reload@example.com',
       category: 'contact',
-      source: { documentId: imported.data.document.id, documentName: 'reload-document.pdf' },
+      source: { documentId: imported.data.document.id, documentName: 'reload-document.txt' },
       confidence: 100,
       verificationStatus: 'user_verified',
       extractionMethod: 'manual',
@@ -94,7 +94,7 @@ try {
   await dashboard.goto(`chrome-extension://${formflowId}/dashboard.html#/documents`, { waitUntil: 'load' });
   await dashboard.waitForTimeout(1800);
   const beforeReloadText = await dashboard.locator('body').innerText();
-  check('dashboard displays decrypted content before reload', beforeReloadText.includes('reload-document.pdf'), beforeReloadText.replace(/\s+/g, ' ').slice(0, 260));
+  check('dashboard displays decrypted content before reload', beforeReloadText.includes('reload-document.txt'), beforeReloadText.replace(/\s+/g, ' ').slice(0, 260));
 
   const helperPage = await context.newPage();
   await helperPage.goto(`chrome-extension://${helperId}/control.html`, { waitUntil: 'load' });
@@ -142,7 +142,7 @@ try {
   await lockedDashboard.waitForTimeout(700);
   const docs = await message(lockedDashboard, 'reload_docs', 'LIST_DOCUMENTS');
   const profile = await message(lockedDashboard, 'reload_profile', 'GET_PROFILE');
-  check('documents persist across extension reload', docs?.ok === true && docs.data?.count === 1 && docs.data.documents[0].name === 'reload-document.pdf');
+  check('documents persist across extension reload', docs?.ok === true && docs.data?.count === 1 && docs.data.documents[0].name === 'reload-document.txt');
   check('profile data persists across extension reload', profile?.ok === true && profile.data?.name.length > 0);
   const fields = await message(lockedDashboard, 'reload_fields', 'LIST_FIELDS');
   check('profile values persist across extension reload', fields?.ok === true && fields.data.some((item) => item.value === 'persisted-across-reload@example.com'));
@@ -151,7 +151,7 @@ try {
   const mutationPage = await openDashboard(formflowId);
   await mutationPage.goto(`chrome-extension://${formflowId}/dashboard.html#/dashboard`, { waitUntil: 'load' });
   await mutationPage.waitForTimeout(500);
-  const large = Buffer.alloc(20 * 1024 * 1024, 11);
+  const large = Buffer.alloc(9 * 1024 * 1024, 0x61);
   const pending = mutationPage.evaluate(
     ({ request }) => new Promise((resolve) => chrome.runtime.sendMessage(request, (response) => resolve(response))),
     {
@@ -159,7 +159,7 @@ try {
         protocol: 1,
         requestId: 'reload_active_mutation',
         operation: 'IMPORT_DOCUMENT',
-        payload: { name: 'reload-active.pdf', mimeType: 'application/pdf', dataBase64: large.toString('base64') },
+        payload: { name: 'reload-active.txt', mimeType: 'text/plain', dataBase64: large.toString('base64') },
       },
     },
   ).catch(() => null);
