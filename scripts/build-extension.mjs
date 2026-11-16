@@ -2,6 +2,7 @@ import { build } from 'esbuild';
 import { access, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { build as viteBuild } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -31,6 +32,19 @@ async function requireFile(target, label = path.relative(tempOut, target)) {
   const info = await stat(target);
   if (!info.isFile()) throw new Error(`Extension entry point is not a file: ${label}`);
   if (info.size <= 0) throw new Error(`Extension entry point is empty: ${label}`);
+}
+
+async function sha256File(target) {
+  const data = await readFile(target);
+  return createHash('sha256').update(data).digest('hex');
+}
+
+async function copyVerified(source, target, expectedSha256) {
+  await cp(source, target);
+  const actual = await sha256File(target);
+  if (actual !== expectedSha256) {
+    throw new Error(`OCR asset integrity mismatch for ${path.basename(target)}: ${actual}`);
+  }
 }
 
 async function bundle(entryPoint, outfile, options = {}) {
@@ -237,12 +251,21 @@ async function main() {
       /node_modules[\\/]pdfjs-dist/,
       /node_modules[\\/]mammoth/,
       /node_modules[\\/]fflate/,
+      /node_modules[\\/]tesseract\.js/,
+    ];
+    const offscreenForbidden = [
+      ...vaultAuthorityPatterns,
+      /core[\\/]documents[\\/]parsers[\\/]/,
+      /node_modules[\\/]mammoth/,
+      /node_modules[\\/]fflate/,
     ];
     const backgroundInputs = bundledInputs(backgroundResult);
     const offscreenInputs = bundledInputs(offscreenResult);
     const parserInputs = bundledInputs(parserWorkerResult);
     assertNoInputs('Service worker', backgroundInputs, parserPatterns);
-    assertNoInputs('Offscreen document', offscreenInputs, [...vaultAuthorityPatterns, ...parserPatterns]);
+    assertNoInputs('Offscreen document', offscreenInputs, offscreenForbidden);
+    assertHasInput('Offscreen document', offscreenInputs, /node_modules[\\/]pdfjs-dist/);
+    assertHasInput('Offscreen document', offscreenInputs, /node_modules[\\/]tesseract\.js/);
     assertNoInputs('Offscreen parser worker', parserInputs, vaultAuthorityPatterns);
     assertHasInput('Offscreen parser worker', parserInputs, /core[\\/]documents[\\/]parsers[\\/]index\.ts$/);
     assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]pdfjs-dist/);
@@ -280,7 +303,7 @@ async function main() {
     for (const file of await listFiles(dashboardOut)) {
       if (!file.endsWith('.js')) continue;
       const text = await readFile(path.join(dashboardOut, file), 'utf8');
-      if (/pdfjs-dist|mammoth\/mammoth|document-parser\.worker\.js|offscreen-parser\.html/.test(text)) {
+      if (/pdfjs-dist|mammoth\/mammoth|tesseract\.js|document-parser\.worker\.js|offscreen-parser\.html/.test(text)) {
         throw new Error(`Dashboard bundle must not contain parser internals: ${file}`);
       }
     }
@@ -288,6 +311,34 @@ async function main() {
       await cp(path.join(dashboardOut, entry), path.join(tempOut, entry), { recursive: true });
     }
     await rm(dashboardOut, { recursive: true, force: true });
+
+    await mkdir(path.join(tempOut, 'tesseract'), { recursive: true });
+    await mkdir(path.join(tempOut, 'tessdata'), { recursive: true });
+    await copyVerified(
+      path.join(root, 'node_modules', 'tesseract.js', 'dist', 'worker.min.js'),
+      path.join(tempOut, 'tesseract', 'worker.min.js'),
+      '576b7df7e3393e137e51849357c9adb53fe7ac1bb69bfa06cf3d61520f182c6d',
+    );
+    await copyVerified(
+      path.join(root, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm.js'),
+      path.join(tempOut, 'tesseract', 'tesseract-core-simd-lstm.wasm.js'),
+      'c58b46a4c796c0b8afccf77591d5b875b6896b45d402bbce8caa6f5362447b38',
+    );
+    await copyVerified(
+      path.join(root, 'node_modules', 'tesseract.js-core', 'tesseract-core-simd-lstm.wasm'),
+      path.join(tempOut, 'tesseract', 'tesseract-core-simd-lstm.wasm'),
+      '34e8d50cac216427d86bf397d610fdd9f49492539bbcdfbfccc4eda20c810bea',
+    );
+    await copyVerified(
+      path.join(root, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0_best_int', 'eng.traineddata.gz'),
+      path.join(tempOut, 'tessdata', 'eng.traineddata.gz'),
+      '45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91',
+    );
+    await writeFile(
+      path.join(tempOut, 'tesseract', 'THIRD_PARTY_NOTICES.txt'),
+      'Tesseract.js 7.0.0 — Apache-2.0\ntesseract.js-core 7.0.0 — Apache-2.0\neng traineddata (@tesseract.js-data/eng 1.0.0) — MIT\nAll OCR assets are bundled locally; no runtime download is used.\n',
+      'utf8',
+    );
 
     await cp(path.join(root, 'extension', 'manifest.json'), path.join(tempOut, 'manifest.json'));
     await cp(path.join(src, 'popup', 'popup.html'), path.join(tempOut, 'popup.html'));

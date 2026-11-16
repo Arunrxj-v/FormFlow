@@ -16,7 +16,7 @@ import type {
   VaultField,
   VaultProfile,
 } from '@shared/types';
-import { LEGACY_VAULT_SESSION_KEY, VAULT_STATE_KEY } from '@shared/constants';
+import { LEGACY_VAULT_SESSION_KEY, OCR_LANGUAGES, VAULT_STATE_KEY } from '@shared/constants';
 import { activityRepository, collectionRepository, documentRepository, historyRepository, profileRecordRepository, settingsRepository, toVaultDocument, vaultRepository } from '../../core/database/repositories';
 import { FormFlowError } from '@shared/errors';
 import { vaultManager } from '../../core/vault/vault-manager';
@@ -55,6 +55,21 @@ const VERSION = chrome.runtime.getManifest().version;
 const AUTO_LOCK_ALARM = 'formflow-auto-lock';
 const activeDocumentImports = new Map<string, AbortController>();
 const documentProgressPorts = new Map<string, chrome.runtime.Port>();
+
+/**
+ * OCR language is chosen only from assets bundled and integrity-checked at
+ * build time. User preferences cannot request an unbundled language.
+ */
+async function resolveOcrLanguage(): Promise<string> {
+  try {
+    const preferences = await settingsRepository.getPreferences();
+    const configured = preferences.ocrLanguage;
+    if (OCR_LANGUAGES.some((language) => language.id === configured)) return configured;
+  } catch {
+    // Fall through to the bundled default if preferences cannot be read.
+  }
+  return 'eng';
+}
 
 function publishDocumentProgress(
   importId: string,
@@ -380,14 +395,25 @@ async function getState() {
 }
 
 async function updateSettings(payload: Record<string, unknown>) {
+  await settingsRepository.updatePreferences(buildSettingsPatch(payload));
+  return settingsRepository.getPreferences();
+}
+
+function buildSettingsPatch(payload: Record<string, unknown>): Partial<Preferences> {
   const allowed = new Set(['confirmBeforeAutofill', 'requireSensitiveReview', 'allowLongAnswers', 'autoDownloadFiles', 'productNotifications', 'activityNotifications', 'compactMode', 'autoLockMinutes', 'ocrLanguage']);
   const patch: Partial<Preferences> = {};
   for (const [key, value] of Object.entries(payload)) {
     if (!allowed.has(key) || value === undefined) continue;
+    if (key === 'ocrLanguage') {
+      if (typeof value !== 'string' || !OCR_LANGUAGES.some((language) => language.id === value)) {
+        throw new FormFlowError('VALIDATION_FAILED', 'That OCR language is not bundled with this extension.');
+      }
+      patch.ocrLanguage = value;
+      continue;
+    }
     (patch as Record<string, unknown>)[key] = value;
   }
-  await settingsRepository.updatePreferences(patch);
-  return settingsRepository.getPreferences();
+  return patch;
 }
 
 async function openDashboard(): Promise<void> {
@@ -633,11 +659,13 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const controller = new AbortController();
       activeDocumentImports.set(importId, controller);
       const stopHeartbeat = startImportHeartbeat();
+      const ocrLanguage = await resolveOcrLanguage();
       try {
         return await documentService.importDocument(
-          { file, category, subcategory, signal: controller.signal },
+          { file, category, subcategory, ocrLanguage, signal: controller.signal },
           {
             parse: documentParser,
+            ocrLanguage,
             signal: controller.signal,
             onProgress: (event) => publishDocumentProgress(importId, fileIndex, fileCount, event),
             ...(parserTimeoutMs !== undefined ? { timeoutMs: parserTimeoutMs } : {}),
@@ -663,9 +691,11 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const controller = new AbortController();
       activeDocumentImports.set(importId, controller);
       const stopHeartbeat = startImportHeartbeat();
+      const ocrLanguage = await resolveOcrLanguage();
       try {
         return await documentService.retryExtraction(documentId, {
           parse: documentParser,
+          ocrLanguage,
           signal: controller.signal,
           onProgress: (event) => publishDocumentProgress(importId, 0, 1, event),
         });
@@ -752,15 +782,8 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     }
     case MESSAGE.GET_PREFERENCES:
       return settingsRepository.getPreferences();
-    case MESSAGE.UPDATE_PREFERENCES: {
-      const allowed = new Set(['confirmBeforeAutofill', 'requireSensitiveReview', 'allowLongAnswers', 'autoDownloadFiles', 'productNotifications', 'activityNotifications', 'compactMode', 'autoLockMinutes', 'ocrLanguage']);
-      const patch: Partial<Preferences> = {};
-      for (const [key, value] of Object.entries(payload)) {
-        if (!allowed.has(key) || value === undefined) continue;
-        (patch as Record<string, unknown>)[key] = value;
-      }
-      return settingsRepository.updatePreferences(patch);
-    }
+    case MESSAGE.UPDATE_PREFERENCES:
+      return settingsRepository.updatePreferences(buildSettingsPatch(payload));
     case MESSAGE.GET_ENCRYPTION_STATUS:
       return encryptionV2Migration.status();
     case MESSAGE.MIGRATE_ENCRYPTION:

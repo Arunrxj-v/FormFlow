@@ -89,6 +89,11 @@ export interface VaultDocument {
   extractionVersion?: number;
   extractedAt?: string;
   ocrRequired?: boolean;
+  ocrStatus?: OcrStatus;
+  ocrLanguage?: string;
+  ocrConfidence?: number;
+  ocrPagesTotal?: number;
+  ocrPagesCompleted?: number;
   extractionWarnings?: ExtractionWarning[];
   extractedEntities?: ExtractedFactEntity[];
   processingHistory?: DocumentHistoryEntry[];
@@ -371,12 +376,58 @@ export interface DocumentExtractionMetadata {
   lineEndings?: 'lf' | 'crlf' | 'mixed';
 }
 
+export type OcrStatus = 'not_required' | 'completed' | 'partial' | 'failed';
+
+export interface OcrBoundingBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface OcrWord {
+  text: string;
+  confidence: number;
+  bbox: OcrBoundingBox;
+}
+
+export interface OcrLine {
+  text: string;
+  confidence: number;
+  bbox: OcrBoundingBox;
+  words?: OcrWord[];
+}
+
+export interface OcrPageDetails {
+  page: number;
+  language: string;
+  confidence?: number;
+  lines?: OcrLine[];
+  words?: OcrWord[];
+  warnings?: ExtractionWarning[];
+}
+
+export interface OcrExtractionDetails {
+  status: OcrStatus;
+  engine: string;
+  engineVersion: string;
+  language: string;
+  processedAt: string;
+  pagesAttempted: number;
+  pagesCompleted: number;
+  pagesFailed: number;
+  averageConfidence?: number;
+  warnings: ExtractionWarning[];
+  pages: OcrPageDetails[];
+}
+
 export interface DocumentExtractionDetails {
   version: number;
   ocrRequired: boolean;
   pagesNeedingOcr: number[];
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
+  ocr?: OcrExtractionDetails;
 }
 
 export type DocumentIngestionStage =
@@ -385,6 +436,7 @@ export type DocumentIngestionStage =
   | 'duplicate'
   | 'encrypting'
   | 'extracting_text'
+  | 'running_ocr'
   | 'encrypting_text'
   | 'storing'
   | 'completed'
@@ -407,7 +459,9 @@ export interface DocumentTextResult {
   method: StoredDocumentText['method'];
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
+  ocr?: OcrExtractionDetails;
   ocrRequired: boolean;
+  pagesNeedingOcr?: number[];
   extractionVersion?: number;
   extractedAt?: string;
   truncated: boolean;
@@ -435,6 +489,11 @@ export interface DocumentRecord {
   extractionVersion?: number;
   extractedAt?: string;
   ocrRequired?: boolean;
+  ocrStatus?: OcrStatus;
+  ocrLanguage?: string;
+  ocrConfidence?: number;
+  ocrPagesTotal?: number;
+  ocrPagesCompleted?: number;
   metadata?: Record<string, unknown>;
   confidence?: number;
   failureReason?: string;

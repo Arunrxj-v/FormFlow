@@ -212,7 +212,13 @@ try {
   });
   check('image-only PDF imported as OCR-required', scanImport?.ok === true && scanImport.data.document.ocrRequired === true && scanImport.data.document.status === 'review_required', scanImport?.error);
   const scanText = await message(page, 'p4_scan_text', 'GET_DOCUMENT_TEXT', { documentId: scanImport.data.document.id });
-  check('scanned PDF has no fabricated text', scanText?.ok === true && scanText.data.text === '' && scanText.data.warnings.some((warning) => warning.code === 'OCR_REQUIRED'), JSON.stringify(scanText?.data?.warnings));
+  check(
+    'scanned PDF OCR does not fabricate text',
+    scanText?.ok === true
+      && scanText.data.text === ''
+      && scanText.data.warnings.some((warning) => ['OCR_REQUIRED', 'OCR_FAILED', 'OCR_PARTIAL'].includes(warning.code)),
+    JSON.stringify(scanText?.data?.warnings),
+  );
 
   const corrupt = await message(page, 'p4_corrupt', 'IMPORT_DOCUMENT', {
     name: 'phase4-corrupt.pdf',
@@ -292,8 +298,12 @@ try {
   check('inspector shows the extracted page count', (await uiPage.locator('body').innerText()).includes('Page 1 of 250'));
 
   await uiPage.locator('tr', { hasText: 'phase4-scanned.pdf' }).click();
-  await uiPage.waitForSelector('text=OCR is not implemented', { timeout: 30000 });
-  check('inspector shows the OCR-required state without fabricated text', (await uiPage.locator('body').innerText()).includes('OCR is not implemented'));
+  await uiPage.waitForSelector('text=Retry local OCR', { timeout: 30000 });
+  const scannedInspector = await uiPage.locator('body').innerText();
+  check(
+    'inspector shows the failed OCR state without fabricated text',
+    scannedInspector.includes('OCR failed') && scannedInspector.includes('Retry local OCR'),
+  );
 
   await uiPage.click('button:has-text("Upload document")');
   await uiPage.waitForSelector('.ff-dropzone');

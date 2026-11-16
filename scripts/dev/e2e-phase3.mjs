@@ -271,7 +271,7 @@ try {
     !/formflow-local|session_key|VAULT_SESSION|postMessage|chrome\.storage/i.test(contentBundle),
   );
   const csp = await page.evaluate(() => chrome.runtime.getManifest().content_security_policy?.extension_pages ?? '');
-  check('extension CSP has no unsafe-eval or remote script source', !/unsafe-eval|https?:/i.test(csp) && /script-src 'self'/.test(csp) && /object-src 'none'/.test(csp), csp);
+  check('extension CSP has no unsafe-eval or remote script source', !/'unsafe-eval'/.test(csp) && !/https?:/i.test(csp) && /script-src 'self' 'wasm-unsafe-eval'/.test(csp) && /object-src 'none'/.test(csp), csp);
   const inlineBlocked = await page.evaluate(() => new Promise((resolve) => {
     window.__formflowCspInline = 0;
     const script = document.createElement('script');

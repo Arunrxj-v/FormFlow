@@ -27,6 +27,7 @@ function request(overrides: Record<string, unknown> = {}) {
     format: 'pdf',
     fileName: 'test.pdf',
     sizeBytes: data.length,
+    ocrLanguage: 'eng',
     dataBase64: base64(data),
     ...overrides,
   };
@@ -68,6 +69,9 @@ test('rejects malformed request identity and format fields', () => {
   assert.throws(() => parseOffscreenParseRequest(request({ parserVersion: 99 })), /Parser version/);
   assert.throws(() => parseOffscreenParseRequest(request({ format: 'jpg', fileName: 'test.jpg' })), /format/);
   assert.throws(() => parseOffscreenParseRequest(request({ fileName: 'test.txt' })), /fileName/);
+  assert.throws(() => parseOffscreenParseRequest(request({ ocrLanguage: '' })), /ocrLanguage/);
+  assert.throws(() => parseOffscreenParseRequest(request({ ocrLanguage: 'x'.repeat(41) })), /ocrLanguage/);
+  assert.throws(() => parseOffscreenParseRequest(request({ ocrLanguage: 'eng+hin' })), /not bundled/);
 });
 
 test('rejects oversized requests and base64/size mismatches', () => {
@@ -87,6 +91,7 @@ test('accepts worker requests with an ArrayBuffer of the declared size', () => {
     format: 'txt',
     fileName: 'test.txt',
     sizeBytes: bytes.byteLength,
+    ocrLanguage: 'eng',
     bytes,
   });
   assert.equal(parsed.bytes.byteLength, 5);
@@ -136,6 +141,26 @@ test('validates bounded progress messages', () => {
   assert.throws(() => parseOffscreenProgressMessage({
     type: 'PARSE_PROGRESS', protocol: 1, requestId: 'parse_12345678-abcd', progress: 10, key: 'secret',
   }), /unexpected field/);
+  assert.deepEqual(parseOffscreenProgressMessage({
+    type: 'PARSE_PROGRESS',
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: 'parse_12345678-abcd',
+    progress: 75,
+    page: 2,
+    totalPages: 4,
+    stage: 'ocr',
+  }), {
+    type: 'PARSE_PROGRESS',
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: 'parse_12345678-abcd',
+    progress: 75,
+    page: 2,
+    totalPages: 4,
+    stage: 'ocr',
+  });
+  assert.throws(() => parseOffscreenProgressMessage({
+    type: 'PARSE_PROGRESS', protocol: 1, requestId: 'parse_12345678-abcd', progress: 10, stage: 'other',
+  }), /stage/);
 });
 
 test('validates result structure, page boundaries, warnings, and metadata', () => {

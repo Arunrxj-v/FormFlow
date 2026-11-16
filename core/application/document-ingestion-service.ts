@@ -27,6 +27,7 @@ export type DocumentIngestionStage =
   | 'duplicate'
   | 'encrypting'
   | 'extracting_text'
+  | 'running_ocr'
   | 'encrypting_text'
   | 'storing'
   | 'completed'
@@ -45,6 +46,7 @@ export interface DocumentImportInput {
   file: File;
   category?: DocumentCategory;
   subcategory?: string;
+  ocrLanguage?: string;
   signal?: AbortSignal;
   onProgress?: (event: DocumentIngestionProgress) => void;
 }
@@ -53,6 +55,7 @@ export interface DocumentIngestionDependencies {
   parse?: DocumentParser;
   signal?: AbortSignal;
   onProgress?: (event: DocumentIngestionProgress) => void;
+  ocrLanguage?: string;
   /** Test/administrative override for the bounded local parser timeout. */
   timeoutMs?: number;
 }
@@ -108,9 +111,21 @@ function validateParseResult(result: DocumentParseResult, descriptor: DocumentDe
       `Extracted text exceeds the ${(MAX_EXTRACTED_TEXT_CHARS / 1_000_000).toFixed(0)} million character local limit.`,
     );
   }
-  const expectedMethod = descriptor.format === 'pdf' ? 'pdf-text' : descriptor.format;
-  if (result.method !== expectedMethod) {
+  const method: string = result.method;
+  if (descriptor.format === 'pdf') {
+    if (!['pdf-text', 'ocr', 'mixed'].includes(method)) {
+      throw new FormFlowError('EXTRACTION_FAILED', 'The parser method does not match the document format.');
+    }
+  } else if (method !== descriptor.format) {
     throw new FormFlowError('EXTRACTION_FAILED', 'The parser method does not match the document format.');
+  }
+  if (result.ocr) {
+    if (result.ocr.status === 'completed' && (result.ocrRequired || result.pagesNeedingOcr.length > 0)) {
+      throw new FormFlowError('EXTRACTION_FAILED', 'OCR completed but still reports pages requiring OCR.');
+    }
+    if ((result.ocr.status === 'partial' || result.ocr.status === 'failed') && !result.ocrRequired) {
+      throw new FormFlowError('EXTRACTION_FAILED', 'Incomplete OCR must report pages requiring OCR.');
+    }
   }
   if (!result.ocrRequired && !result.text.trim()) {
     throw new FormFlowError('EMPTY_DOCUMENT', 'No extractable text was found in this document.');
@@ -136,6 +151,7 @@ function extractionDetails(result: DocumentParseResult): DocumentExtractionDetai
     pagesNeedingOcr: result.pagesNeedingOcr,
     warnings: result.warnings,
     metadata: result.metadata,
+    ...(result.ocr ? { ocr: result.ocr } : {}),
   };
 }
 
@@ -196,13 +212,25 @@ async function parseForDocument(
         bytes,
         fileName: descriptor.file.name,
         signal: controller.signal,
+        ocrLanguage: deps.ocrLanguage ?? 'eng',
         onPage: (page, total) => {
           report(
             deps.onProgress,
             'extracting_text',
-            25 + (page / Math.max(1, total)) * 50,
+            25 + (page / Math.max(1, total)) * 35,
             `Extracting text locally (page ${page} of ${total})…`,
             { page, totalPages: total },
+          );
+        },
+        onOcrProgress: (page, total) => {
+          report(
+            deps.onProgress,
+            'running_ocr',
+            page > 0 && total > 0 ? 62 + (page / total) * 16 : 60,
+            page > 0 && total > 0
+              ? `Running local OCR (page ${page} of ${total})…`
+              : 'Preparing local OCR engine…',
+            page > 0 && total > 0 ? { page, totalPages: total } : {},
           );
         },
       }),
@@ -276,7 +304,12 @@ export async function ingestDocument(
     const storedFile = await documentRepository.prepareOriginalFile(documentId, descriptor.mimeType, input.file);
     checkAborted(signal);
 
-    const result = await parseForDocument(descriptor, bytes, { ...deps, signal, onProgress: progress });
+    const result = await parseForDocument(descriptor, bytes, {
+      ...deps,
+      signal,
+      onProgress: progress,
+      ocrLanguage: input.ocrLanguage ?? deps.ocrLanguage,
+    });
     checkAborted(signal);
 
     report(progress, 'encrypting_text', 80, 'Encrypting extracted text and extraction details…');
@@ -291,6 +324,11 @@ export async function ingestDocument(
         category,
         subcategory: input.subcategory ?? '',
         status: result.ocrRequired ? 'review_required' : 'stored',
+        ocrStatus: result.ocr?.status ?? 'not_required',
+        ...(result.ocr?.language ? { ocrLanguage: result.ocr.language } : {}),
+        ...(typeof result.ocr?.averageConfidence === 'number' ? { ocrConfidence: result.ocr.averageConfidence } : {}),
+        ...(typeof result.ocr?.pagesAttempted === 'number' ? { ocrPagesTotal: result.ocr.pagesAttempted } : {}),
+        ...(typeof result.ocr?.pagesCompleted === 'number' ? { ocrPagesCompleted: result.ocr.pagesCompleted } : {}),
         fileType: descriptor.fileType,
         sizeBytes: input.file.size,
         sizeLabel: formatSize(input.file.size),
@@ -298,14 +336,18 @@ export async function ingestDocument(
         storageKey: `file_${documentId}`,
         source: 'device',
         pageCount: result.pageCount,
-        ocrUsed: false,
-        extractedTextStatus: 'extracted',
+        ocrUsed: Boolean(result.ocr && result.ocr.status !== 'not_required'),
+        extractedTextStatus: result.ocr?.status === 'failed' && !result.text.trim() ? 'failed' : 'extracted',
         extractionVersion: result.version,
         extractedAt: now,
         ocrRequired: result.ocrRequired,
-        stageDetail: result.ocrRequired
-          ? 'Text extracted; one or more pages require OCR.'
-          : 'Text extracted locally.',
+        stageDetail: result.ocr?.status === 'completed'
+          ? 'Text extracted locally with local OCR.'
+          : result.ocr?.status === 'partial'
+            ? 'Text partially extracted; some OCR pages failed and require review.'
+            : result.ocrRequired
+              ? 'Text extraction incomplete; one or more pages require OCR.'
+              : 'Text extracted locally.',
       },
       fileName,
     );
@@ -333,17 +375,21 @@ export async function ingestDocument(
       await activityRepository.record(
         result.ocrRequired ? 'document_processed' : 'document_added',
         fileName,
-        result.ocrRequired
-          ? `${category} · Stored locally · OCR required`
-          : `${category} · ${result.pageCount} page(s) · Text extracted locally`,
+        result.ocr?.status === 'completed'
+          ? `${category} · Stored locally · OCR completed (${result.ocr.language})`
+          : result.ocrRequired
+            ? `${category} · Stored locally · OCR ${result.ocr?.status ?? 'required'}`
+            : `${category} · ${result.pageCount} page(s) · Text extracted locally`,
       );
     } catch {
       // The document and text are already committed. Activity is secondary.
     }
 
-    report(progress, result.ocrRequired ? 'completed' : 'completed', 100, result.ocrRequired
-      ? 'Document stored. Image-only pages require OCR in a future phase.'
-      : 'Document and extracted text stored securely.');
+    report(progress, 'completed', 100, result.ocrRequired
+      ? 'Document stored. Some pages still require OCR.'
+      : result.ocr?.status === 'completed'
+        ? 'Document, recognized text, and OCR details stored securely.'
+        : 'Document and extracted text stored securely.');
     return { document: previewDocument(row, fileName, result), duplicate: false };
   } catch (error) {
     if (signal?.aborted) {
@@ -376,7 +422,12 @@ export async function retryDocumentExtraction(
     validateDocumentBytes(new Uint8Array(bytes), descriptor);
     checkAborted(signal);
 
-    const result = await parseForDocument(descriptor, bytes, { ...deps, signal, onProgress: progress });
+    const result = await parseForDocument(descriptor, bytes, {
+      ...deps,
+      signal,
+      onProgress: progress,
+      ocrLanguage: deps.ocrLanguage,
+    });
     checkAborted(signal);
 
     report(progress, 'encrypting_text', 80, 'Encrypting refreshed extraction output…');
@@ -388,21 +439,32 @@ export async function retryDocumentExtraction(
       extractionDetails(result),
       {
         status: result.ocrRequired ? 'review_required' : 'stored',
+        ocrStatus: result.ocr?.status ?? 'not_required',
+        ...(result.ocr?.language ? { ocrLanguage: result.ocr.language } : {}),
+        ...(typeof result.ocr?.averageConfidence === 'number' ? { ocrConfidence: result.ocr.averageConfidence } : {}),
+        ...(typeof result.ocr?.pagesAttempted === 'number' ? { ocrPagesTotal: result.ocr.pagesAttempted } : {}),
+        ...(typeof result.ocr?.pagesCompleted === 'number' ? { ocrPagesCompleted: result.ocr.pagesCompleted } : {}),
         pageCount: result.pageCount,
-        extractedTextStatus: 'extracted',
+        extractedTextStatus: result.ocr?.status === 'failed' && !result.text.trim() ? 'failed' : 'extracted',
         extractionVersion: result.version,
         extractedAt: new Date().toISOString(),
         ocrRequired: result.ocrRequired,
         failureReason: undefined,
         processingError: undefined,
-        stageDetail: result.ocrRequired
-          ? 'Text extracted; one or more pages require OCR.'
-          : 'Text extracted locally.',
+        stageDetail: result.ocr?.status === 'completed'
+          ? 'Text extracted locally with local OCR.'
+          : result.ocr?.status === 'partial'
+            ? 'Text partially extracted; some OCR pages failed and require review.'
+            : result.ocrRequired
+              ? 'Text extraction incomplete; one or more pages require OCR.'
+              : 'Text extracted locally.',
       },
     );
     report(progress, 'completed', 100, result.ocrRequired
       ? 'Extraction refreshed. Some pages still require OCR.'
-      : 'Extraction refreshed and stored.');
+      : result.ocr?.status === 'completed'
+        ? 'Extraction refreshed with local OCR and stored.'
+        : 'Extraction refreshed and stored.');
     return { document: previewDocument(updated, current.name, result) };
   } catch (error) {
     if (signal?.aborted) {

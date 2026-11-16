@@ -1,6 +1,6 @@
 # FormFlow
 
-> **Migration status:** Phase 4.1.1 isolated offscreen document parsing is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels, filenames and vault display names, versioned migrations, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, atomic journaled restore, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Local PDF, DOCX, and TXT text extraction runs in a hidden Chrome offscreen document and request-scoped workers outside the service-worker key boundary. The extension requires Chrome 109 or newer. OCR, ONNX/model downloads, AI field extraction, and autofill intelligence remain future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) and [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
+> **Migration status:** Phase 4.1.2 local OCR for scanned PDFs is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels, filenames and vault display names, versioned migrations, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, atomic journaled restore, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Local PDF, DOCX, and TXT text extraction runs in a hidden Chrome offscreen document and request-scoped workers outside the service-worker key boundary. Scanned and image-only PDF pages are rendered locally and recognized with bundled Tesseract.js assets; no document content leaves the browser. The extension requires Chrome 109 or newer. ONNX/model downloads, AI field extraction, and autofill intelligence remain future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) and [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
 
 FormFlow is a personal document intelligence and form-filling platform. This repository contains:
 
@@ -164,7 +164,7 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 | Legacy password auth | Legacy API only; production access uses the local vault passphrase |
 | Google OAuth / Drive API | **Not connected.** Legacy source files remain but the extension vault workflow does not use them. |
 | PDF/DOCX/TXT text extraction | **Implemented locally in an isolated offscreen document.** Signature/content validation, page-aware extraction, encrypted persistence, scanned-PDF detection, and extraction status. |
-| OCR | **Not implemented.** Image-only PDFs are stored and marked `ocrRequired`; no image text is fabricated or sent to an external service. |
+| OCR | **Implemented locally for English scanned PDF pages.** PDF pages requiring OCR are rendered in the isolated offscreen document and processed by bundled Tesseract.js worker/core/language assets. Recognized text, line/word confidence, and bounding boxes are encrypted with the existing extraction record. No external OCR service is used. |
 | AI provider | **Not used in production.** Legacy server-side provider code remains; the extension does not call external AI. |
 | Dashboard → API wiring | **Not used.** The dashboard reads and writes the local vault. |
 | Extension → API auth | **Not used.** The popup reads the extension vault through controlled background messaging. |
@@ -175,7 +175,7 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 - PBKDF2-SHA256 derives a key-encryption key from the vault passphrase; a random data key is wrapped by it.
 - The passphrase and plaintext data key are never written to IndexedDB or `chrome.storage.local`.
 - The data key is held only in service-worker memory and is cleared on lock or service-worker termination.
-- PDF, DOCX, and TXT parsers run in a hidden offscreen document with no vault, database, encryption, storage, or vault-client imports. The offscreen document cannot invoke general background vault operations; it has only a narrow parser port.
+- PDF, DOCX, and TXT parsers run in a hidden offscreen document with no vault, database, encryption, storage, or vault-client imports. The offscreen document cannot invoke general background vault operations; it has only a narrow parser port. OCR runs in the same isolated environment using only locally bundled Tesseract.js assets.
 - The offscreen document and parser workers receive only document bytes and non-secret parser fields. They never receive the DEK, KEK, passphrase, AAD, or vault session.
 - Locking blocks dashboard access, profile reads, document access, export, and autofill.
 - Extension messages require a protocol version, request ID, known operation, and validated payload.
@@ -188,7 +188,9 @@ Provider secrets are server-only. Document text is treated as untrusted data and
 ## Known limitations
 
 - Structural metadata (record IDs, field keys, categories, statuses, sizes, MIME types, checksums, vault name) remains plaintext by design.
-- PDF, DOCX, and TXT text extraction is local, page-aware, and isolated in the offscreen parser; OCR and AI field extraction are not implemented.
+- PDF, DOCX, and TXT text extraction is local, page-aware, and isolated in the offscreen parser. Local OCR is available for English scanned PDF pages; AI field extraction is not implemented.
+- OCR supports English (`eng`) only in this phase. Additional languages require bundled, SHA-256-verified trained data.
+- OCR accuracy depends on scan quality, resolution, rotation, and layout. It does not reconstruct complex tables or guarantee exact character-level output.
 - Offscreen documents and parser workers share the extension origin. They have no vault authority and a runtime IndexedDB guard, but they are not a separate sandboxed origin.
 - DOCX files do not expose reliable page boundaries, so they are stored as one logical page with a warning.
 - Complex PDF/DOCX layout is normalized to text; the encrypted original file is retained for fidelity.

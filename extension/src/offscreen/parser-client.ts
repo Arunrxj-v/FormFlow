@@ -25,6 +25,7 @@ interface PendingJob {
   reject: (error: FormFlowError) => void;
   signal?: AbortSignal;
   onPage?: (page: number, total: number) => void;
+  onOcrProgress?: (page: number, total: number) => void;
   timer: ReturnType<typeof setTimeout> | null;
   onAbort: () => void;
 }
@@ -134,7 +135,13 @@ function handlePortMessage(raw: unknown): void {
     if (type === 'PARSE_PROGRESS') {
       const progress = parseOffscreenProgressMessage(raw);
       if (progress.requestId !== requestId) throw protocolError('Progress request id mismatch.');
-      if (progress.page !== undefined && progress.totalPages !== undefined) {
+      if (progress.stage === 'ocr') {
+        if (progress.page !== undefined && progress.totalPages !== undefined) {
+          job.onOcrProgress?.(progress.page, progress.totalPages);
+        } else {
+          job.onOcrProgress?.(0, 0);
+        }
+      } else if (progress.page !== undefined && progress.totalPages !== undefined) {
         job.onPage?.(progress.page, progress.totalPages);
       }
       return;
@@ -305,6 +312,7 @@ export async function parseDocumentInOffscreen(
     format: input.format,
     fileName: input.fileName,
     sizeBytes: input.bytes.byteLength,
+    ocrLanguage: input.ocrLanguage ?? 'eng',
     dataBase64: toBase64(input.bytes),
   };
 
@@ -316,6 +324,7 @@ export async function parseDocumentInOffscreen(
       reject,
       signal,
       onPage: input.onPage,
+      onOcrProgress: input.onOcrProgress,
       timer: null,
       onAbort: () => {
         sendCancel(requestId);

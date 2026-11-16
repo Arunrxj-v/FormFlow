@@ -1,6 +1,6 @@
 # FormFlow Security Architecture
 
-Status: Phase 4.1.1 isolated offscreen-document parsing. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
+Status: Phase 4.1.2 local OCR for scanned PDFs. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
 
 ## 1. Threat model
 
@@ -229,7 +229,7 @@ Search is performed after decryption in the trusted extension context. There is 
 
 JavaScript cannot guarantee that copies of a key or decrypted value have been erased from all engine memory.
 
-## 6.1 Local document ingestion (Phase 4.1.1)
+## 6.1 Local document ingestion (Phase 4.1.1) and local OCR (Phase 4.1.2)
 
 ### Trust boundary
 
@@ -242,13 +242,19 @@ Dashboard file picker
               ├── encrypts original bytes with the documentFile AAD
               ├── sends only non-secret parse fields + base64 bytes over a
               │   dedicated port to the hidden offscreen parser document
-              │       └── request-scoped parser Web Worker
-              ├── validates every parser result again
+              │       ├── request-scoped parser Web Worker (native text)
+              │       └── request-scoped local OCR path (Phase 4.1.2)
+              │             ├── PDF.js renders only OCR-required pages
+              │             ├── canvas is passed to a local Tesseract worker
+              │             └── decoded, non-executable OCR data is returned
+              ├── validates every parser/OCR result again
               ├── encrypts text/pageTexts/extraction details with documentText AAD
               └── one strict IndexedDB transaction for document + file + text
 ```
 
-The offscreen document is created with Chrome's Offscreen API using the narrow **`WORKERS`** reason. It runs a hidden extension page (`offscreen-parser.html`) with no user-facing UI or navigation controls. The page creates one parser Web Worker per request. The worker receives only the selected document bytes (base64 decoded by the offscreen page), format, filename, parser version, and a request ID. It has no vault session, DEK, KEK, AAD, database handle, repository import, generic RPC bridge, or network access.
+The offscreen document is created with Chrome's Offscreen API using the narrow **`WORKERS`** reason. It runs a hidden extension page (`offscreen-parser.html`) with no user-facing UI or navigation controls. The page creates one parser Web Worker per request. The worker receives only the selected document bytes (base64 decoded by the offscreen page), format, filename, parser version, OCR language identifier, and a request ID. It has no vault session, DEK, KEK, AAD, database handle, repository import, generic RPC bridge, or network access.
+
+OCR does not pass PDF bytes to the Tesseract worker. Only a rendered canvas, language identifier, request ID, and bounded Tesseract parameters cross that worker boundary. The OCR result is validated as untrusted input before the background persists it.
 
 The background remains the exclusive authority for duplicate detection, encryption/decryption, AAD construction, vault IndexedDB access, atomic persistence, and lock/unlock. Parser output is treated as untrusted and validated by both the offscreen document and the background before persistence.
 
@@ -261,7 +267,7 @@ The background remains the exclusive authority for duplicate detection, encrypti
 - A background port disconnect cancels all active workers and closes the offscreen document. A service-worker restart or extension reload therefore cannot leave an orphan parser.
 - Every parse has its own worker. User cancellation terminates only that worker; a second active parse is unaffected.
 - The offscreen document enforces a maximum of **2 concurrent parses**. Additional requests receive `PARSER_BUSY`.
-- A hard parser timeout is enforced by the ingestion coordinator (60 seconds) and the background parser client. Cancellation sends `CANCEL_PARSE`; the offscreen terminates the request-scoped worker.
+- A hard parser timeout is enforced by the ingestion coordinator (300 seconds, including OCR) and the background parser client. Per-OCR-page processing is separately limited to 30 seconds. Cancellation sends `CANCEL_PARSE`; the offscreen terminates the request-scoped parser and OCR workers.
 
 ### Parser message protocol
 
@@ -269,13 +275,13 @@ Only these operations exist:
 
 | Operation | Direction | Purpose |
 |---|---|---|
-| `PARSE_DOCUMENT` | background → offscreen → worker | Strict request with `protocol`, `requestId`, `parserVersion`, `format`, `fileName`, `sizeBytes`, and base64 bytes |
+| `PARSE_DOCUMENT` | background → offscreen → worker | Strict request with `protocol`, `requestId`, `parserVersion`, `format`, `fileName`, `sizeBytes`, bundled `ocrLanguage`, and base64 bytes |
 | `CANCEL_PARSE` | background → offscreen → worker | Request-scoped cancellation |
-| `PARSE_PROGRESS` | worker → offscreen → background | Bounded page/progress update |
-| `PARSE_RESULT` | worker → offscreen → background | Structured text/page/warning/metadata result |
+| `PARSE_PROGRESS` | worker → offscreen → background | Bounded page/progress update with an optional `text` or `ocr` stage |
+| `PARSE_RESULT` | worker → offscreen → background | Structured text/page/warning/metadata result plus optional validated OCR details |
 | `PARSE_ERROR` | worker → offscreen → background | Coded, bounded error |
 
-Every message uses a unique request ID and strict exact-key validation. Unknown operations, extra fields, invalid request IDs, unsupported formats/parser versions, size mismatches, malformed progress, oversized results, inconsistent page boundaries, excess warnings, and unexpected metadata are rejected. The protocol is not a generic RPC bridge. The offscreen document cannot call `LIST_DOCUMENTS` or any other vault operation: the background runtime router explicitly rejects the offscreen document URL as an untrusted privileged sender. Its only accepted channel is the dedicated parser port.
+Every message uses a unique request ID and strict exact-key validation. Unknown operations, extra fields, invalid request IDs, unsupported formats/parser versions, unbundled OCR languages, size mismatches, malformed progress, oversized results, inconsistent page boundaries, excess warnings, and unexpected metadata are rejected. OCR results receive an additional exact-shape validation: page numbers bounded by the document, line/word caps, confidence in 0–100, non-inverted bounding boxes, status/page-count invariants, and no duplicate OCR page numbers. The protocol is not a generic RPC bridge. The offscreen document cannot call `LIST_DOCUMENTS` or any other vault operation: the background runtime router explicitly rejects the offscreen document URL as an untrusted privileged sender. Its only accepted channel is the dedicated parser port.
 
 ### Resource limits
 
@@ -284,12 +290,14 @@ Every message uses a unique request ID and strict exact-key validation. Unknown 
 - 10,000,000 extracted characters; the offscreen result cap allows the duplicated `text` + `pageTexts` representation with a fixed headroom.
 - 24 MB per DOCX XML part and 96 MB total uncompressed DOCX content.
 - 100 extraction warnings per document.
-- Maximum 2 concurrent parser workers.
-- 60-second ingestion timeout; request-scoped cancellation; 15-second offscreen idle shutdown.
+- Maximum 2 concurrent parser workers (and therefore at most 2 concurrent OCR attempts).
+- 300-second ingestion timeout; 30-second per-OCR-page timeout; request-scoped cancellation; 15-second offscreen idle shutdown.
+- OCR rendering: 200 DPI, maximum 12 megapixels per page, maximum scale 3, maximum 100 OCR pages per attempt.
+- OCR output caps: 500 words per page, 5,000 words per result, 200 lines per page, 1,000,000 serialized OCR detail characters.
 
 ### Format validation and extraction behavior
 
-- PDF: `%PDF-` signature, PDF.js parse, page limit, password/corruption classification, per-page text, page count, best-effort metadata, image-operator detection, and warnings. Image-only pages are marked OCR-required; **OCR is not implemented**.
+- PDF: `%PDF-` signature, PDF.js parse, page limit, password/corruption classification, per-page text, page count, best-effort metadata, image-operator detection, and warnings. Image-only pages are marked OCR-required. Phase 4.1.2 renders only those pages and runs local OCR; successfully recognized pages no longer remain OCR-required.
 - DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, and structural WordprocessingML parsing without HTML rendering. Tables are tab-separated; headings and line breaks are preserved. DOCX is stored as one logical page with a warning.
 - TXT: strict UTF-8 decode, BOM detection, CRLF/CR/LF normalization, NUL/control rejection, and empty-content rejection.
 - Browser MIME and extension are cross-checked but are not trusted as the format authority.
@@ -298,22 +306,35 @@ Every message uses a unique request ID and strict exact-key validation. Unknown 
 
 - The document row (`documents`), original bytes (`documentFiles`), and extracted text (`documentText`) are encrypted before commit.
 - `StoredDocumentText.textEnc` uses AAD `documentText` / `text`; `pageTextsEnc` uses `pageTexts`; the optional `extractionEnc` uses `extraction`.
-- The `extractionEnc` payload contains warnings, pages requiring OCR, and PDF/DOCX metadata. It is never stored in plaintext record metadata or logs.
+- The `extractionEnc` payload contains warnings, pages requiring OCR, PDF/DOCX metadata, and (when OCR ran) the OCR engine/version, language, timestamp, page status, average confidence, lines, words, bounding boxes, and warnings. It is never stored in plaintext record metadata or logs. The document list row carries only non-sensitive OCR status, language, confidence, and page-count fields.
 - The three records are written in a single IndexedDB transaction with `durability: 'strict'`. Duplicate checksum validation happens before the record is created and again inside the transaction. A quota error, parser failure, lock, cancellation, offscreen failure, or worker termination rolls back the whole transaction. The UI is not told that an import succeeded until after that transaction completes.
 - SHA-256 duplicate detection returns the existing document and never silently replaces it. The UI displays the existing document name.
 - Extraction retry reads the encrypted original, re-runs the isolated parser, and replaces the text/extraction details in one transaction without creating a second document.
-- Dashboard progress travels over a separate extension-origin-only port and contains stage, percentage, file index/count, and page number only — no filename, extracted text, key, AAD, or metadata.
+- Dashboard progress travels over a separate extension-origin-only port and contains stage, percentage, file index/count, and page number only — no filename, extracted text, key, AAD, or metadata. Phase 4.1.2 adds a distinct `running_ocr` stage and real per-page OCR progress; no synthetic progress is reported.
+
+### Local OCR security and resource behavior (Phase 4.1.2)
+
+- **Selected engine:** Tesseract.js 7.0.0 with tesseract.js-core 7.0.0, Apache-2.0; `@tesseract.js-data/eng` 1.0.0 language data, MIT. Only English (`eng`) is bundled and claimed.
+- **Local assets only:** `tesseract/worker.min.js`, the SIMD LSTM core JS/WASM, and `tessdata/eng.traineddata.gz` are packaged. The build copies each asset and verifies its SHA-256; a mismatch fails the build. The offscreen page verifies the language data's size and SHA-256 again before starting the engine.
+- **No external inference:** explicit `workerPath`, `corePath`, and `langPath` values override Tesseract.js CDN defaults. `workerBlobURL: false` keeps `worker-src 'self'`. The Chromium suite is run with external DNS disabled and records zero external requests.
+- **CSP:** the offscreen page uses `default-src 'none'`, `script-src 'self' 'wasm-unsafe-eval'`, `worker-src 'self'`, `connect-src 'self'`, `img-src 'self' data: blob:`, and no remote sources. `'wasm-unsafe-eval'` is required by Chrome to instantiate the local Tesseract WASM core; it does not permit JavaScript `eval`.
+- **No key material:** the OCR path receives none of the DEK, KEK, passphrase, vault session, AAD, IndexedDB handle, or repository. The Tesseract worker receives a rendered canvas, the language identifier, request ID, and bounded OCR parameters.
+- **Untrusted output:** the background re-validates OCR details and status/page invariants. Invalid OCR output is discarded, the already-validated native extraction is preserved, and the OCR attempt is marked retryable instead of failing the whole import.
+- **Incremental processing:** only OCR-required pages are rendered, one canvas at a time. Canvas dimensions are capped, page resources are released after processing, and the request-scoped Tesseract worker and PDF renderer are destroyed in `finally` paths. Cancellation aborts the current page and terminates the request-scoped workers.
+- **Failure isolation:** language availability, engine initialization, rendering, per-page timeout, worker crash, offscreen shutdown, cancellation, or malformed OCR output never overwrites the encrypted original. A failed OCR attempt is stored as `failed`/`partial` with `pagesNeedingOcr` for retry; the original and any native text remain available.
+- **Encrypted persistence:** recognized text and OCR details use the existing `documentText` AAD fields `text`, `pageTexts`, and `extraction`. The AAD includes document ID, so cross-document ciphertext swapping fails.
 
 ### Build-time isolation proof
 
 The extension build uses esbuild metafiles and fails if:
 
-- `background.js` contains PDF.js, Mammoth, or parser modules.
+- `background.js` contains PDF.js, Mammoth, parser modules, or Tesseract.js.
 - `offscreen-parser.js` contains parser runtime or any `core/vault`, `core/database`, `core/encryption`, `core/storage`, `core/application`, or vault-client input.
 - `document-parser.worker.js` contains any vault, database, encryption, storage, or application input.
 - The offscreen HTML contains inline scripts, remote scripts, or inline event handlers.
 - The manifest does not declare `offscreen`, Chrome < 109, or a CSP missing `worker-src 'self'`.
 - The dashboard bundle contains parser internals.
+- Any packaged OCR asset is missing or does not match its pinned SHA-256.
 
 ### Chrome compatibility
 
@@ -492,7 +513,8 @@ The checker reports issues and never deletes or rewrites corrupted records. The 
 - Real Chromium interruption during a 1,000-page offscreen ingestion: extension disabled, offscreen/worker terminated, re-enabled, unlocked, and no partial document/file/text triple found; a later import succeeded atomically.
 - Atomic ingestion rollback for parser failure, cancellation, vault lock, and quota failure; backup v3 round-trip preserves encrypted extraction details.
 - Phase 4.1.1 real Chromium offscreen suite: PDF/DOCX/TXT parsed through the offscreen document; offscreen context presence, IndexedDB blocking, exact request/result field allowlists, denial of arbitrary background vault operations, malformed request/response rejection, oversized result rejection, parser timeout, offscreen failure recovery, concurrency, one-of-two cancellation, vault lock draining, duplicate detection, and encrypted persistence.
-- Build-time bundle isolation checks prove the service worker contains no parser runtime and the offscreen document/worker contain no vault, database, encryption, storage, or application modules.
+- Phase 4.1.2 real Chromium OCR suite with genuine Tesseract recognition (no mocked output): image-only, multi-page scanned, mixed text/image, rotated, and low-quality pages; OCR language initialization and missing-language failure; confidence/line/word/bbox persistence; progress; cancellation; timeout; offscreen crash and recovery; extension restart during OCR; partial success; duplicate OCR prevention; encrypted OCR at rest; AAD tamper rejection; no key material in offscreen diagnostics; and zero external network requests with external DNS disabled.
+- Build-time bundle isolation checks prove the service worker contains no parser runtime or OCR dependencies, and the offscreen document/worker contain no vault, database, encryption, storage, or application modules.
 - An in-place extension disable/re-enable lifecycle using a test-only management helper: worker restart, no persisted DEK, dashboard/popup locked UI, unlock persistence, and interruption of a 20 MB document mutation without a partial document/file pair.
 - Runtime HTTP and HTTPS page isolation: content script absent, no extension APIs/session storage/vault IndexedDB/page-world bridge.
 - Runtime Google Forms-origin injection and background scan through the real content script.
@@ -504,7 +526,7 @@ The migration fixture is generated by test-only files (`extension/src/background
 - Migration crash boundaries are also covered by deterministic fault injection, which complements the real migration SIGKILL test.
 - Storage quota is simulated by throwing `QuotaExceededError` from IndexedDB `put`; it is not a physical disk-full test.
 - The 200 MB boundary uses synthetic `Blob` size/text shims and a small valid archive; it does not allocate a 200 MB fixture.
-- The real Chromium timeout test uses a test-only bounded timeout and parse-delay hook; the production 60-second timeout is not stalled for a full minute.
+- The real Chromium timeout test uses a test-only bounded timeout and parse/OCR delay hooks; the production 300-second ingestion and 30-second per-page OCR timeouts are not stalled in full.
 - Malformed offscreen request/response and oversized-result tests use a test-only injection hook in the offscreen test build; production offscreen code does not expose those hooks.
 - The extension reload test uses `chrome.management.setEnabled(false/true)` with a test-only helper extension, not `chrome.runtime.reload()`, because the Playwright `--load-extension` harness blocks extension navigation after `runtime.reload()`. It preserves extension ID/storage and restarts the worker, exercising the same DEK-loss and lock behavior.
 - The Google Forms runtime page is served at the real `https://docs.google.com/forms/...` origin through Playwright route interception, not fetched from Google's production servers.
@@ -530,7 +552,7 @@ The migration fixture is generated by test-only files (`extension/src/background
 7. **Backup legacy headers.** V3 headers are fully authenticated. Legacy v1/v2 archives retain their original weaker AAD for compatibility and are imported only after their existing structural and relationship validation.
 8. **JavaScript memory.** Decrypted values and keys may remain in engine memory until garbage collection. Lock clears references and session storage, not all possible copies.
 9. **Service-worker termination locks the vault.** This is the deliberate consequence of keeping the DEK out of extension-readable storage. Frequent MV3 worker termination can interrupt a long idle session; an active dashboard connection reduces this in practice.
-10. **OCR is not implemented.** Scanned/image-only PDFs are stored and marked `ocrRequired`; their image text is not extracted, and no external OCR service is called.
+10. **OCR accuracy and language coverage.** Only English is bundled. OCR output depends on scan quality, resolution, skew, rotation, handwriting, tables, and column layout; Tesseract confidence is a heuristic, not a guarantee. Bounding boxes refer to the rendered OCR image. No external OCR service is used. Additional languages require new bundled, SHA-256-pinned assets before they can be claimed.
 11. **DOCX page boundaries are approximate.** DOCX is stored as one logical page because the format does not expose reliable page count/layout without a renderer.
 12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, and complex table styling are normalized to text; the original file remains available for fidelity.
 13. **Offscreen documents share the extension origin.** The offscreen parser has no vault/DB/crypto imports, no privileged runtime sender acceptance, a narrow port protocol, and a non-configurable runtime `indexedDB` guard. It is not a separate browser origin; a compromised offscreen page could still attempt other extension-origin APIs. It cannot decrypt vault records without the DEK, which never leaves the service worker.
@@ -539,5 +561,5 @@ The migration fixture is generated by test-only files (`extension/src/background
 16. **Auto-lock precision.** The dashboard timer handles the interactive interval; the background alarm is a backstop with Chrome alarm granularity.
 17. **AAD schema source.** The schema version in the AAD comes from the active vault record. If that metadata is corrupted, records fail closed rather than decrypting under a different context.
 18. **Dashboard operation client availability.** The localhost development dashboard uses a separate direct client and web session storage. That client is not packaged in the extension build, but development data is less isolated than production.
-19. **CSP limitations.** The extension manifest hardens `script-src`, `object-src`, and `worker-src`; the HTML meta policy adds `base-uri`, image/font/media restrictions. Chrome does not provide a fully general per-extension `connect-src` policy through the MV3 extension-page CSP, so network restriction also relies on the absence of network code in the offscreen bundles.
+19. **CSP limitations.** The extension manifest hardens `script-src` (including `'wasm-unsafe-eval'` for the local OCR core), `object-src`, and `worker-src`; the offscreen HTML meta policy adds `base-uri`, `connect-src 'self'`, and image/font/media restrictions. `'wasm-unsafe-eval'` is the narrow WebAssembly permission and does not enable JavaScript `eval`. Network restriction also relies on the absence of network code in the offscreen bundles.
 20. **No third-party audit.** The implementation has targeted tests, not a professional security certification.

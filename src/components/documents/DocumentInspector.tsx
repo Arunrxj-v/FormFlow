@@ -90,8 +90,15 @@ export function DocumentInspector({
   const extractedText = textResult?.text ?? document.extractedText ?? '';
   const warnings = textResult?.warnings ?? document.extractionWarnings ?? [];
   const ocrRequired = Boolean(document.ocrRequired ?? textResult?.ocrRequired);
+  const ocr = textResult?.ocr ?? null;
+  const ocrStatus = ocr?.status ?? document.ocrStatus ?? 'not_required';
+  const ocrConfidence = ocr?.averageConfidence ?? document.ocrConfidence;
+  const ocrLanguage = ocr?.language ?? document.ocrLanguage;
+  const ocrPagesCompleted = ocr?.pagesCompleted ?? document.ocrPagesCompleted;
+  const ocrPagesTotal = ocr?.pagesAttempted ?? document.ocrPagesTotal;
+  const ocrIncomplete = ocrStatus === 'failed' || ocrStatus === 'partial';
   const pageText = textResult?.pageTexts[currentPage - 1] ?? (currentPage === 1 ? extractedText : '');
-  const extractionFailed = document.status === 'failed' || document.extractedTextStatus === 'failed';
+  const extractionFailed = (document.status === 'failed' || document.extractedTextStatus === 'failed') && !ocrIncomplete;
 
   const handleRetry = async () => {
     setRetrying(true);
@@ -169,10 +176,42 @@ export function DocumentInspector({
         </div>
       )}
 
-      {!extractionFailed && ocrRequired && (
+      {!extractionFailed && ocrIncomplete && (
+        <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--ff-warning-bg, #fffbeb)', border: '1px solid var(--ff-warning-border, #fde68a)', borderRadius: 6, color: 'var(--ff-warning, #92400e)', fontSize: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>
+            {ocrStatus === 'partial' ? 'OCR partially completed' : 'OCR failed'}
+          </div>
+          <div>
+            {ocrPagesCompleted !== undefined && ocrPagesTotal !== undefined
+              ? `${ocrPagesCompleted} of ${ocrPagesTotal} required page${ocrPagesTotal === 1 ? '' : 's'} recognized${ocrLanguage ? ` with ${ocrLanguage}` : ''}. `
+              : ''}
+            Pages that require OCR are still marked for review. The original file and any existing extracted text remain intact.
+          </div>
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            loading={retrying}
+            onClick={() => void handleRetry()}
+            style={{ marginTop: 7 }}
+          >
+            Retry local OCR
+          </Button>
+        </div>
+      )}
+
+      {!extractionFailed && !ocrIncomplete && ocrRequired && (
         <div style={{ margin: '8px 0', padding: '8px 12px', background: 'var(--ff-warning-bg, #fffbeb)', border: '1px solid var(--ff-warning-border, #fde68a)', borderRadius: 6, color: 'var(--ff-warning, #92400e)', fontSize: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 2 }}>OCR required</div>
-          <div>One or more pages contain little or no extractable text. The original file is stored, but OCR is not implemented in Phase 4.1, so image text will not appear here.</div>
+          <div>One or more pages contain little or no extractable text. Local OCR has not completed for these pages.</div>
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            loading={retrying}
+            onClick={() => void handleRetry()}
+            style={{ marginTop: 7 }}
+          >
+            Run local OCR
+          </Button>
         </div>
       )}
 
@@ -229,7 +268,11 @@ export function DocumentInspector({
                   </div>
                 ) : (
                   <div style={{ opacity: 0.75 }}>
-                    {ocrRequired ? 'No extractable text on this page. OCR is not implemented.' : 'No extracted text is available for this page.'}
+                    {ocrStatus === 'completed'
+                      ? 'OCR completed, but no text was recognized on this page.'
+                      : ocrIncomplete
+                        ? 'OCR did not recognize text on this page.'
+                        : 'No extracted text is available for this page.'}
                   </div>
                 )}
               </div>
@@ -273,10 +316,31 @@ export function DocumentInspector({
               <div><dt>MIME type</dt><dd className="ff-truncate">{document.mimeType}</dd></div>
               <div>
                 <dt>Extraction</dt>
-                <dd style={{ color: extractionFailed ? 'var(--ff-danger)' : ocrRequired ? 'var(--ff-warning)' : 'var(--ff-success)', fontWeight: 600 }}>
-                  {extractionFailed ? 'Failed' : ocrRequired ? 'OCR required' : document.extractedTextStatus === 'extracted' ? 'Extracted' : 'Pending'}
+                <dd style={{ color: extractionFailed || ocrStatus === 'failed' ? 'var(--ff-danger)' : ocrIncomplete ? 'var(--ff-warning)' : 'var(--ff-success)', fontWeight: 600 }}>
+                  {extractionFailed
+                    ? 'Failed'
+                    : ocrStatus === 'completed'
+                      ? 'OCR completed'
+                      : ocrStatus === 'partial'
+                        ? 'OCR partial'
+                        : ocrStatus === 'failed'
+                          ? 'OCR failed'
+                          : ocrRequired
+                            ? 'OCR required'
+                            : document.extractedTextStatus === 'extracted'
+                              ? 'Extracted'
+                              : 'Pending'}
                 </dd>
               </div>
+              {ocrLanguage ? (
+                <div><dt>OCR language</dt><dd>{ocrLanguage}</dd></div>
+              ) : null}
+              {typeof ocrConfidence === 'number' ? (
+                <div><dt>OCR confidence</dt><dd>{ocrConfidence}% average</dd></div>
+              ) : null}
+              {ocrPagesTotal !== undefined ? (
+                <div><dt>OCR pages</dt><dd>{ocrPagesCompleted ?? 0} of {ocrPagesTotal} completed</dd></div>
+              ) : null}
               <div><dt>Warnings</dt><dd>{warnings.length}</dd></div>
               <div><dt>Extracted</dt><dd>{document.extractedAt ? new Date(document.extractedAt).toLocaleString() : 'Not available'}</dd></div>
               <div className="ff-meta-full">
@@ -352,7 +416,14 @@ export function DocumentInspector({
 
           {extractedText ? (
             <div className="ff-mt-10">
-              <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>Extracted Text</span>
+              <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>
+                {ocrStatus === 'completed' || ocrStatus === 'partial' ? 'Recognized Text (local OCR)' : 'Extracted Text'}
+              </span>
+              {typeof ocrConfidence === 'number' ? (
+                <span className="ff-body-sm ff-muted" style={{ fontSize: 10, marginLeft: 6 }}>
+                  {ocrConfidence}% average confidence{ocrLanguage ? ` · ${ocrLanguage}` : ''}
+                </span>
+              ) : null}
               <pre
                 style={{
                   fontSize: 10,
@@ -372,7 +443,11 @@ export function DocumentInspector({
             </div>
           ) : (
             <div className="ff-note" style={{ marginTop: 10 }}>
-              {ocrRequired ? 'No extractable text. This document is marked OCR-required; OCR is not implemented in Phase 4.1.' : 'No extracted text is available.'}
+              {ocrIncomplete
+                ? 'OCR did not recognize text. The original file is preserved and local OCR can be retried.'
+                : ocrRequired
+                  ? 'This document is marked OCR-required. No recognized text is available yet.'
+                  : 'No extracted text is available.'}
             </div>
           )}
         </div>

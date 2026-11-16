@@ -243,13 +243,13 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
     if (ocrRequired) {
       warnings.push(warning(
         'OCR_REQUIRED',
-        'One or more pages require OCR. OCR is not implemented in Phase 4.1; only the original file and any extractable text were stored.',
+        'One or more pages require OCR. FormFlow will run local OCR for these pages.',
       ));
     }
     if (textPages > 0 && imageOnlyPages > 0) {
       warnings.push(warning(
         'MIXED_TEXT_AND_IMAGE_PAGES',
-        'This PDF mixes text pages with image-only pages. OCR is required for the image-only pages.',
+        'This PDF mixes text pages with image-only pages. Local OCR is used for image-only pages.',
       ));
     }
     if (blankPages > 0 && textPages > 0) {

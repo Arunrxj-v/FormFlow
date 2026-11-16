@@ -48,7 +48,9 @@ export const documentService = {
       method: text.method,
       warnings: text.extraction?.warnings ?? [],
       metadata: text.extraction?.metadata ?? {},
+      ...(text.extraction?.ocr ? { ocr: text.extraction.ocr } : {}),
       ocrRequired: row.row.ocrRequired ?? text.extraction?.ocrRequired ?? false,
+      pagesNeedingOcr: row.row.ocrRequired === false ? [] : (text.extraction?.pagesNeedingOcr ?? []),
       extractionVersion: row.row.extractionVersion ?? text.extraction?.version,
       extractedAt: row.row.extractedAt,
     };

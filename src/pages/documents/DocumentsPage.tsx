@@ -34,6 +34,21 @@ import type { DocumentCategory, DocumentStatus, VaultDocument } from '@/services
 import { cn } from '@/utils/cn';
 import { documentService } from '@/services/documentService';
 
+function extractionLabel(doc: VaultDocument): { label: string; tone: 'success' | 'warning' | 'danger' | 'primary' | 'neutral' } {
+  if (doc.ocrStatus === 'completed') return { label: 'OCR completed', tone: 'success' };
+  if (doc.ocrStatus === 'partial') return { label: 'OCR partial', tone: 'warning' };
+  if (doc.ocrStatus === 'failed') return { label: 'OCR failed', tone: 'danger' };
+  if (doc.ocrRequired) return { label: 'OCR required', tone: 'warning' };
+  if (doc.extractedTextStatus === 'extracted' || doc.status === 'completed') return { label: 'Text extracted · encrypted', tone: 'success' };
+  return { label: '', tone: 'neutral' };
+}
+
+function ExtractionBadge({ doc }: { doc: VaultDocument }) {
+  const state = extractionLabel(doc);
+  if (!state.label) return <StatusBadge status={doc.status} />;
+  return <Badge tone={state.tone}>{state.label}</Badge>;
+}
+
 type SortKey = 'modified' | 'name' | 'size';
 type ViewMode = 'list' | 'grid';
 
@@ -266,7 +281,7 @@ export function DocumentsPage() {
                   <div className="ff-body-sm ff-muted ff-mt-4">{doc.subcategory}</div>
                   <div className="ff-row ff-between ff-mt-12">
                     <span className="ff-code ff-muted">{doc.pageCount ? `${doc.pageCount} page${doc.pageCount === 1 ? '' : 's'}` : doc.sizeLabel}</span>
-                    <span className="ff-code ff-muted">{doc.ocrRequired ? 'OCR required' : doc.extractedTextStatus === 'extracted' ? 'Text extracted' : doc.uploadedAt}</span>
+                    <span className="ff-code ff-muted">{extractionLabel(doc).label || doc.uploadedAt}</span>
                   </div>
                 </button>
               ))}
@@ -294,13 +309,7 @@ export function DocumentsPage() {
                           <div style={{ minWidth: 0 }}>
                             <div className="ff-label ff-truncate" style={{ maxWidth: 210 }}>{doc.name}</div>
                             <div className="ff-row ff-gap-4 ff-code ff-muted" style={{ fontSize: 9 }}>
-                              {doc.ocrRequired ? (
-                                <Badge tone="warning">OCR required</Badge>
-                              ) : doc.extractedTextStatus === 'extracted' || doc.status === 'completed' ? (
-                                <><span className="ff-dot" style={{ color: 'var(--ff-success)' }} /> Text extracted · encrypted</>
-                              ) : (
-                                <StatusBadge status={doc.status} />
-                              )}
+                              <ExtractionBadge doc={doc} />
                             </div>
                           </div>
                         </div>

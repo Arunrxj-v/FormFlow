@@ -10,15 +10,17 @@ export interface DocumentParseInput {
   format: DocumentFormat;
   bytes: ArrayBuffer;
   fileName: string;
+  ocrLanguage?: string;
   signal?: AbortSignal;
   onPage?: (page: number, total: number) => void;
+  onOcrProgress?: (page: number, total: number) => void;
 }
 
 export interface DocumentParseResult extends DocumentExtractionDetails {
   text: string;
   pageTexts: string[];
   pageCount: number;
-  method: 'pdf-text' | 'docx' | 'txt';
+  method: 'pdf-text' | 'docx' | 'txt' | 'ocr' | 'mixed';
 }
 
 export interface DocumentParser {

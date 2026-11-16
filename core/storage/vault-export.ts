@@ -24,6 +24,10 @@ import type {
   DocumentRecord,
   ExtractedValueRecord,
   FormHistoryRow,
+  OcrExtractionDetails,
+  OcrLine,
+  OcrPageDetails,
+  OcrWord,
   ProfileRecordRow,
   StoredDocumentFile,
   StoredDocumentText,
@@ -400,6 +404,7 @@ const DOCUMENT_KEYS = [
   'id', 'vaultId', 'mimeType', 'extension', 'category', 'subcategory', 'status', 'fileType',
   'sizeBytes', 'sizeLabel', 'checksum', 'storageKey', 'source', 'pageCount', 'ocrUsed',
   'extractedTextStatus', 'extractionVersion', 'extractedAt', 'ocrRequired', 'metadata',
+  'ocrStatus', 'ocrLanguage', 'ocrConfidence', 'ocrPagesTotal', 'ocrPagesCompleted',
   'confidence', 'failureReason', 'processingError', 'stageDetail', 'createdAt', 'updatedAt',
 ] as const;
 
@@ -443,6 +448,13 @@ function validateDocumentRecord(value: unknown): Omit<DocumentRecord, 'nameEnc' 
     ocrRequired: record.ocrRequired === undefined
       ? undefined
       : boolean(record.ocrRequired, 'Backup document OCR-required flag'),
+    ocrStatus: record.ocrStatus === undefined
+      ? undefined
+      : enumeration(record.ocrStatus, 'Backup document OCR status', new Set(['not_required', 'completed', 'partial', 'failed'])) as DocumentRecord['ocrStatus'],
+    ocrLanguage: optionalString(record.ocrLanguage, 'Backup document OCR language', 40),
+    ocrConfidence: optionalNumber(record.ocrConfidence, 'Backup document OCR confidence', 0, 100),
+    ocrPagesTotal: optionalInteger(record.ocrPagesTotal, 'Backup document OCR total pages', 0, 100_000),
+    ocrPagesCompleted: optionalInteger(record.ocrPagesCompleted, 'Backup document OCR completed pages', 0, 100_000),
     metadata: metadata as Record<string, unknown> | undefined,
     confidence: optionalNumber(record.confidence, 'Backup document confidence', 0, 100),
     failureReason: optionalString(record.failureReason, 'Backup document failure reason', 2_000),
@@ -575,18 +587,137 @@ function validateTextRecord(value: unknown): Omit<StoredDocumentText, 'textEnc' 
   };
 }
 
-function validateExtractionDetails(value: unknown): DocumentExtractionDetails {
-  const details = object(value, 'Backup extraction details');
-  allowedKeys(details, ['version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata'], 'Backup extraction details');
-  const warnings = array(details.warnings, 'Backup extraction warnings', 100).map((entry, index) => {
-    const item = object(entry, `Backup extraction warning ${index}`);
-    allowedKeys(item, ['code', 'message', 'page'], `Backup extraction warning ${index}`);
+function validateExtractionWarnings(value: unknown, label: string): DocumentExtractionDetails['warnings'] {
+  return array(value, label, 100).map((entry, index) => {
+    const item = object(entry, `${label} ${index}`);
+    allowedKeys(item, ['code', 'message', 'page'], `${label} ${index}`);
     return {
-      code: string(item.code, `Backup extraction warning ${index} code`, 80, 1),
-      message: string(item.message, `Backup extraction warning ${index} message`, 500, 1),
-      ...(item.page === undefined ? {} : { page: integer(item.page, `Backup extraction warning ${index} page`, 1, 100_000) }),
+      code: string(item.code, `${label} ${index} code`, 80, 1),
+      message: string(item.message, `${label} ${index} message`, 500, 1),
+      ...(item.page === undefined ? {} : { page: integer(item.page, `${label} ${index} page`, 1, 100_000) }),
     };
   });
+}
+
+function validateOcrBoundingBox(value: unknown, label: string): OcrWord['bbox'] {
+  const bbox = object(value, label);
+  allowedKeys(bbox, ['x0', 'y0', 'x1', 'y1'], label);
+  const x0 = integer(bbox.x0, `${label} x0`, 0, 1_000_000);
+  const y0 = integer(bbox.y0, `${label} y0`, 0, 1_000_000);
+  const x1 = integer(bbox.x1, `${label} x1`, 0, 1_000_000);
+  const y1 = integer(bbox.y1, `${label} y1`, 0, 1_000_000);
+  if (x1 < x0 || y1 < y0) invalid(`${label} coordinates are inverted.`);
+  return { x0, y0, x1, y1 };
+}
+
+function validateOcrWord(value: unknown, label: string): OcrWord {
+  const word = object(value, label);
+  allowedKeys(word, ['text', 'confidence', 'bbox'], label);
+  return {
+    text: string(word.text, `${label} text`, 300),
+    confidence: integer(word.confidence, `${label} confidence`, 0, 100),
+    bbox: validateOcrBoundingBox(word.bbox, `${label} bbox`),
+  };
+}
+
+function validateOcrLine(value: unknown, label: string, maxWords: number): OcrLine {
+  const line = object(value, label);
+  allowedKeys(line, ['text', 'confidence', 'bbox', 'words'], label);
+  const words = line.words === undefined
+    ? undefined
+    : array(line.words, `${label} words`, maxWords)
+      .map((word, index) => validateOcrWord(word, `${label} word ${index}`));
+  return {
+    text: string(line.text, `${label} text`, 1_000),
+    confidence: integer(line.confidence, `${label} confidence`, 0, 100),
+    bbox: validateOcrBoundingBox(line.bbox, `${label} bbox`),
+    ...(words ? { words } : {}),
+  };
+}
+
+function validateOcrPage(value: unknown, index: number, pageCount: number, wordBudget: { remaining: number }): OcrPageDetails {
+  const label = `Backup OCR page ${index}`;
+  const page = object(value, label);
+  allowedKeys(page, ['page', 'language', 'confidence', 'lines', 'words', 'warnings'], label);
+  const words = page.words === undefined
+    ? undefined
+    : array(page.words, `${label} words`, Math.min(500, wordBudget.remaining))
+      .map((word, wordIndex) => validateOcrWord(word, `${label} word ${wordIndex}`));
+  const lines = page.lines === undefined
+    ? undefined
+    : array(page.lines, `${label} lines`, 200)
+      .map((line, lineIndex) => validateOcrLine(line, `${label} line ${lineIndex}`, 500));
+  const warnings = page.warnings === undefined
+    ? undefined
+    : validateExtractionWarnings(page.warnings, `${label} warnings`);
+  const confidence = page.confidence === undefined
+    ? undefined
+    : integer(page.confidence, `${label} confidence`, 0, 100);
+  if (words) wordBudget.remaining -= words.length;
+  return {
+    page: integer(page.page, `${label} number`, 1, pageCount),
+    language: string(page.language, `${label} language`, 40, 2),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(lines ? { lines } : {}),
+    ...(words ? { words } : {}),
+    ...(warnings ? { warnings } : {}),
+  };
+}
+
+function validateOcrDetails(value: unknown, pagesNeedingOcr: number[], pageCount: number): OcrExtractionDetails {
+  const details = object(value, 'Backup OCR details');
+  allowedKeys(
+    details,
+    ['status', 'engine', 'engineVersion', 'language', 'processedAt', 'pagesAttempted', 'pagesCompleted', 'pagesFailed', 'averageConfidence', 'warnings', 'pages'],
+    'Backup OCR details',
+  );
+  const status = enumeration(
+    details.status,
+    'Backup OCR status',
+    new Set(['not_required', 'completed', 'partial', 'failed']),
+  ) as OcrExtractionDetails['status'];
+  const pages = array(details.pages, 'Backup OCR pages', pageCount);
+  const wordBudget = { remaining: 5_000 };
+  const parsedPages = pages.map((page, index) => validateOcrPage(page, index, pageCount, wordBudget));
+  if (new Set(parsedPages.map((page) => page.page)).size !== parsedPages.length) {
+    invalid('Backup OCR pages contain duplicate page numbers.');
+  }
+  const pagesAttempted = integer(details.pagesAttempted, 'Backup OCR pages attempted', 0, pageCount);
+  const pagesCompleted = integer(details.pagesCompleted, 'Backup OCR pages completed', 0, pageCount);
+  const pagesFailed = integer(details.pagesFailed, 'Backup OCR pages failed', 0, pageCount);
+  if (pagesCompleted + pagesFailed > pagesAttempted) invalid('Backup OCR page counts are inconsistent.');
+  if (status === 'completed' && (pagesFailed !== 0 || pagesCompleted === 0 || pagesNeedingOcr.length > 0)) {
+    invalid('Backup completed OCR has inconsistent counts.');
+  }
+  if (status === 'failed' && pagesCompleted !== 0) invalid('Backup failed OCR reports completed pages.');
+  if (status === 'partial' && (pagesCompleted === 0 || pagesFailed === 0)) {
+    invalid('Backup partial OCR counts are inconsistent.');
+  }
+  const averageConfidence = details.averageConfidence === undefined
+    ? undefined
+    : integer(details.averageConfidence, 'Backup OCR average confidence', 0, 100);
+  return {
+    status,
+    engine: string(details.engine, 'Backup OCR engine', 80, 2),
+    engineVersion: string(details.engineVersion, 'Backup OCR engine version', 40, 1),
+    language: string(details.language, 'Backup OCR language', 40, 2),
+    processedAt: timestamp(details.processedAt, 'Backup OCR processed timestamp'),
+    pagesAttempted,
+    pagesCompleted,
+    pagesFailed,
+    ...(averageConfidence !== undefined ? { averageConfidence } : {}),
+    warnings: validateExtractionWarnings(details.warnings, 'Backup OCR warnings'),
+    pages: parsedPages,
+  };
+}
+
+function validateExtractionDetails(value: unknown, pageCount: number): DocumentExtractionDetails {
+  const details = object(value, 'Backup extraction details');
+  allowedKeys(details, ['version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr'], 'Backup extraction details');
+  const warnings = validateExtractionWarnings(details.warnings, 'Backup extraction warnings');
+  const pagesNeedingOcr = array(details.pagesNeedingOcr, 'Backup extraction OCR pages', pageCount)
+    .map((page, index) => integer(page, `Backup extraction OCR page ${index}`, 1, pageCount));
+  const ocr = details.ocr === undefined ? undefined : validateOcrDetails(details.ocr, pagesNeedingOcr, pageCount);
   const metadata = object(details.metadata, 'Backup extraction metadata');
   allowedKeys(
     metadata,
@@ -611,9 +742,9 @@ function validateExtractionDetails(value: unknown): DocumentExtractionDetails {
   return {
     version: integer(details.version, 'Backup extraction version', 1, 1_000),
     ocrRequired: boolean(details.ocrRequired, 'Backup extraction OCR flag'),
-    pagesNeedingOcr: array(details.pagesNeedingOcr, 'Backup extraction OCR pages', 100_000)
-      .map((page, index) => integer(page, `Backup extraction OCR page ${index}`, 1, 100_000)),
+    pagesNeedingOcr,
     warnings,
+    ...(ocr ? { ocr } : {}),
     metadata: {
       ...(optionalText('title', 500) !== undefined ? { title: optionalText('title', 500) } : {}),
       ...(optionalText('author', 300) !== undefined ? { author: optionalText('author', 300) } : {}),
@@ -768,7 +899,7 @@ function validatePayload(value: unknown, envelope: EncryptedBackupEnvelope): Por
       record,
       text: string(item.text, 'Backup text', MAX_EXTRACTED_TEXT_CHARS),
       pageTexts,
-      ...(item.extraction === undefined ? {} : { extraction: validateExtractionDetails(item.extraction) }),
+      ...(item.extraction === undefined ? {} : { extraction: validateExtractionDetails(item.extraction, record.pageCount) }),
     };
   });
 

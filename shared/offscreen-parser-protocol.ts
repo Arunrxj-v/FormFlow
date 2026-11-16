@@ -3,11 +3,16 @@ import {
   MAX_EXTRACTED_TEXT_CHARS,
   MAX_EXTRACTION_WARNINGS,
   MAX_PDF_PAGES,
+  OCR_LANGUAGE_ASSETS,
 } from './constants';
 import { FormFlowError } from './errors';
 import type {
   DocumentExtractionMetadata,
   ExtractionWarning,
+  OcrExtractionDetails,
+  OcrLine,
+  OcrPageDetails,
+  OcrWord,
 } from './types';
 
 export const OFFSCREEN_PARSER_PORT = 'formflow-offscreen-parser';
@@ -30,6 +35,7 @@ export function isOffscreenParserDocumentUrl(url: string | undefined, extensionI
 }
 /** text + pageTexts duplicate most PDF text in memory, so allow both sides. */
 export const OFFSCREEN_PARSER_MAX_RESULT_CHARS = MAX_EXTRACTED_TEXT_CHARS * 2 + 100_000;
+export const OFFSCREEN_PARSER_MAX_OCR_DETAIL_CHARS = 1_000_000;
 
 export type OffscreenParserFormat = 'pdf' | 'docx' | 'txt';
 export type OffscreenParserOperation =
@@ -47,6 +53,7 @@ export interface OffscreenParseRequest {
   format: OffscreenParserFormat;
   fileName: string;
   sizeBytes: number;
+  ocrLanguage: string;
   /** Chrome extension ports use JSON serialization; bytes travel as base64. */
   dataBase64: string;
 }
@@ -59,6 +66,7 @@ export interface WorkerParseRequest {
   format: OffscreenParserFormat;
   fileName: string;
   sizeBytes: number;
+  ocrLanguage: string;
   bytes: ArrayBuffer;
 }
 
@@ -75,6 +83,7 @@ export interface OffscreenProgressMessage {
   progress: number;
   page?: number;
   totalPages?: number;
+  stage?: 'text' | 'ocr';
 }
 
 export interface OffscreenResultMessage {
@@ -95,23 +104,19 @@ export interface OffscreenParserResult {
   text: string;
   pageTexts: string[];
   pageCount: number;
-  method: 'pdf-text' | 'docx' | 'txt';
+  method: 'pdf-text' | 'docx' | 'txt' | 'ocr' | 'mixed';
   version: number;
   ocrRequired: boolean;
   pagesNeedingOcr: number[];
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
+  ocr?: OcrExtractionDetails;
 }
 
 export type OffscreenInboundMessage = OffscreenParseRequest | OffscreenCancelRequest;
 export type OffscreenOutboundMessage = OffscreenProgressMessage | OffscreenResultMessage | OffscreenErrorMessage;
 
 const FORMATS = new Set<OffscreenParserFormat>(['pdf', 'docx', 'txt']);
-const METHODS: Record<OffscreenParserFormat, OffscreenParserResult['method']> = {
-  pdf: 'pdf-text',
-  docx: 'docx',
-  txt: 'txt',
-};
 const ERROR_CODES = new Set([
   'CANCELLED',
   'EXTRACTION_FAILED',
@@ -124,16 +129,21 @@ const ERROR_CODES = new Set([
   'PARSER_UNAVAILABLE',
   'PARSER_BUSY',
   'PARSER_PROTOCOL_ERROR',
+  'OCR_LANGUAGE_UNAVAILABLE',
+  'OCR_ENGINE_FAILED',
+  'OCR_INTEGRITY_FAILED',
+  'OCR_RENDER_FAILED',
+  'OCR_TIMEOUT',
   'UNSUPPORTED_FILE',
   'UNKNOWN',
 ]);
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,120}$/;
-const REQUEST_KEYS = ['type', 'protocol', 'requestId', 'parserVersion', 'format', 'fileName', 'sizeBytes', 'dataBase64'];
+const REQUEST_KEYS = ['type', 'protocol', 'requestId', 'parserVersion', 'format', 'fileName', 'sizeBytes', 'ocrLanguage', 'dataBase64'];
 const CANCEL_KEYS = ['type', 'protocol', 'requestId'];
-const PROGRESS_KEYS = ['type', 'protocol', 'requestId', 'progress', 'page', 'totalPages'];
+const PROGRESS_KEYS = ['type', 'protocol', 'requestId', 'progress', 'page', 'totalPages', 'stage'];
 const RESULT_MESSAGE_KEYS = ['type', 'protocol', 'requestId', 'result'];
 const ERROR_MESSAGE_KEYS = ['type', 'protocol', 'requestId', 'error'];
-const RESULT_KEYS = ['text', 'pageTexts', 'pageCount', 'method', 'version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata'];
+const RESULT_KEYS = ['text', 'pageTexts', 'pageCount', 'method', 'version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr'];
 const WARNING_KEYS = ['code', 'message', 'page'];
 const METADATA_KEYS = ['title', 'author', 'subject', 'keywords', 'creator', 'producer', 'creationDate', 'modDate', 'headings', 'tableCount', 'rowCount', 'encoding', 'bom', 'lineEndings'];
 const HEADING_KEYS = ['level', 'text'];
@@ -204,6 +214,10 @@ export function parseOffscreenParseRequest(value: unknown): OffscreenParseReques
   if (fileName.split('.').pop()?.toLowerCase() !== format) {
     throw protocolError('fileName does not match the document format.');
   }
+  const ocrLanguage = assertString(value.ocrLanguage, 'ocrLanguage', 2, 40);
+  if (!Object.prototype.hasOwnProperty.call(OCR_LANGUAGE_ASSETS, ocrLanguage)) {
+    throw protocolError('ocrLanguage is not bundled with this extension.');
+  }
   const sizeBytes = assertInteger(value.sizeBytes, 'sizeBytes', 1, MAX_DOCUMENT_BYTES);
   const dataBase64 = assertString(
     value.dataBase64,
@@ -225,13 +239,14 @@ export function parseOffscreenParseRequest(value: unknown): OffscreenParseReques
     format,
     fileName,
     sizeBytes,
+    ocrLanguage,
     dataBase64,
   };
 }
 
 export function parseWorkerParseRequest(value: unknown): WorkerParseRequest {
   if (!isObject(value)) throw protocolError('Worker parser request must be an object.');
-  assertExactKeys(value, ['type', 'protocol', 'requestId', 'parserVersion', 'format', 'fileName', 'sizeBytes', 'bytes'], 'Worker parser request');
+  assertExactKeys(value, ['type', 'protocol', 'requestId', 'parserVersion', 'format', 'fileName', 'sizeBytes', 'ocrLanguage', 'bytes'], 'Worker parser request');
   if (value.type !== 'PARSE_DOCUMENT') throw protocolError('Worker parser operation is unsupported.');
   assertProtocol(value.protocol);
   const requestId = assertRequestId(value.requestId);
@@ -240,6 +255,10 @@ export function parseWorkerParseRequest(value: unknown): WorkerParseRequest {
   const fileName = assertString(value.fileName, 'fileName', 1, 255);
   if (fileName.split('.').pop()?.toLowerCase() !== format) {
     throw protocolError('fileName does not match the document format.');
+  }
+  const ocrLanguage = assertString(value.ocrLanguage, 'ocrLanguage', 2, 40);
+  if (!Object.prototype.hasOwnProperty.call(OCR_LANGUAGE_ASSETS, ocrLanguage)) {
+    throw protocolError('ocrLanguage is not bundled with this extension.');
   }
   const sizeBytes = assertInteger(value.sizeBytes, 'sizeBytes', 1, MAX_DOCUMENT_BYTES);
   if (!isArrayBuffer(value.bytes) || value.bytes.byteLength !== sizeBytes) {
@@ -253,6 +272,7 @@ export function parseWorkerParseRequest(value: unknown): WorkerParseRequest {
     format,
     fileName,
     sizeBytes,
+    ocrLanguage,
     bytes: value.bytes,
   };
 }
@@ -279,6 +299,8 @@ export function parseOffscreenProgressMessage(value: unknown): OffscreenProgress
   const hasPage = value.page !== undefined;
   const hasTotal = value.totalPages !== undefined;
   if (hasPage !== hasTotal) throw protocolError('Progress page and totalPages must be supplied together.');
+  const stage = value.stage;
+  if (stage !== undefined && stage !== 'text' && stage !== 'ocr') throw protocolError('Progress stage is invalid.');
   if (hasPage) {
     const page = assertInteger(value.page, 'page', 1, MAX_PDF_PAGES);
     const totalPages = assertInteger(value.totalPages, 'totalPages', 1, MAX_PDF_PAGES);
@@ -290,6 +312,7 @@ export function parseOffscreenProgressMessage(value: unknown): OffscreenProgress
       progress,
       page,
       totalPages,
+      ...(stage ? { stage } : {}),
     };
   }
   return {
@@ -297,6 +320,7 @@ export function parseOffscreenProgressMessage(value: unknown): OffscreenProgress
     protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
     requestId,
     progress,
+    ...(stage ? { stage } : {}),
   };
 }
 
@@ -354,6 +378,123 @@ function parseMetadata(value: unknown): DocumentExtractionMetadata {
   return metadata;
 }
 
+function parseBoundingBox(value: unknown, label: string): { x0: number; y0: number; x1: number; y1: number } {
+  if (!isObject(value)) throw protocolError(`${label} is invalid.`);
+  assertExactKeys(value, ['x0', 'y0', 'x1', 'y1'], label);
+  const x0 = assertInteger(value.x0, `${label} x0`, 0, 1_000_000);
+  const y0 = assertInteger(value.y0, `${label} y0`, 0, 1_000_000);
+  const x1 = assertInteger(value.x1, `${label} x1`, 0, 1_000_000);
+  const y1 = assertInteger(value.y1, `${label} y1`, 0, 1_000_000);
+  if (x1 < x0 || y1 < y0) throw protocolError(`${label} coordinates are inverted.`);
+  return { x0, y0, x1, y1 };
+}
+
+function parseOcrWord(value: unknown, label: string): OcrWord {
+  if (!isObject(value)) throw protocolError(`${label} is invalid.`);
+  assertExactKeys(value, ['text', 'confidence', 'bbox'], label);
+  return {
+    text: assertString(value.text, `${label} text`, 0, 300),
+    confidence: assertInteger(value.confidence, `${label} confidence`, 0, 100),
+    bbox: parseBoundingBox(value.bbox, `${label} bbox`),
+  };
+}
+
+function parseOcrLine(value: unknown, label: string, maxWords: number): OcrLine {
+  if (!isObject(value)) throw protocolError(`${label} is invalid.`);
+  assertExactKeys(value, ['text', 'confidence', 'bbox', 'words'], label);
+  let words: OcrWord[] | undefined;
+  if (value.words !== undefined) {
+    if (!Array.isArray(value.words) || value.words.length > maxWords) throw protocolError(`${label} words are oversized.`);
+    words = value.words.map((word, index) => parseOcrWord(word, `${label} word ${index}`));
+  }
+  return {
+    text: assertString(value.text, `${label} text`, 0, 1_000),
+    confidence: assertInteger(value.confidence, `${label} confidence`, 0, 100),
+    bbox: parseBoundingBox(value.bbox, `${label} bbox`),
+    ...(words ? { words } : {}),
+  };
+}
+
+function parseOcrPage(value: unknown, index: number, pageCount: number, wordBudget: { remaining: number }): OcrPageDetails {
+  if (!isObject(value)) throw protocolError(`OCR page ${index} is invalid.`);
+  assertExactKeys(value, ['page', 'language', 'confidence', 'lines', 'words', 'warnings'], `OCR page ${index}`);
+  const page = assertInteger(value.page, `OCR page ${index} number`, 1, pageCount);
+  let words: OcrWord[] | undefined;
+  if (value.words !== undefined) {
+    if (!Array.isArray(value.words) || value.words.length > Math.min(500, wordBudget.remaining)) {
+      throw protocolError(`OCR page ${index} words are oversized.`);
+    }
+    words = value.words.map((word, wordIndex) => parseOcrWord(word, `OCR page ${index} word ${wordIndex}`));
+  }
+  let lines: OcrLine[] | undefined;
+  if (value.lines !== undefined) {
+    if (!Array.isArray(value.lines) || value.lines.length > 200) throw protocolError(`OCR page ${index} lines are oversized.`);
+    lines = value.lines.map((line, lineIndex) => parseOcrLine(line, `OCR page ${index} line ${lineIndex}`, 500));
+  }
+  let warnings: ExtractionWarning[] | undefined;
+  if (value.warnings !== undefined) {
+    if (!Array.isArray(value.warnings) || value.warnings.length > MAX_EXTRACTION_WARNINGS) {
+      throw protocolError(`OCR page ${index} warnings are oversized.`);
+    }
+    warnings = value.warnings.map((warning) => parseWarning(warning, pageCount));
+  }
+  const confidence = value.confidence === undefined
+    ? undefined
+    : assertInteger(value.confidence, `OCR page ${index} confidence`, 0, 100);
+  if (words) wordBudget.remaining -= words.length;
+  return {
+    page,
+    language: assertString(value.language, `OCR page ${index} language`, 2, 40),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(lines ? { lines } : {}),
+    ...(words ? { words } : {}),
+    ...(warnings ? { warnings } : {}),
+  };
+}
+
+function parseOcrDetails(value: unknown, pageCount: number): OcrExtractionDetails {
+  if (!isObject(value)) throw protocolError('OCR details are invalid.');
+  assertExactKeys(
+    value,
+    ['status', 'engine', 'engineVersion', 'language', 'processedAt', 'pagesAttempted', 'pagesCompleted', 'pagesFailed', 'averageConfidence', 'warnings', 'pages'],
+    'OCR details',
+  );
+  const status = value.status;
+  if (status !== 'not_required' && status !== 'completed' && status !== 'partial' && status !== 'failed') {
+    throw protocolError('OCR status is invalid.');
+  }
+  if (!Array.isArray(value.pages) || value.pages.length > pageCount) throw protocolError('OCR pages are oversized.');
+  const wordBudget = { remaining: 5_000 };
+  const pages = value.pages.map((page, index) => parseOcrPage(page, index, pageCount, wordBudget));
+  if (new Set(pages.map((page) => page.page)).size !== pages.length) throw protocolError('OCR pages contain duplicate page numbers.');
+  const pagesAttempted = assertInteger(value.pagesAttempted, 'OCR pagesAttempted', 0, pageCount);
+  const pagesCompleted = assertInteger(value.pagesCompleted, 'OCR pagesCompleted', 0, pageCount);
+  const pagesFailed = assertInteger(value.pagesFailed, 'OCR pagesFailed', 0, pageCount);
+  if (pagesCompleted + pagesFailed > pagesAttempted) throw protocolError('OCR page counts are inconsistent.');
+  if (status === 'completed' && (pagesFailed !== 0 || pagesCompleted === 0)) throw protocolError('Completed OCR has failed pages.');
+  if (status === 'failed' && pagesCompleted !== 0) throw protocolError('Failed OCR reports completed pages.');
+  if (status === 'partial' && (pagesCompleted === 0 || pagesFailed === 0)) throw protocolError('Partial OCR counts are inconsistent.');
+  const averageConfidence = value.averageConfidence === undefined
+    ? undefined
+    : assertInteger(value.averageConfidence, 'OCR average confidence', 0, 100);
+  if (!Array.isArray(value.warnings) || value.warnings.length > MAX_EXTRACTION_WARNINGS) throw protocolError('OCR warnings are oversized.');
+  const warnings = value.warnings.map((warning) => parseWarning(warning, pageCount));
+  const details: OcrExtractionDetails = {
+    status,
+    engine: assertString(value.engine, 'OCR engine', 2, 80),
+    engineVersion: assertString(value.engineVersion, 'OCR engine version', 1, 40),
+    language: assertString(value.language, 'OCR language', 2, 40),
+    processedAt: assertString(value.processedAt, 'OCR processedAt', 10, 64),
+    pagesAttempted,
+    pagesCompleted,
+    pagesFailed,
+    warnings,
+    pages,
+  };
+  if (averageConfidence !== undefined) details.averageConfidence = averageConfidence;
+  return details;
+}
+
 export function parseOffscreenParserResult(value: unknown, expectedFormat?: OffscreenParserFormat): OffscreenParserResult {
   if (!isObject(value)) throw protocolError('Parser result must be an object.');
   assertExactKeys(value, RESULT_KEYS, 'Parser result');
@@ -367,8 +508,14 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
   const totalChars = text.length + pageTexts.reduce((sum, page) => sum + page.length, 0);
   if (totalChars > OFFSCREEN_PARSER_MAX_RESULT_CHARS) throw protocolError('Parser result exceeds the response size limit.');
   const method = value.method;
-  if (method !== 'pdf-text' && method !== 'docx' && method !== 'txt') throw protocolError('Parser method is invalid.');
-  if (expectedFormat && method !== METHODS[expectedFormat]) throw protocolError('Parser method does not match the requested format.');
+  if (method !== 'pdf-text' && method !== 'docx' && method !== 'txt' && method !== 'ocr' && method !== 'mixed') {
+    throw protocolError('Parser method is invalid.');
+  }
+  if (expectedFormat === 'pdf' && method !== 'pdf-text' && method !== 'ocr' && method !== 'mixed') {
+    throw protocolError('Parser method does not match the requested format.');
+  }
+  if (expectedFormat === 'docx' && method !== 'docx') throw protocolError('Parser method does not match the requested format.');
+  if (expectedFormat === 'txt' && method !== 'txt') throw protocolError('Parser method does not match the requested format.');
   if (value.version !== OFFSCREEN_PARSER_VERSION) throw protocolError('Parser result version is unsupported.');
   const ocrRequired = assertBoolean(value.ocrRequired, 'ocrRequired');
   if (!Array.isArray(value.pagesNeedingOcr) || value.pagesNeedingOcr.length > pageCount) {
@@ -383,7 +530,16 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
   }
   const warnings = value.warnings.map((warning) => parseWarning(warning, pageCount));
   const metadata = parseMetadata(value.metadata);
-  return {
+  const ocr = value.ocr === undefined ? undefined : parseOcrDetails(value.ocr, pageCount);
+  if (ocr) {
+    if (ocr.status === 'completed' && (ocrRequired || pagesNeedingOcr.length > 0)) {
+      throw protocolError('Completed OCR cannot still require OCR pages.');
+    }
+    if ((ocr.status === 'partial' || ocr.status === 'failed') && !ocrRequired) {
+      throw protocolError('Incomplete OCR must report required OCR pages.');
+    }
+  }
+  const result: OffscreenParserResult = {
     text,
     pageTexts,
     pageCount,
@@ -394,6 +550,11 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
     warnings,
     metadata,
   };
+  if (ocr) result.ocr = ocr;
+  if (ocr && JSON.stringify(ocr).length > OFFSCREEN_PARSER_MAX_OCR_DETAIL_CHARS) {
+    throw protocolError('OCR details exceed the response size limit.');
+  }
+  return result;
 }
 
 export function parseOffscreenResultMessage(value: unknown, expectedFormat?: OffscreenParserFormat): OffscreenResultMessage {

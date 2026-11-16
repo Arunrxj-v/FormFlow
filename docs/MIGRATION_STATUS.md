@@ -2,6 +2,90 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 4.1.2 — Local OCR for scanned PDFs (complete)
+
+Phase 4.1.2 adds genuine local OCR for scanned and image-only PDF pages without moving document content outside the browser.
+
+### Engine evaluation and selection
+
+The candidate set was limited to browser-local engines compatible with the existing offscreen architecture: Tesseract.js, OCRAD, and a future WASM Tesseract wrapper. OCRAD was rejected because it has no maintained worker/WASM packaging, weak language coverage, and no confidence or bounding-box model comparable to Tesseract. A custom WASM build would add a large build and maintenance surface without improving the initial English requirement. **Tesseract.js 7.0.0 with tesseract.js-core 7.0.0** was selected because it:
+
+- runs in a classic Web Worker with a SIMD LSTM WASM core;
+- supports explicit local `workerPath`, `corePath`, and `langPath` values, avoiding CDN defaults;
+- exposes page, line, and word confidence plus bounding boxes;
+- is Apache-2.0 licensed, with MIT-licensed language data;
+- was verified in the real extension offscreen document under the production CSP on Chrome 156.
+
+The local feasibility probe, and later the full extension suite, recognized `FORMFLOW OCR TEST`, `42 Example Street, Bengaluru`, and `Account number: 9988776655` from a rendered image-only PDF.
+
+### Supported language set
+
+Only **English (`eng`)** is bundled and claimed. The asset is `@tesseract.js-data/eng@1.0.0` `4.0.0_best_int/eng.traineddata.gz`. Additional languages are not supported until their trained data is added to `OCR_LANGUAGE_ASSETS`, copied into the build, and SHA-256 verified. The background refuses preferences outside the bundled set, and the offscreen protocol rejects unbundled language identifiers.
+
+### Runtime architecture
+
+- The background validates the file, computes the SHA-256 digest, encrypts the original, and sends only PDF bytes plus non-secret parser fields to the offscreen document.
+- The offscreen parser first extracts native PDF text and identifies pages with little or no text. Only those pages are rendered with PDF.js at 200 DPI, capped at 12 MP per page and scale 3.
+- The rendered canvas alone is passed to a request-scoped Tesseract worker. The OCR worker receives no vault key, AAD, passphrase, IndexedDB handle, or vault repository.
+- Pages are processed incrementally, one canvas at a time. Each canvas and PDF page is released after use. A request-scoped OCR worker is terminated at the end of the parse, on cancellation, or when the offscreen document shuts down.
+- OCR is bounded to 100 pages per attempt, 30 seconds per page, and a 300-second total ingestion timeout.
+- Native text is retained on text pages. OCR text replaces only empty/very short native text or substantially longer OCR output; overlapping OCR output is not appended twice.
+- The background validates OCR structure again, confirms status/page invariants, and persists recognized text and OCR details only inside the existing encrypted `documentText` record (`extractionEnc` with the `extraction` AAD field).
+
+### CSP and local assets
+
+The extension packages `tesseract/worker.min.js`, `tesseract/tesseract-core-simd-lstm.wasm`, `tesseract/tesseract-core-simd-lstm.wasm.js`, and `tessdata/eng.traineddata.gz` locally. The build verifies each SHA-256 before writing the production extension and fails on a mismatch. The offscreen page allows only `'wasm-unsafe-eval'` for the local WASM core, `connect-src 'self'` for local extension resource fetches, and `worker-src 'self'`. No remote OCR API, CDN, or document upload is used.
+
+### OCR output model
+
+Each OCR page records its original PDF page number, language, confidence, lines, words, bounding boxes, and warnings. The extraction record records engine, engine version, processed timestamp, pages attempted/completed/failed, average confidence, warnings, and status (`not_required`, `completed`, `partial`, or `failed`). Bounding boxes are pixel coordinates in the rendered page image, not PDF points. Confidence values are Tesseract's actual values; no confidence is fabricated when unavailable.
+
+### Verification results
+
+| Command / suite | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 78 files; local OCR assets copied and SHA-256 verified; bundle isolation verified |
+| `npm run test:local` | 125/125 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `scripts/dev/e2e-phase412-ocr.mjs` | 46/46 pass (test-hooks build) |
+
+The Phase 4.1.2 Chromium suite verified with genuine recognition, not mocks:
+
+- image-only PDF recognized with page/line/word confidence and boxes;
+- multi-page scanned PDF with preserved page boundaries;
+- mixed native-text and image PDF, OCR applied only to the image page;
+- rotated page recognized;
+- unreadable/low-quality page stored and marked failed with real warnings;
+- partial OCR success (one page completed, one failed);
+- OCR language initialization and confidence;
+- missing language asset preserving the original document and returning a retryable failure;
+- cancellation during OCR with no partial record;
+- OCR page timeout with a retryable failed status;
+- offscreen crash during OCR, recovery, and successful retry;
+- extension restart during OCR with no partial record and successful reimport;
+- duplicate import not re-running OCR;
+- encrypted OCR output at rest and AAD tamper rejection;
+- encrypted backup export/import round-trip preserving OCR text, status, language, confidence, and bounding boxes;
+- no vault key material in offscreen request/result diagnostics;
+- bounded offscreen heap usage and no residual OCR jobs;
+- no external network requests during OCR.
+
+Measured on Google Chrome for Testing 156.0.8078.4 on macOS: a 1600×900 image-only page completed end-to-end import and OCR in **762 ms** with **95% average confidence** in the final test-hooks suite run; a separate final production-build check completed in **711 ms** with **94% confidence** and the expected text. The first OCR page pays engine and language initialization; earlier probe runs took about 1.2 s. Peak offscreen JS heap during the single-page suite run was **15.7 MB**; a two-page scanned PDF peaked at **18.4 MB**. These figures exclude WASM linear memory and are indicative, not a benchmark across devices. The bundled assets total about **9.6 MB** (worker 109 KB, SIMD LSTM core 6.4 MB including WASM, English data 2.8 MB). A single rendered 12 MP RGBA page is about 48 MB, and the implementation holds only one rendered page at a time.
+
+### Limitations
+
+- Only English is bundled.
+- OCR accuracy varies with scan quality, skew, rotation, handwriting, tables, and multi-column layout.
+- OCR text is not a visual reconstruction; the encrypted original remains authoritative.
+- Bounding boxes refer to the rendered OCR image.
+- The first OCR page pays engine and language initialization cost.
+- Documents with more than 100 OCR-required pages require a later retry for the remaining pages; the UI and warnings report that limit.
+- Tesseract.js 7.0.0's `Lang[]` preloaded-data initialization path was not used because its worker initialization path is broken; the implementation uses the documented local `langPath` fetch and still verifies the asset hash before engine startup.
+- No external OCR, cloud OCR, or remote model download is implemented.
+
 ## Phase 4.1.1 — Isolated offscreen document parsing (complete)
 
 Phase 4.1.1 moves untrusted PDF, DOCX, and TXT parsing out of the privileged MV3 service worker into a hidden Chrome offscreen document and request-scoped parser workers.
@@ -62,7 +146,7 @@ Known limitations:
 
 - Offscreen documents and parser workers share the extension origin. They have no vault authority, no vault/DB/crypto imports, and a runtime IndexedDB guard, but they are not a separate sandboxed origin.
 - The offscreen document is created with the `WORKERS` reason and uses Chrome 109+ APIs.
-- OCR remains unimplemented; image-only PDFs remain `ocrRequired`.
+- Local OCR was added in Phase 4.1.2; image-only PDFs no longer remain permanently `ocrRequired`.
 - Malformed request/response and timeout tests use test-only bots/offscreen hooks in a test build; the production build was rebuilt and verified to contain no hook strings.
 - Parser workers receive only document bytes and non-secret protocol fields; the DEK never leaves the service worker.
 
@@ -74,7 +158,7 @@ Implemented:
 
 - Signature/content validation for PDF (`%PDF-`), DOCX (ZIP container plus `word/document.xml`), and strict UTF-8 TXT. File extensions and browser MIME types are treated as hints, not authority.
 - SHA-256 content digests with duplicate detection before a new record is created. The existing record is returned by name; no file is overwritten.
-- PDF.js extraction of text, page count, per-page text, page numbers, and best-effort PDF metadata. Image-only, scanned, mixed text/image, empty, password-protected, corrupted, and oversized PDFs are classified. Scanned documents are marked OCR-required; OCR is **not implemented**.
+- PDF.js extraction of text, page count, per-page text, page numbers, and best-effort PDF metadata. Image-only, scanned, mixed text/image, empty, password-protected, corrupted, and oversized PDFs are classified. Phase 4.1.2 adds local OCR for image-only pages.
 - DOCX extraction with Mammoth validation plus a WordprocessingML structure pass for paragraphs, headings, tables, line breaks, and document order. Table cells are preserved as tab-separated rows.
 - Strict UTF-8 TXT handling with BOM detection, CRLF/CR/LF normalization, invalid-encoding rejection, binary-control rejection, and paragraph preservation.
 - Atomic encrypted persistence: the document row, encrypted original bytes, encrypted extracted text, and encrypted extraction details are written in one strict IndexedDB transaction. A quota error, lock, parser failure, cancellation, or service-worker termination cannot leave a successful document without its text or file.
@@ -109,13 +193,13 @@ Browser: Google Chrome for Testing 156.0.8078.4, Playwright persistent profiles,
 
 Known Phase 4.1 limitations:
 
-- **OCR is not implemented.** Image-only PDFs are stored and marked `ocrRequired`; no text is fabricated.
+- **OCR is implemented in Phase 4.1.2 for English scanned PDF pages.** Image-only pages are rendered locally and recognized with bundled assets; unsupported languages and failed OCR remain explicitly reported.
 - DOCX page boundaries are not reliable in the format; DOCX is stored as one logical page with a warning.
 - Complex PDF layout and DOCX table/heading structure are normalized to text; visual layout is not reproduced.
 - PDF metadata extraction is best-effort and may be absent.
 - Password-protected PDFs are rejected rather than decrypted.
 - Parsing runs in the hidden offscreen document and request-scoped workers, outside the service-worker key boundary.
-- Local OCR/field extraction, ONNX, model downloads, Qwen inference, intelligent extraction, and autofill are out of scope for this phase.
+- Local OCR/field extraction is partially implemented: English scanned-PDF OCR is available; ONNX, model downloads, Qwen inference, intelligent extraction, and autofill are out of scope for this phase.
 
 ## Phase 3.1.2.1 — Final runtime security verification (complete)
 
@@ -304,7 +388,7 @@ The browser E2E is reproducible with `CHROME_PATH="/path/to/Chrome for Testing" 
 - Automatic lock is implemented in the dashboard and in the extension background alarm. The alarm uses the configured inactivity interval.
 - There is no passphrase recovery mechanism. Losing the passphrase makes the vault unrecoverable.
 - The legacy Google Drive, backend, and old auth source files remain in the repository but are not used by the extension vault workflow.
-- Local text extraction is implemented for PDF, DOCX, and TXT. OCR, AI field extraction, and AI processing remain future phases.
+- Local text extraction is implemented for PDF, DOCX, and TXT, and Phase 4.1.2 added English scanned-PDF OCR. AI field extraction and AI processing remain future phases.
 - The extension dashboard is the production dashboard. The localhost dashboard remains a development and migration surface.
 
 ## Phase 1 — Recovery and build foundation (complete)
@@ -431,7 +515,7 @@ Completed. IndexedDB repositories and services are wired into the dashboard. Loc
 ### Phase 4 — Document ingestion
 
 - Phase 4.1 local PDF, DOCX, and TXT ingestion is complete.
-- Real image and scanned-PDF OCR remains future work; OCR is explicitly not implemented.
+- Phase 4.1.2 local English OCR for scanned/image-only PDF pages is complete; additional languages require new verified language assets.
 - Intelligent field extraction and source attribution remain future work.
 
 ### Phase 5 — Form intelligence
@@ -456,10 +540,10 @@ Completed. IndexedDB repositories and services are wired into the dashboard. Loc
 - Google Drive, Gemini, and OpenAI-compatible code remain.
 - No extension-owned dashboard exists.
 - No local AI inference runs in the extension.
-- No document text extraction, OCR, or AI-based extraction runs in the dashboard yet.
-- Document processing is intentionally limited to local storage and metadata in this phase.
-- No OCR or PDF assets are packaged in the extension.
-- `extension/src/workers/ocr.worker.ts` is not built because it is not yet referenced by the extension.
+- At that time, no document text extraction, OCR, or AI-based extraction ran in the dashboard.
+- Document processing was intentionally limited to local storage and metadata in that phase.
+- At that time, no OCR or PDF assets were packaged in the extension; Phase 4.1.2 now packages SHA-256-verified OCR assets.
+- `extension/src/workers/ocr.worker.ts` is not built because it is not referenced by the extension; OCR uses the offscreen OCR runtime instead.
 - No encrypted backup/restore exists.
 - IndexedDB data is not encrypted in this phase.
 - Existing user data remains in the old backend storage until a user runs the migration wizard.

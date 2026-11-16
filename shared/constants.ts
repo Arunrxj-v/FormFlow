@@ -38,18 +38,47 @@ export const SUPPORTED_MIME_TYPES = [
   'image/png',
 ] as const;
 
+export const OCR_ENGINE = 'tesseract.js' as const;
+export const OCR_ENGINE_VERSION = '7.0.0' as const;
+export const OCR_CORE_VERSION = '7.0.0' as const;
 export const OCR_LANGUAGES = [
   { id: 'eng', label: 'English' },
-  { id: 'eng+hin', label: 'English + Hindi' },
-  { id: 'eng+mal', label: 'English + Malayalam' },
-  { id: 'eng+tam', label: 'English + Tamil' },
 ] as const;
+export const OCR_LANGUAGE_ASSETS: Record<string, { file: string; sha256: string; bytes: number }> = {
+  eng: {
+    file: 'tessdata/eng.traineddata.gz',
+    sha256: '45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91',
+    bytes: 2_952_873,
+  },
+};
+export const OCR_ASSETS = {
+  worker: {
+    file: 'tesseract/worker.min.js',
+    sha256: '576b7df7e3393e137e51849357c9adb53fe7ac1bb69bfa06cf3d61520f182c6d',
+  },
+  core: {
+    jsFile: 'tesseract/tesseract-core-simd-lstm.wasm.js',
+    jsSha256: 'c58b46a4c796c0b8afccf77591d5b875b6896b45d402bbce8caa6f5362447b38',
+    wasmFile: 'tesseract/tesseract-core-simd-lstm.wasm',
+    wasmSha256: '34e8d50cac216427d86bf397d610fdd9f49492539bbcdfbfccc4eda20c810bea',
+  },
+} as const;
+export const OCR_RENDER_DPI = 200;
+export const OCR_MAX_PAGE_PIXELS = 12_000_000;
+export const OCR_MAX_RENDER_SCALE = 3;
+export const OCR_MAX_PAGES = 100;
+export const OCR_PAGE_TIMEOUT_MS = 30_000;
+export const OCR_LOW_CONFIDENCE = 55;
+export const OCR_FAILED_CONFIDENCE = 20;
+export const OCR_MAX_WORDS_PER_PAGE = 500;
+export const OCR_MAX_WORDS_TOTAL = 5_000;
+export const OCR_MAX_LINES_PER_PAGE = 200;
 
 export const EXTRACTION_VERSION = 1;
 export const MAX_PDF_PAGES = 1_000;
 export const MAX_EXTRACTED_TEXT_CHARS = 10_000_000;
 export const MAX_EXTRACTION_WARNINGS = 100;
-export const MAX_EXTRACTION_TIMEOUT_MS = 60_000;
+export const MAX_EXTRACTION_TIMEOUT_MS = 300_000;
 export const MAX_DOCX_XML_BYTES = 24 * 1024 * 1024;
 export const MAX_DOCX_UNCOMPRESSED_BYTES = 96 * 1024 * 1024;
 

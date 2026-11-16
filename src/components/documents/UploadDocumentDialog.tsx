@@ -46,6 +46,20 @@ function entryTone(status: EntryStatus): { icon: typeof File; color: string } {
   return { icon: File, color: 'var(--ff-text-secondary)' };
 }
 
+function ocrStageMessage(stage: string): boolean {
+  return stage.startsWith('Running local OCR') || stage.startsWith('Preparing local OCR');
+}
+
+function ocrResultLabel(document?: VaultDocument): string | null {
+  if (!document) return null;
+  if (document.ocrStatus === 'completed') {
+    return document.ocrLanguage ? `OCR completed · ${document.ocrLanguage}` : 'OCR completed';
+  }
+  if (document.ocrStatus === 'partial') return 'OCR partial';
+  if (document.ocrStatus === 'failed') return document.ocrRequired ? 'OCR failed · retry available' : 'OCR failed';
+  return document.ocrRequired ? 'OCR required' : null;
+}
+
 export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProps) {
   const { uploadDocuments, cancelDocumentUpload } = useApp();
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -115,10 +129,13 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
         const acceptedPosition = result.acceptedIndices.indexOf(index);
         const acceptedDocument = acceptedPosition >= 0 ? result.accepted[acceptedPosition] : undefined;
         if (acceptedDocument) {
+          const ocrLabel = ocrResultLabel(acceptedDocument);
           return {
             ...entry,
             status: 'stored',
-            stage: acceptedDocument.ocrRequired ? 'Stored · OCR required' : 'Stored with extracted text',
+            stage: ocrLabel
+              ? `Stored · ${ocrLabel}`
+              : 'Stored with extracted text',
             progress: 100,
             document: acceptedDocument,
           };
@@ -256,14 +273,26 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
                     <span className="ff-label ff-truncate" title={entry.file.name}>{entry.file.name}</span>
                     <span className="ff-row ff-gap-4 ff-code" style={{ color: tone.color, flex: '0 0 auto', fontSize: 11 }}>
                       <Icon size={13} className={entry.status === 'processing' ? 'ff-spin' : undefined} />
-                      {entry.document?.ocrRequired ? 'OCR required' : entry.status === 'stored' ? 'Stored' : entry.status === 'duplicate' ? 'Duplicate' : entry.status === 'failed' ? 'Failed' : entry.status === 'cancelled' ? 'Cancelled' : 'Queued'}
+                      {entry.status === 'processing' && ocrStageMessage(entry.stage)
+                        ? 'OCR processing'
+                        : ocrResultLabel(entry.document)
+                          ?? (entry.status === 'stored' ? 'Stored' : entry.status === 'duplicate' ? 'Duplicate' : entry.status === 'failed' ? 'Failed' : entry.status === 'cancelled' ? 'Cancelled' : 'Queued')}
                     </span>
                   </div>
                   <div className="ff-body-sm ff-muted">
                     {formatFileSize(entry.file.size)} · {entry.stage}
                     {entry.document?.pageCount ? ` · ${entry.document.pageCount} page${entry.document.pageCount === 1 ? '' : 's'}` : ''}
-                    {entry.document?.ocrRequired ? ' · OCR not implemented' : ''}
                   </div>
+                  {entry.document?.ocrStatus && entry.document.ocrStatus !== 'not_required' ? (
+                    <div className="ff-body-sm ff-muted">
+                      {entry.document.ocrStatus === 'completed' ? 'Local OCR' : entry.document.ocrStatus === 'partial' ? 'Local OCR partially completed' : 'Local OCR failed'}
+                      {entry.document.ocrLanguage ? ` · ${entry.document.ocrLanguage}` : ''}
+                      {typeof entry.document.ocrConfidence === 'number' ? ` · ${entry.document.ocrConfidence}% average confidence` : ''}
+                      {typeof entry.document.ocrPagesTotal === 'number'
+                        ? ` · ${entry.document.ocrPagesCompleted ?? 0} of ${entry.document.ocrPagesTotal} page(s)`
+                        : ''}
+                    </div>
+                  ) : null}
                   {entry.existingName ? (
                     <div className="ff-body-sm" style={{ color: 'var(--ff-warning, #b45309)' }}>
                       Existing vault document: {entry.existingName}. Nothing was overwritten.
@@ -311,7 +340,7 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
       ) : null}
 
       <div className="ff-note ff-mt-12">
-        <strong>Local ingestion:</strong> Files never leave this browser. Text extraction runs in a dedicated worker, and OCR is not implemented in Phase 4.1. Scanned PDFs are stored with an OCR-required status.
+        <strong>Local ingestion:</strong> Files never leave this browser. Text extraction and OCR run in the isolated offscreen parser using locally bundled assets. Recognized text is encrypted with the rest of the document before the import is reported complete.
       </div>
     </Modal>
   );
