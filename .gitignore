@@ -19,3 +19,4 @@ server/storage/
 .env.local
 .DS_Store
 *.log
+.model-cache/
