@@ -11,11 +11,6 @@ try {
   window.__formflowInjected = true;
   window.__formflowReady = true;
   document.documentElement.setAttribute('data-formflow-extension', 'installed');
-  window.addEventListener('message', (event) => {
-    if (event.data?.type === 'FORMFLOW_EXTENSION_PING') {
-      window.postMessage({ type: 'FORMFLOW_EXTENSION_PONG', version: '2.0.0' }, '*');
-    }
-  });
 } catch {
   // Ignore context errors
 }

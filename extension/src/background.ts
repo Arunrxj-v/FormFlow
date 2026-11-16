@@ -381,6 +381,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
         await vaultManager.unlock(passphrase);
         await migrateLegacyPopupVault();
       });
+      void vaultExportService.recoverInterruptedRestore().catch(() => undefined);
       void operationCoordinator
         .run('mutation', 'AUTO_ENCRYPTION_MIGRATION', () => encryptionV2Migration.runIfNeeded())
         .catch(() => undefined);
@@ -741,7 +742,6 @@ const SESSION_STABLE_EXEMPT = new Set<string>([
 ]);
 
 const LEASE_KINDS: Record<string, VaultOperationKind> = {
-  [MESSAGE.GET_STATE]: 'read',
   [MESSAGE.VAULT_SUMMARY]: 'read',
   [MESSAGE.GET_PROFILE]: 'read',
   [MESSAGE.UPDATE_PROFILE]: 'mutation',
@@ -856,6 +856,7 @@ void (async () => {
   } catch {
     // Older Chrome builds may not expose setAccessLevel.
   }
+  void vaultExportService.recoverInterruptedRestore().catch(() => undefined);
   await refreshBadge();
 })();
 

@@ -2,6 +2,64 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 3.1.2.1 — Final runtime security verification (complete)
+
+The three Phase 3.1.2 verification gaps were closed with actual Chromium automation:
+
+- **Migration crash:** a test-only extension build created a realistic v1 vault (275 documents, document blobs, values, a collection, an education record, and form history), committed the first `documents` migration batch, then the Chromium process was SIGKILLed. After restart and unlock, the migration resumed, the journal reached `complete`, all 275 documents/files and other records survived without duplicates, the integrity checker passed, and no plaintext values or v1 envelopes remained. The production extension was rebuilt without the test hooks.
+- **Extension reload:** a second test-only management extension disabled and re-enabled FormFlow in place, preserving extension ID and storage while restarting the worker. The dashboard and popup reopened locked, no DEK was present, and unlock restored documents and profile data. A 20 MB import was interrupted by the same lifecycle and left no partial document/file pair.
+- **Content-script isolation:** actual local HTTP and HTTPS pages were visited; the content script did not run and the page could not access extension APIs, session storage, the vault IndexedDB, or a page-world bridge. A Google Forms-origin page served through route interception was injected, scanned through the background router, and remained unable to access extension APIs.
+
+### Verification results
+
+| Command / test | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass |
+| `npm run test:local` | 81/81 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | Pass |
+| `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
+| `scripts/dev/e2e-migration-crash.mjs` | 22/22 pass |
+| `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
+| `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
+| `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
+
+Browser: Google Chrome for Testing 156.0.8078.4, Playwright persistent profiles, production extension build. Migration fixtures were built with a test-only `background.test.ts` entry; the production build was rebuilt afterwards and verified to contain no test-hook strings.
+
+## Phase 3.1.2 — Advanced hardening and recovery (implemented; see limitations)
+
+Completed in this phase:
+
+- Added atomic backup restore: every record, file, checksum, and relationship is validated and encrypted/decrypted round-tripped before activation.
+- Added a persistent restore journal (`validating`, `ready`, `complete`, `failed`) and an activation marker committed atomically with the imported records.
+- Added restore recovery that inspects actual record counts and the activation marker rather than trusting journal status alone.
+- Added concurrent-restore rejection and in-transaction target modification checks.
+- Added encrypted vault display names with a separate `nameFormat` marker and migration for existing format-v2 vaults.
+- Hardened extension CSP to `script-src 'self'; object-src 'none'` plus HTML `base-uri`, object, image, font, and media restrictions.
+- Removed the content-script page-world ping/pong bridge.
+- Added stored-XSS payload tests and confirmed React renders data as text.
+- Preserved genuine v1/v2 import compatibility, added downgrade-relabel tests, and verified successful legacy imports re-export as v3.
+- Added a real Chromium **process kill during backup restore**, restart recovery, journal inspection, and successful retry.
+
+### Verification results
+
+| Command / test | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass |
+| `npm run test:local` | 81/81 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | Pass |
+| Chromium extension E2E | 98/98 checks pass |
+| Chromium restore process-kill recovery | 8/8 checks pass |
+
+A real Chromium migration process-kill test was not performed. Migration crash behavior is covered by deterministic transaction/journal fault injection; the real process-kill test covers atomic backup restore.
+
 ## Phase 3.1.1 — Final security hardening (complete)
 
 Completed in this phase:

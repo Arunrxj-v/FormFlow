@@ -1,7 +1,6 @@
 import { FormFlowError } from '@shared/errors';
 import { ENCRYPTION_FORMAT_VERSION, VAULT_SCHEMA_VERSION } from '@shared/constants';
 import { getDb } from '../database/database';
-import { vaultRepository as vaultRecordRepository } from '../database/vault-repository';
 import {
   decryptBytesWithKey,
   decryptBytesWithLegacyAad,
@@ -59,9 +58,9 @@ export async function checkVaultIntegrity(): Promise<VaultIntegrityReport> {
     throw new FormFlowError('VAULT_LOCKED', 'Unlock the vault before running an integrity check.');
   }
   const db = await getDb();
-  const [meta, activeVault, documents, files, values, conflicts, profileRecords, collections, memberships, activity, history, text, profileRow] = await Promise.all([
+  const [meta, vaultRows, documents, files, values, conflicts, profileRecords, collections, memberships, activity, history, text, profileRow] = await Promise.all([
     db.get('vaultMeta', 'meta'),
-    vaultRecordRepository.getActive(),
+    db.getAll('vaults'),
     db.getAll('documents'),
     db.getAll('documentFiles'),
     db.getAll('extractedValues'),
@@ -75,6 +74,7 @@ export async function checkVaultIntegrity(): Promise<VaultIntegrityReport> {
     db.get('vaultProfile', 'me'),
   ]);
   if (!meta) throw new FormFlowError('VAULT_NOT_FOUND', 'No encrypted vault exists.');
+  const activeVault = vaultRows[0];
   if (!activeVault) throw new FormFlowError('VAULT_NOT_FOUND', 'No active vault record exists.');
 
   const vault: Context = {
@@ -127,6 +127,27 @@ export async function checkVaultIntegrity(): Promise<VaultIntegrityReport> {
       return false;
     }
   };
+
+  for (const row of vaultRows) {
+    if (!row.nameEnc) {
+      reportIssue({
+        severity: 'warning',
+        code: 'PLAINTEXT_VAULT_NAME',
+        recordType: 'vault',
+        recordId: row.id,
+        message: 'The vault display name is not encrypted yet.',
+      });
+    } else {
+      await tryDecryptJson(
+        row.nameEnc,
+        contextFor(vault, 'vault', row.id, 'name'),
+        'Vault display name',
+        'vault',
+        row.id,
+        'name',
+      );
+    }
+  }
 
   if (profileRow) {
     await tryDecryptJson(

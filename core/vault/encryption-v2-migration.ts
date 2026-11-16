@@ -11,6 +11,7 @@ import type {
   StoredDocumentFile,
   StoredDocumentText,
   VaultMeta,
+  VaultRecord,
 } from '@shared/types';
 import type { IDBPDatabase } from 'idb';
 import type { FormFlowDB } from '../database/schema';
@@ -53,7 +54,7 @@ export type EncryptionMigrationFaultPoint =
 
 export interface EncryptionMigrationOptions {
   /** Deterministic failure injection for crash/transaction tests. */
-  fault?: (point: EncryptionMigrationFaultPoint, detail?: Record<string, unknown>) => void;
+  fault?: (point: EncryptionMigrationFaultPoint, detail?: Record<string, unknown>) => void | Promise<void>;
 }
 
 export interface EncryptionMigrationStatus {
@@ -155,7 +156,7 @@ async function putBatch<T>(
   fault?: EncryptionMigrationOptions['fault'],
 ): Promise<number> {
   if (!prepared.length) return 0;
-  fault?.('before_write', { store: storeName, count: prepared.length });
+  await fault?.('before_write', { store: storeName, count: prepared.length });
   const tx = db.transaction(storeName, 'readwrite');
   const store = tx.objectStore(storeName) as unknown as {
     get(key: string): Promise<Record<string, unknown> | undefined>;
@@ -171,7 +172,7 @@ async function putBatch<T>(
       await store.put(entry.next);
       written += 1;
     }
-    fault?.('during_transaction', { store: storeName, count: written });
+    await fault?.('during_transaction', { store: storeName, count: written });
     await tx.done;
   } catch (error) {
     tx.done.catch(() => undefined);
@@ -185,6 +186,47 @@ async function putBatch<T>(
   return written;
 }
 
+async function migrateVaultName(
+  db: IDBPDatabase<FormFlowDB>,
+  key: CryptoKey,
+  vault: Identity,
+  fault?: EncryptionMigrationOptions['fault'],
+): Promise<number> {
+  const rows = await db.getAll('vaults');
+  let total = 0;
+  for (const row of rows) {
+    if (row.id !== vault.vaultId) {
+      throw new FormFlowError('VALIDATION_FAILED', 'The vault record does not match the active vault.');
+    }
+    if (row.nameEnc && isV2Envelope(row.nameEnc)) continue;
+    const aad = context(vault, 'vault', row.id, 'name');
+    const plaintext = row.nameEnc
+      ? await readJson<string>(key, row.nameEnc, aad)
+      : row.name;
+    const next: VaultRecord = { ...row, name: '', nameEnc: await sealJson(key, plaintext, aad) };
+    await fault?.('before_write', { store: 'vaults', count: 1 });
+    const tx = db.transaction('vaults', 'readwrite');
+    try {
+      const current = await tx.objectStore('vaults').get(row.id);
+      if (current && current.nameEnc === row.nameEnc && current.name === row.name) {
+        await tx.objectStore('vaults').put(next);
+        total += 1;
+      }
+      await fault?.('during_transaction', { store: 'vaults', count: total });
+      await tx.done;
+    } catch (error) {
+      tx.done.catch(() => undefined);
+      try {
+        tx.abort();
+      } catch {
+        // Already aborting.
+      }
+      throw asStorageError(error);
+    }
+  }
+  return total;
+}
+
 async function migrateProfile(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault: Identity, fault?: EncryptionMigrationOptions['fault']): Promise<number> {
   const row = await db.get('vaultProfile', 'me');
   if (!row) return 0;
@@ -192,12 +234,12 @@ async function migrateProfile(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vaul
   if (isV2Envelope(row.profileEnc)) return 0;
   const profile = await readJson<unknown>(key, row.profileEnc, aad);
   const next = { ...row, profileEnc: await sealJson(key, profile, aad) };
-  fault?.('before_write', { store: 'vaultProfile', count: 1 });
+  await fault?.('before_write', { store: 'vaultProfile', count: 1 });
   const tx = db.transaction('vaultProfile', 'readwrite');
   try {
     const current = await tx.objectStore('vaultProfile').get('me');
     if (current && current.profileEnc === row.profileEnc) await tx.objectStore('vaultProfile').put(next);
-    fault?.('during_transaction', { store: 'vaultProfile', count: 1 });
+    await fault?.('during_transaction', { store: 'vaultProfile', count: 1 });
     await tx.done;
   } catch (error) {
     tx.done.catch(() => undefined);
@@ -264,7 +306,7 @@ async function migrateFiles(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault:
       aadVersion: 2,
       updatedAt: nowIso(),
     };
-    fault?.('before_write', { store: 'documentFiles', count: 1 });
+    await fault?.('before_write', { store: 'documentFiles', count: 1 });
     const tx = db.transaction('documentFiles', 'readwrite');
     try {
       const current = await tx.objectStore('documentFiles').get(row.documentId);
@@ -272,7 +314,7 @@ async function migrateFiles(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault:
         await tx.objectStore('documentFiles').put(next);
         total += 1;
       }
-      fault?.('during_transaction', { store: 'documentFiles', count: 1 });
+      await fault?.('during_transaction', { store: 'documentFiles', count: 1 });
       await tx.done;
     } catch (error) {
       tx.done.catch(() => undefined);
@@ -548,6 +590,15 @@ async function verifyVault(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault: 
   ]);
 
   const encryptedStrings: Array<{ payload: string; aad: RecordAad; label: string }> = [];
+  const vaultRows = await db.getAll('vaults');
+  for (const row of vaultRows) {
+    if (!row.nameEnc) throw new FormFlowError('VALIDATION_FAILED', `Vault ${row.id} still has a plaintext display name.`);
+    encryptedStrings.push({
+      payload: row.nameEnc,
+      aad: context(vault, 'vault', row.id, 'name'),
+      label: `vault ${row.id} name`,
+    });
+  }
   if (profile) encryptedStrings.push({ payload: profile.profileEnc, aad: context(vault, 'profile', 'me', 'profile'), label: 'profile' });
   for (const row of documents) {
     encryptedStrings.push(
@@ -623,12 +674,16 @@ async function verifyVault(db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault: 
 
 async function runExclusive(options: EncryptionMigrationOptions = {}): Promise<EncryptionMigrationStatus> {
   const fault = options.fault;
-  fault?.('before_migration');
+  await fault?.('before_migration');
   const db = await getDb();
   const meta = await db.get('vaultMeta', 'meta');
   if (!meta) throw new FormFlowError('VAULT_NOT_FOUND', 'No encrypted vault exists.');
   const existingJournal = await readJournal();
-  if ((meta.encryptionFormat ?? 1) >= ENCRYPTION_FORMAT_VERSION && existingJournal?.status === 'complete') {
+  if (
+    (meta.encryptionFormat ?? 1) >= ENCRYPTION_FORMAT_VERSION &&
+    (meta.nameFormat ?? 1) >= ENCRYPTION_FORMAT_VERSION &&
+    existingJournal?.status === 'complete'
+  ) {
     return { encryptionFormat: meta.encryptionFormat ?? 1, needsMigration: false, journal: existingJournal };
   }
   if (!(await vaultSession.isUnlocked())) {
@@ -649,6 +704,7 @@ async function runExclusive(options: EncryptionMigrationOptions = {}): Promise<E
   try {
     const key = await vaultSession.getDataKey();
     const steps: Array<[string, (db: IDBPDatabase<FormFlowDB>, key: CryptoKey, vault: Identity, fault?: EncryptionMigrationOptions['fault']) => Promise<number>, number]> = [
+      ['vault', migrateVaultName, 1],
       ['profile', migrateProfile, BATCH_SIZE],
       ['documents', migrateDocuments, BATCH_SIZE],
       ['files', migrateFiles, BLOB_BATCH_SIZE],
@@ -664,24 +720,28 @@ async function runExclusive(options: EncryptionMigrationOptions = {}): Promise<E
       if (!vaultSession.isCurrent(generation) || !(await vaultSession.isUnlocked())) {
         throw new FormFlowError('SESSION_EXPIRED', 'The vault locked during the encryption upgrade. Unlock to resume.');
       }
-      fault?.('before_batch', { store: name });
+      await fault?.('before_batch', { store: name });
       const written = await step(db, key, vault, fault);
-      fault?.('after_commit', { store: name, written });
+      await fault?.('after_commit', { store: name, written });
       journal.migrated[name] = (journal.migrated[name] ?? 0) + written;
       journal.updatedAt = nowIso();
-      fault?.('before_journal', { store: name });
+      await fault?.('before_journal', { store: name });
       await writeJournal(journal);
-      fault?.('after_journal', { store: name });
+      await fault?.('after_journal', { store: name });
     }
 
-    fault?.('before_verification');
+    await fault?.('before_verification');
     await verifyVault(db, key, vault);
-    fault?.('before_marker');
+    await fault?.('before_marker');
     if (!vaultSession.isCurrent(generation)) {
       throw new FormFlowError('SESSION_EXPIRED', 'The vault locked during the encryption upgrade. Unlock to resume.');
     }
 
-    const updatedMeta: VaultMeta = { ...meta, encryptionFormat: ENCRYPTION_FORMAT_VERSION };
+    const updatedMeta: VaultMeta = {
+      ...meta,
+      encryptionFormat: ENCRYPTION_FORMAT_VERSION,
+      nameFormat: ENCRYPTION_FORMAT_VERSION,
+    };
     journal.status = 'complete';
     journal.completedAt = nowIso();
     journal.updatedAt = journal.completedAt;
@@ -691,7 +751,7 @@ async function runExclusive(options: EncryptionMigrationOptions = {}): Promise<E
     await tx.objectStore('settings').put({ key: JOURNAL_KEY, value: journal, updatedAt: journal.updatedAt });
     await tx.objectStore('settings').put({ key: 'storageFormat', value: 'encrypted-v2', updatedAt: journal.updatedAt });
     await tx.done;
-    fault?.('after_marker');
+    await fault?.('after_marker');
     return { encryptionFormat: ENCRYPTION_FORMAT_VERSION, needsMigration: false, journal };
   } catch (error) {
     journal.status = 'failed';
@@ -710,7 +770,9 @@ export const encryptionV2Migration = {
     const format = meta?.encryptionFormat ?? (meta ? 1 : 0);
     return {
       encryptionFormat: format,
-      needsMigration: Boolean(meta) && format < ENCRYPTION_FORMAT_VERSION,
+      needsMigration: Boolean(meta) && (
+        format < ENCRYPTION_FORMAT_VERSION || (meta?.nameFormat ?? 1) < ENCRYPTION_FORMAT_VERSION
+      ),
       journal,
     };
   },

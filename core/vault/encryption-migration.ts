@@ -58,6 +58,7 @@ interface PlaintextSnapshot {
   history: FormHistoryRow[];
   text: StoredDocumentText[];
   settings: Array<{ key: string; value: unknown; updatedAt: string }>;
+  vault: VaultRecord;
 }
 
 function parsePlain(value: string): unknown {
@@ -118,6 +119,7 @@ export const encryptionMigrationService = {
         data: bufferToBase64(wrappedBytes.data),
       }),
       encryptionFormat: ENCRYPTION_FORMAT_VERSION,
+      nameFormat: ENCRYPTION_FORMAT_VERSION,
       createdAt: now,
       passwordUpdatedAt: now,
     };
@@ -134,9 +136,19 @@ export const encryptionMigrationService = {
       history: await db.getAll('formHistory'),
       text: await db.getAll('documentText'),
       settings: await db.getAll('settings'),
+      vault: activeVault,
     };
 
     try {
+      const encryptedVault: VaultRecord = {
+        ...snapshot.vault,
+        name: '',
+        nameEnc: await encryptJsonWithKey(
+          dataKey,
+          snapshot.vault.name,
+          ctx('vault', snapshot.vault.id, 'name'),
+        ),
+      };
       const encryptedProfile = snapshot.profile
         ? {
           ...snapshot.profile,
@@ -284,10 +296,11 @@ export const encryptionMigrationService = {
       }
 
       const tx = db.transaction(
-        ['vaultMeta', 'vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'activity', 'formHistory', 'documentText', 'settings'],
+        ['vaultMeta', 'vaults', 'vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'activity', 'formHistory', 'documentText', 'settings'],
         'readwrite',
       );
       await tx.objectStore('vaultMeta').put(meta);
+      await tx.objectStore('vaults').put(encryptedVault);
       if (encryptedProfile) await tx.objectStore('vaultProfile').put(encryptedProfile);
       for (const row of encryptedDocuments) await tx.objectStore('documents').put(row);
       for (const row of encryptedFiles) await tx.objectStore('documentFiles').put(row);
@@ -322,10 +335,11 @@ export const encryptionMigrationService = {
       // Best-effort rollback if the transaction did not commit.
       try {
         const rollback = db.transaction(
-          ['vaultMeta', 'vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'activity', 'formHistory', 'documentText'],
+          ['vaultMeta', 'vaults', 'vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'activity', 'formHistory', 'documentText'],
           'readwrite',
         );
         await rollback.objectStore('vaultMeta').delete('meta');
+        await rollback.objectStore('vaults').put(snapshot.vault);
         if (snapshot.profile) await rollback.objectStore('vaultProfile').put(snapshot.profile);
         for (const row of snapshot.documents) await rollback.objectStore('documents').put(row as DocumentRecord);
         for (const row of snapshot.files) {

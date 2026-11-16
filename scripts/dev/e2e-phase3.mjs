@@ -182,12 +182,14 @@ async function readVaultDb(page) {
       });
     return {
       meta: await readAll('vaultMeta'),
+      vaults: await readAll('vaults'),
       documents: await readAll('documents'),
       files: await readAll('documentFiles'),
       values: await readAll('extractedValues'),
       profile: await readAll('vaultProfile'),
       collections: await readAll('collections'),
       activity: await readAll('activity'),
+      settings: await readAll('settings'),
     };
   });
 }
@@ -258,6 +260,66 @@ try {
   const created = await message(page, 'e2e_created', 'VAULT_STATUS');
   check('dashboard creates an encrypted vault', created?.ok === true && created.data?.unlocked === true && created.data?.encrypted === true);
 
+  const manifest = await page.evaluate(() => chrome.runtime.getManifest());
+  const contentBundle = await readFile(path.resolve('extension/dist/content.js'), 'utf8');
+  check(
+    'content scripts are restricted to Google Forms only',
+    manifest.content_scripts?.every((entry) => entry.matches?.every((match) => match === 'https://docs.google.com/forms/*')),
+  );
+  check(
+    'content script bundle contains no vault, key, storage or page bridge',
+    !/formflow-local|session_key|VAULT_SESSION|postMessage|chrome\.storage/i.test(contentBundle),
+  );
+  const csp = await page.evaluate(() => chrome.runtime.getManifest().content_security_policy?.extension_pages ?? '');
+  check('extension CSP has no unsafe-eval or remote script source', !/unsafe-eval|https?:/i.test(csp) && /script-src 'self'/.test(csp) && /object-src 'none'/.test(csp), csp);
+  const inlineBlocked = await page.evaluate(() => new Promise((resolve) => {
+    window.__formflowCspInline = 0;
+    const script = document.createElement('script');
+    script.textContent = 'window.__formflowCspInline = 1';
+    document.documentElement.appendChild(script);
+    setTimeout(() => resolve(window.__formflowCspInline === 0), 50);
+  }));
+  check('extension CSP blocks inline script execution', inlineBlocked);
+
+  await page.evaluate(() => { window.__formflowXss = 0; });
+  const xssCollection = await message(page, 'e2e_xss_collection', 'CREATE_COLLECTION', {
+    name: '<img src=x onerror="window.__formflowXss=1">',
+    description: '<script>window.__formflowXss=2</script>',
+  });
+  check('malicious collection payload stored as data', xssCollection?.ok === true);
+  const xssField = await message(page, 'e2e_xss_field', 'ADD_FIELD', {
+    field: {
+      key: 'contact.xssTest',
+      label: '<b>Injected label</b>',
+      value: '<img src=x onerror="window.__formflowXss=1">',
+      category: 'other',
+      source: { documentId: 'manual', documentName: 'Manual entry' },
+      confidence: 100,
+      verificationStatus: 'user_verified',
+      extractionMethod: 'manual',
+      userModified: true,
+    },
+  });
+  check('malicious profile payload stored as data', xssField?.ok === true, xssField?.error);
+  await page.goto(`${dashboardA}#/collections`, { waitUntil: 'load' });
+  await page.waitForTimeout(1000);
+  check(
+    'malicious collection markup is escaped',
+    await page.evaluate(() => window.__formflowXss === 0 && document.querySelectorAll('img[src="x"]').length === 0),
+  );
+  await page.goto(`${dashboardA}#/records/personal`, { waitUntil: 'load' });
+  await page.waitForTimeout(1000);
+  check(
+    'malicious profile markup is escaped',
+    await page.evaluate(() => window.__formflowXss === 0 && document.querySelectorAll('img[src="x"]').length === 0),
+  );
+  if (xssField?.data?.field?.id) {
+    await message(page, 'e2e_xss_cleanup_field', 'DELETE_FIELD', { id: xssField.data.field.id });
+  }
+  if (xssCollection?.data?.id) {
+    await message(page, 'e2e_xss_cleanup_collection', 'DELETE_COLLECTION', { collectionId: xssCollection.data.id });
+  }
+
   await page.goto(`${dashboardA}#/documents`, { waitUntil: 'load' });
   await page.waitForTimeout(800);
   await page.click('button:has-text("Upload document")');
@@ -287,7 +349,13 @@ try {
   const raw = await readVaultDb(page);
   check('vault metadata is PBKDF2 + wrapped key', raw.meta.length === 1 && raw.meta[0].kdf === 'PBKDF2-SHA256' && raw.meta[0].wrappedDataKey.includes('AES-GCM'));
   check('no passphrase written to IndexedDB', !JSON.stringify(raw.meta).includes(sourcePass));
-  check('vault uses encryption format 2', raw.meta[0]?.encryptionFormat === 2);
+  check('vault uses encryption format 2', raw.meta[0]?.encryptionFormat === 2 && raw.meta[0]?.nameFormat === 2);
+  check(
+    'vault display name is encrypted at rest',
+    raw.vaults[0]?.name === '' &&
+      raw.vaults[0]?.nameEnc?.includes('"v":2') &&
+      !JSON.stringify(raw.vaults).includes('Phase 3 source vault'),
+  );
   const sessionStorage = await page.evaluate(async () => chrome.storage.session.get(null));
   check(
     'dashboard cannot read the raw DEK from session storage',
@@ -607,6 +675,9 @@ try {
   check('imported records use v2 encryption', targetRaw.meta[0]?.encryptionFormat === 2 && targetRaw.documents[0]?.nameEnc?.includes('"v":2') && !JSON.stringify(targetRaw.documents).includes('phase3-real.pdf'));
   check('imported value labels are encrypted', targetRaw.values[0]?.labelEnc?.includes('"v":2') && targetRaw.values[0]?.label === '' && !JSON.stringify(targetRaw.values).includes('Email address'));
   check('imported file decrypted only on access', targetRaw.files[0]?.ciphertext != null && targetRaw.files[0].version === 2 && targetRaw.files[0].aadVersion === 2);
+  const restoreJournal = targetRaw.settings.find((entry) => entry.key === 'vaultRestoreJournal')?.value;
+  const restoreActivation = targetRaw.settings.find((entry) => entry.key === 'vaultRestoreActivation')?.value;
+  check('restore journal is complete and has an activation marker', restoreJournal?.status === 'complete' && restoreActivation?.restoreId === restoreJournal?.restoreId);
   await context.close();
 
   // ---------- C: customized profile is treated as existing data ----------
@@ -661,7 +732,7 @@ try {
   }
   context = undefined;
 
-  const unexpected = errors.filter((error) => !error.includes('favicon'));
+  const unexpected = errors.filter((error) => !error.includes('favicon') && !/Content Security Policy|Refused to execute inline script/i.test(error));
   check('no dashboard/popup console or page errors', unexpected.length === 0, JSON.stringify(unexpected.slice(0, 4)));
 
   console.log(`FAILURES: ${failures}`);

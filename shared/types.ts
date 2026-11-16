@@ -241,7 +241,10 @@ export interface OnboardingState {
 
 export interface VaultRecord {
   id: string;
+  /** Decrypted display name. New rows store this encrypted in nameEnc. */
   name: string;
+  /** Encrypted vault display name; absent only in legacy rows awaiting migration. */
+  nameEnc?: string;
   schemaVersion: number;
   createdAt: string;
   updatedAt: string;
@@ -502,6 +505,8 @@ export interface VaultMeta {
   wrappedDataKey: string;
   /** 1 or missing = Phase 3 vault-wide AAD; 2 = per-record AAD. */
   encryptionFormat?: 1 | 2;
+  /** 2 = vault display name is encrypted with per-record AAD. */
+  nameFormat?: 1 | 2;
   createdAt: string;
   passwordUpdatedAt: string;
 }

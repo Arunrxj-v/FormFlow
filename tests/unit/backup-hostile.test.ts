@@ -381,6 +381,8 @@ test('accepts genuine legacy v2 archives with the original archive AAD', async (
   const result = await vaultExportService.importEncrypted(await buildLegacy(2), BACKUP_PASS);
   assert.equal(result.imported, true);
   assert.equal(result.documents, 2);
+  const reexport = JSON.parse(await (await vaultExportService.exportEncrypted(BACKUP_PASS)).text());
+  assert.equal(reexport.version, 3, 'legacy import must not downgrade future exports');
 });
 
 test('accepts genuine legacy v1 archives with the original legacy AAD', async () => {
@@ -388,4 +390,14 @@ test('accepts genuine legacy v1 archives with the original legacy AAD', async ()
   const result = await vaultExportService.importEncrypted(await buildLegacy(1), BACKUP_PASS);
   assert.equal(result.imported, true);
   assert.equal(result.documents, 2);
+  const reexport = JSON.parse(await (await vaultExportService.exportEncrypted(BACKUP_PASS)).text());
+  assert.equal(reexport.version, 3, 'legacy import must not downgrade future exports');
+});
+
+test('rejects version relabeling in either direction instead of silently reinterpreting an archive', async () => {
+  await resetTarget();
+  const v3 = JSON.parse(await validBackup.text()) as V3Envelope;
+  await assertRejected(new Blob([JSON.stringify({ ...v3, version: 2 })]), /unexpected property|supported|version/i);
+  const legacy = JSON.parse(await (await buildLegacy(2)).text()) as LegacyEnvelope;
+  await assertRejected(new Blob([JSON.stringify({ ...legacy, version: 3 })]), /unexpected property|header|supported|version/i);
 });

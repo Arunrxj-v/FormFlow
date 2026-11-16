@@ -48,7 +48,7 @@ class VaultManager {
       unlocked,
       encrypted: Boolean(meta),
       requiresEncryptionMigration: !meta && vaults.length > 0,
-      requiresEncryptionUpgrade: Boolean(meta) && ((meta?.encryptionFormat ?? 1) < ENCRYPTION_FORMAT_VERSION),
+      requiresEncryptionUpgrade: Boolean(meta) && ((meta?.encryptionFormat ?? 1) < ENCRYPTION_FORMAT_VERSION || (meta?.nameFormat ?? 1) < ENCRYPTION_FORMAT_VERSION),
       encryptionFormat: meta?.encryptionFormat ?? (meta ? 1 : undefined),
       createdAt: meta?.createdAt,
       passwordUpdatedAt: meta?.passwordUpdatedAt,
@@ -72,6 +72,7 @@ class VaultManager {
       salt: wrapped.salt,
       wrappedDataKey: JSON.stringify(wrapped.wrapped),
       encryptionFormat: ENCRYPTION_FORMAT_VERSION,
+      nameFormat: ENCRYPTION_FORMAT_VERSION,
       createdAt: now,
       passwordUpdatedAt: now,
     };

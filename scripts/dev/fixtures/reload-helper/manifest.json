@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "FormFlow Reload Helper",
+  "version": "1.0.0",
+  "description": "Test-only helper to reload the FormFlow extension.",
+  "permissions": ["management"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "FormFlow Reload Helper" }
+}

@@ -979,6 +979,217 @@ async function decryptV3Archive(
   return payload;
 }
 
+export type RestoreJournalStatus = 'validating' | 'ready' | 'activating' | 'complete' | 'failed';
+
+export interface RestoreJournal {
+  restoreId: string;
+  status: RestoreJournalStatus;
+  targetVaultId: string;
+  archiveVersion: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  counts: { documents: number; values: number; collections: number };
+  error?: string;
+}
+
+interface RestoreActivation {
+  restoreId: string;
+  targetVaultId: string;
+  completedAt: string;
+  counts: { documents: number; values: number; collections: number };
+}
+
+const RESTORE_JOURNAL_KEY = 'vaultRestoreJournal';
+const RESTORE_ACTIVATION_KEY = 'vaultRestoreActivation';
+let restoreInProgress = false;
+
+async function writeRestoreJournal(journal: RestoreJournal): Promise<void> {
+  const db = await getDb();
+  await db.put('settings', { key: RESTORE_JOURNAL_KEY, value: journal, updatedAt: journal.updatedAt });
+}
+
+async function readRestoreJournal(): Promise<RestoreJournal | null> {
+  const db = await getDb();
+  const row = await db.get('settings', RESTORE_JOURNAL_KEY);
+  return (row?.value as RestoreJournal | undefined) ?? null;
+}
+
+async function readRestoreActivation(): Promise<RestoreActivation | null> {
+  const db = await getDb();
+  const row = await db.get('settings', RESTORE_ACTIVATION_KEY);
+  return (row?.value as RestoreActivation | undefined) ?? null;
+}
+
+async function targetCounts(): Promise<{ documents: number; values: number; collections: number }> {
+  const db = await getDb();
+  const [documents, values, collections] = await Promise.all([
+    db.count('documents'),
+    db.count('extractedValues'),
+    db.count('collections'),
+  ]);
+  return { documents, values, collections };
+}
+
+async function markRestoreComplete(journal: RestoreJournal, activation: RestoreActivation): Promise<void> {
+  const complete: RestoreJournal = {
+    ...journal,
+    status: 'complete',
+    completedAt: activation.completedAt,
+    updatedAt: new Date().toISOString(),
+    error: undefined,
+  };
+  await writeRestoreJournal(complete);
+}
+
+/**
+ * Inspect the actual database state, not only the journal. This runs on worker
+ * startup and after unlock. It never deletes records.
+ */
+async function recoverInterruptedRestore(): Promise<RestoreJournal | null> {
+  const journal = await readRestoreJournal();
+  if (!journal) return null;
+  if (journal.status === 'complete') return journal;
+  const activation = await readRestoreActivation();
+  const counts = await targetCounts();
+  if (activation && activation.restoreId === journal.restoreId) {
+    if (
+      activation.targetVaultId === journal.targetVaultId &&
+      counts.documents === activation.counts.documents &&
+      counts.values === activation.counts.values &&
+      counts.collections === activation.counts.collections
+    ) {
+      await markRestoreComplete(journal, activation);
+      return { ...journal, status: 'complete', completedAt: activation.completedAt };
+    }
+    const failed: RestoreJournal = {
+      ...journal,
+      status: 'failed',
+      updatedAt: new Date().toISOString(),
+      error: 'The activation marker exists but the active record counts do not match. Records were preserved for inspection.',
+    };
+    await writeRestoreJournal(failed);
+    return failed;
+  }
+  const isTargetEmpty = counts.documents === 0 && counts.values === 0 && counts.collections === 0;
+  const failed: RestoreJournal = {
+    ...journal,
+    status: 'failed',
+    updatedAt: new Date().toISOString(),
+    error: isTargetEmpty
+      ? 'The restore did not activate. The target vault is unchanged and the staged restore can be retried.'
+      : 'The restore state is ambiguous; the target contains records but no matching activation marker. Records were preserved.',
+  };
+  await writeRestoreJournal(failed);
+  return failed;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+async function verifyPreparedImport(
+  key: CryptoKey,
+  activeVault: { id: string; schemaVersion?: number },
+  payload: PortableVaultPayload,
+  prepared: {
+    profile: { profileEnc: string; updatedAt: string } | null;
+    documents: DocumentRecord[];
+    files: StoredDocumentFile[];
+    values: ExtractedValueRecord[];
+    conflicts: ConflictRecord[];
+    profileRecords: ProfileRecordRow[];
+    collections: CollectionRow[];
+    activity: ActivityRow[];
+    history: FormHistoryRow[];
+    text: StoredDocumentText[];
+  },
+): Promise<void> {
+  const context = (recordType: string, recordId: string, field: string) => contextFor(activeVault, recordType, recordId, field);
+  const checkJson = async (encrypted: string, expected: unknown, recordType: string, recordId: string, field: string) => {
+    const decoded = await decryptJsonWithKey<unknown>(key, encrypted, context(recordType, recordId, field));
+    if (!sameJson(decoded, expected)) {
+      throw new FormFlowError('VALIDATION_FAILED', `Pre-activation verification failed for ${recordType} ${recordId} (${field}).`);
+    }
+  };
+
+  if (prepared.profile && payload.profile) await checkJson(prepared.profile.profileEnc, payload.profile, 'profile', 'me', 'profile');
+  const documentNames = new Map(payload.documents.map((document) => [document.record.id, document]));
+  const fileById = new Map(prepared.files.map((file) => [file.documentId, file]));
+  for (const document of prepared.documents) {
+    const source = documentNames.get(document.id);
+    if (!source) invalid('Prepared document is missing its source representation.');
+    await checkJson(document.nameEnc, source.name, 'document', document.id, 'name');
+    await checkJson(document.originalFilenameEnc, source.originalFilename, 'document', document.id, 'originalFilename');
+    const file = fileById.get(document.id);
+    if (!file) throw new FormFlowError('VALIDATION_FAILED', `Prepared file is missing for ${document.id}.`);
+    const plaintext = await decryptBytesWithKey(
+      key,
+      file.iv,
+      await file.ciphertext.arrayBuffer(),
+      context('documentFile', document.id, 'file'),
+    );
+    if (plaintext.byteLength !== document.sizeBytes) {
+      throw new FormFlowError('VALIDATION_FAILED', `Prepared file size mismatch for ${document.id}.`);
+    }
+    if (await sha256Hex(plaintext) !== document.checksum) {
+      throw new FormFlowError('VALIDATION_FAILED', `Prepared file checksum mismatch for ${document.id}.`);
+    }
+  }
+  const valueById = new Map(payload.values.map((entry) => [entry.record.id, entry]));
+  for (const value of prepared.values) {
+    const source = valueById.get(value.id);
+    if (!source) invalid('Prepared value is missing its source representation.');
+    await checkJson(value.valueEnc, source.value, 'value', value.id, 'value');
+    await checkJson(value.normalizedValueEnc, source.normalizedValue, 'value', value.id, 'normalizedValue');
+    await checkJson(value.labelEnc ?? '', source.record.label, 'value', value.id, 'label');
+  }
+  const conflictById = new Map(payload.conflicts.map((entry) => [entry.record.id, entry]));
+  for (const conflict of prepared.conflicts) {
+    const source = conflictById.get(conflict.id);
+    if (!source) invalid('Prepared conflict is missing its source representation.');
+    await checkJson(conflict.existingValueEnc, source.existingValue, 'conflict', conflict.id, 'existingValue');
+    await checkJson(conflict.newValueEnc, source.newValue, 'conflict', conflict.id, 'newValue');
+    await checkJson(conflict.labelEnc ?? '', source.record.label, 'conflict', conflict.id, 'label');
+  }
+  const profileRecordById = new Map(payload.profileRecords.map((entry) => [entry.record.id, entry]));
+  for (const record of prepared.profileRecords) {
+    const source = profileRecordById.get(record.id);
+    if (!source) invalid('Prepared profile record is missing its source representation.');
+    await checkJson(record.dataEnc, source.data, `profileRecord:${record.type}`, record.id, 'data');
+  }
+  const collectionById = new Map(payload.collections.map((entry) => [entry.record.id, entry]));
+  for (const collection of prepared.collections) {
+    const source = collectionById.get(collection.id);
+    if (!source) invalid('Prepared collection is missing its source representation.');
+    await checkJson(collection.nameEnc, source.name, 'collection', collection.id, 'name');
+    await checkJson(collection.descriptionEnc, source.description, 'collection', collection.id, 'description');
+    await checkJson(collection.notesEnc, source.notes, 'collection', collection.id, 'notes');
+  }
+  const activityById = new Map(payload.activity.map((entry) => [entry.record.id, entry]));
+  for (const item of prepared.activity) {
+    const source = activityById.get(item.id);
+    if (!source) invalid('Prepared activity is missing its source representation.');
+    await checkJson(item.titleEnc, source.title, 'activity', item.id, 'title');
+    await checkJson(item.detailEnc, source.detail, 'activity', item.id, 'detail');
+  }
+  const historyById = new Map(payload.history.map((entry) => [entry.record.id, entry]));
+  for (const item of prepared.history) {
+    const source = historyById.get(item.id);
+    if (!source) invalid('Prepared history is missing its source representation.');
+    await checkJson(item.websiteEnc, source.website, 'formHistory', item.id, 'website');
+    await checkJson(item.urlEnc, source.url, 'formHistory', item.id, 'url');
+    await checkJson(item.documentsUsedEnc, source.documentsUsed, 'formHistory', item.id, 'documentsUsed');
+  }
+  const textById = new Map(payload.text.map((entry) => [entry.record.documentId, entry]));
+  for (const item of prepared.text) {
+    const source = textById.get(item.documentId);
+    if (!source) invalid('Prepared text is missing its source representation.');
+    await checkJson(item.textEnc, source.text, 'documentText', item.documentId, 'text');
+    await checkJson(item.pageTextsEnc, source.pageTexts, 'documentText', item.documentId, 'pageTexts');
+  }
+}
+
 export const vaultExportService = {
   async hasPortableData(): Promise<boolean> {
     return !(await targetVaultIsEmpty());
@@ -1259,7 +1470,51 @@ export const vaultExportService = {
     return new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
   },
 
-  async importEncrypted(file: Blob, passphrase: string): Promise<{ imported: boolean; documents: number; values: number; collections: number }> {
+  async importEncrypted(
+    file: Blob,
+    passphrase: string,
+    options: { beforeActivation?: () => Promise<void> } = {},
+  ): Promise<{ imported: boolean; documents: number; values: number; collections: number }> {
+    if (restoreInProgress) {
+      throw new FormFlowError('VALIDATION_FAILED', 'A vault restore is already in progress. Wait for it to finish.');
+    }
+    restoreInProgress = true;
+    try {
+      await recoverInterruptedRestore();
+      const existing = await readRestoreJournal();
+      if (existing && (existing.status === 'validating' || existing.status === 'ready' || existing.status === 'activating')) {
+        throw new FormFlowError('VALIDATION_FAILED', 'An interrupted restore is still being recovered. Reopen the vault and retry.');
+      }
+      return await this.importEncryptedUnlocked(file, passphrase, options);
+    } catch (error) {
+      const journal = await readRestoreJournal().catch(() => null);
+      if (journal && (journal.status === 'validating' || journal.status === 'ready' || journal.status === 'activating')) {
+        await writeRestoreJournal({
+          ...journal,
+          status: 'failed',
+          updatedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : 'Restore failed before activation.',
+        }).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      restoreInProgress = false;
+    }
+  },
+
+  async recoverInterruptedRestore(): Promise<RestoreJournal | null> {
+    return recoverInterruptedRestore();
+  },
+
+  async restoreStatus(): Promise<RestoreJournal | null> {
+    return readRestoreJournal();
+  },
+
+  async importEncryptedUnlocked(
+    file: Blob,
+    passphrase: string,
+    options: { beforeActivation?: () => Promise<void> } = {},
+  ): Promise<{ imported: boolean; documents: number; values: number; collections: number }> {
     if (!(await vaultSession.isUnlocked())) throw new FormFlowError('VAULT_LOCKED', 'Unlock the vault before importing.');
     const activeVault = await vaultRecordRepository.getActive();
     if (!activeVault) throw new FormFlowError('VAULT_NOT_FOUND', 'Create a local vault before importing.');
@@ -1267,6 +1522,18 @@ export const vaultExportService = {
       throw new FormFlowError('VALIDATION_FAILED', 'The target vault already contains data. Import into an empty vault to avoid overwriting existing records.');
     }
     assertBackupSize(file.size);
+    const restoreId = `restore_${crypto.randomUUID()}`;
+    const startedAt = new Date().toISOString();
+    let restoreJournal: RestoreJournal = {
+      restoreId,
+      status: 'validating',
+      targetVaultId: activeVault.id,
+      archiveVersion: 0,
+      startedAt,
+      updatedAt: startedAt,
+      counts: { documents: 0, values: 0, collections: 0 },
+    };
+    await writeRestoreJournal(restoreJournal);
 
     let rawText: string;
     try {
@@ -1504,11 +1771,46 @@ export const vaultExportService = {
       });
     }
 
+    const restoreCounts = {
+      documents: encryptedDocuments.length,
+      values: encryptedValues.length,
+      collections: encryptedCollections.length,
+    };
+    await verifyPreparedImport(key, activeVault, payload, {
+      profile: encryptedProfile,
+      documents: encryptedDocuments,
+      files: encryptedFiles,
+      values: encryptedValues,
+      conflicts: encryptedConflicts,
+      profileRecords: encryptedProfileRecords,
+      collections: encryptedCollections,
+      activity: encryptedActivity,
+      history: encryptedHistory,
+      text: encryptedText,
+    });
+    restoreJournal = {
+      ...restoreJournal,
+      status: 'ready',
+      archiveVersion: Number(envelopeObject.version),
+      updatedAt: new Date().toISOString(),
+      counts: restoreCounts,
+    };
+    await writeRestoreJournal(restoreJournal);
+    await options.beforeActivation?.();
+
     const tx = db.transaction(
-      ['vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'collectionDocuments', 'activity', 'formHistory', 'documentText'],
+      ['vaultProfile', 'documents', 'documentFiles', 'extractedValues', 'conflicts', 'profileRecords', 'collections', 'collectionDocuments', 'activity', 'formHistory', 'documentText', 'settings'],
       'readwrite',
     );
     try {
+      const [activeDocuments, activeValues, activeCollections] = await Promise.all([
+        tx.objectStore('documents').count(),
+        tx.objectStore('extractedValues').count(),
+        tx.objectStore('collections').count(),
+      ]);
+      if (activeDocuments !== 0 || activeValues !== 0 || activeCollections !== 0) {
+        throw new FormFlowError('VALIDATION_FAILED', 'The target vault changed during restore. The restore was not activated.');
+      }
       if (encryptedProfile) await tx.objectStore('vaultProfile').put(encryptedProfile);
       for (const record of encryptedDocuments) await tx.objectStore('documents').put(record);
       for (const record of encryptedFiles) await tx.objectStore('documentFiles').put(record);
@@ -1520,6 +1822,25 @@ export const vaultExportService = {
       for (const record of encryptedActivity) await tx.objectStore('activity').put(record);
       for (const record of encryptedHistory) await tx.objectStore('formHistory').put(record);
       for (const record of encryptedText) await tx.objectStore('documentText').put(record);
+      const completedAt = new Date().toISOString();
+      const completeJournal: RestoreJournal = {
+        ...restoreJournal,
+        status: 'complete',
+        updatedAt: completedAt,
+        completedAt,
+        error: undefined,
+      };
+      await tx.objectStore('settings').put({ key: RESTORE_JOURNAL_KEY, value: completeJournal, updatedAt: completedAt });
+      await tx.objectStore('settings').put({
+        key: RESTORE_ACTIVATION_KEY,
+        value: {
+          restoreId,
+          targetVaultId: activeVault.id,
+          completedAt,
+          counts: restoreCounts,
+        } satisfies RestoreActivation,
+        updatedAt: completedAt,
+      });
       await tx.done;
     } catch (error) {
       tx.done.catch(() => undefined);
@@ -1531,32 +1852,7 @@ export const vaultExportService = {
       throw asStorageError(error);
     }
 
-    const [importedDocuments, importedValues, importedCollections] = await Promise.all([
-      db.getAll('documents'),
-      db.getAll('extractedValues'),
-      db.getAll('collections'),
-    ]);
-    if (
-      importedDocuments.length !== payload.documents.length ||
-      importedValues.length !== payload.values.length ||
-      importedCollections.length !== payload.collections.length
-    ) {
-      throw new FormFlowError('VALIDATION_FAILED', 'Imported record counts do not match the archive manifest.');
-    }
-    for (const document of importedDocuments) {
-      await decryptJsonWithKey<string>(
-        key,
-        document.nameEnc,
-        context('document', document.id, 'name'),
-      );
-    }
-    const integrity = await checkVaultIntegrity();
-    if (!integrity.ok) {
-      throw new FormFlowError(
-        'VALIDATION_FAILED',
-        `Import verification failed: ${integrity.issues[0]?.message ?? 'the imported vault did not pass integrity checks.'}`,
-      );
-    }
+    // Activation is now complete and the journal/marker committed atomically.
     return { imported: true, documents: payload.documents.length, values: payload.values.length, collections: payload.collections.length };
   },
 };

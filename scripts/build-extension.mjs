@@ -13,6 +13,7 @@ const tempOut = path.join(buildRoot, `dist-${process.pid}-${Date.now()}`);
 const backupOut = path.join(buildRoot, `dist-backup-${process.pid}`);
 
 const TARGET = ['chrome102'];
+const testHooks = process.env.FORMFLOW_TEST_HOOKS === '1';
 
 async function exists(target) {
   try {
@@ -147,7 +148,7 @@ async function main() {
       define: { 'process.env.NODE_ENV': '"production"' },
     });
 
-    await bundle(path.join(src, 'background.ts'), path.join(tempOut, 'background.js'), {
+    await bundle(path.join(src, testHooks ? 'background.test.ts' : 'background.ts'), path.join(tempOut, 'background.js'), {
       format: 'esm',
     });
 
@@ -218,7 +219,7 @@ async function main() {
     if (hadPreviousBuild) await rm(backupOut, { recursive: true, force: true });
     await rm(buildRoot, { recursive: true, force: true });
 
-    console.log(`\nFormFlow extension built → ${out}`);
+    console.log(`\nFormFlow extension built${testHooks ? ' (TEST HOOKS)' : ''} → ${out}`);
     console.log(`Manifest ${verification.manifest.version}; ${verification.files.length} files; ${(verification.totalBytes / 1024).toFixed(1)} KB`);
     console.log('Manifest references verified:');
     for (const reference of verification.referenced) console.log(`  ✓ ${reference}`);
