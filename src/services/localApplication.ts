@@ -1,22 +1,37 @@
-import { dashboardService as coreDashboardService, type DashboardData } from '../../core/application/dashboard-service';
-import { documentService as coreDocumentService } from '../../core/application/document-service';
-import { profileRecordService as coreProfileRecordService, profileService as coreProfileService } from '../../core/application/profile-service';
-import { historyService as coreHistoryService } from '../../core/application/history-service';
-import { vaultService as coreVaultService } from '../../core/application/vault-service';
-import { collectionRepository } from '../../core/database/repositories';
+import { vaultClient } from '@/services/vaultClient';
+import type { DashboardPayload } from '@/services/vaultClientTypes';
 
-export const dashboardService = coreDashboardService;
-export const documentService = coreDocumentService;
-export const profileRecordService = coreProfileRecordService;
-export const profileService = coreProfileService;
-export const historyService = coreHistoryService;
-export const vaultService = coreVaultService;
-
-export const localCollectionService = {
-  list: () => collectionRepository.list(),
-  create: (input: { name: string; description?: string; notes?: string; color?: string; documentIds?: string[] }) => collectionRepository.create(input),
-  update: (id: string, patch: { name?: string; description?: string; notes?: string; color?: string; documentIds?: string[] }) => collectionRepository.update(id, patch),
-  remove: (id: string) => collectionRepository.remove(id),
+export const dashboardService = {
+  load(): Promise<DashboardPayload> {
+    return vaultClient.getDashboardData();
+  },
 };
 
-export type { DashboardData };
+export const profileService = {
+  getProfile: () => vaultClient.getProfile(),
+  saveProfile: (patch: Parameters<typeof vaultClient.updateProfile>[0]) => vaultClient.updateProfile(patch),
+  listFields: () => vaultClient.listFields(),
+  addField: (field: Parameters<typeof vaultClient.addField>[0]) => vaultClient.addField(field),
+  updateField: (id: string, value: string) => vaultClient.updateField(id, value),
+  deleteField: (id: string) => vaultClient.deleteField(id),
+  resolveConflict: (id: string, value: string) => vaultClient.resolveConflict(id, value),
+};
+
+export const historyService = {
+  list: () => vaultClient.getHistory(),
+  record: (entry: Parameters<typeof vaultClient.recordHistory>[0]) => vaultClient.recordHistory(entry),
+  clear: () => vaultClient.clearHistory(),
+};
+
+export const vaultService = {
+  getActiveVault: () => vaultClient.getActiveVault(),
+  createVault: async (input: { name: string; passphrase: string }) => {
+    const result = await vaultClient.createVault(input);
+    return result.vault;
+  },
+  migratePlaintextVault: (passphrase: string) => vaultClient.migratePlaintextVault(passphrase),
+  updateVault: (patch: Parameters<typeof vaultClient.updateVault>[0]) => vaultClient.updateVault(patch),
+  touch: () => vaultClient.touch(),
+};
+
+export type { DashboardPayload as DashboardData };

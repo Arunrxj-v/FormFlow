@@ -31,10 +31,13 @@ function autoBackendPlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), autoBackendPlugin()],
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, 'src'),
-      '@shared': path.resolve(__dirname, 'shared'),
-    },
+    alias: [
+      // Localhost development uses a direct client. The extension build
+      // aliases this module to the background-only client instead.
+      { find: '@/services/vaultClient', replacement: path.resolve(__dirname, 'src/dev/directVaultClient.ts') },
+      { find: '@', replacement: path.resolve(__dirname, 'src') },
+      { find: '@shared', replacement: path.resolve(__dirname, 'shared') },
+    ],
   },
   server: {
     port: 5173,

@@ -9,13 +9,11 @@ import {
   type ReactNode,
 } from 'react';
 import { useToast } from './ToastContext';
-import { dashboardService, vaultService } from '@/services/localApplication';
-import { documentService as localDocumentService } from '@/services/documentService';
-import { profileService } from '@/services/localApplication';
+import { dashboardService, profileService, vaultService } from '@/services/localApplication';
+import { documentService as localDocumentService, revokeDocumentObjectUrls } from '@/services/documentService';
 import { settingsService } from '@/services/settingsService';
-import { vaultManager } from '../../core/vault/vault-manager';
-import { vaultSession } from '../../core/vault/vault-session';
-import type { VaultStatus } from '../../core/vault/vault-manager';
+import { vaultClient } from '@/services/vaultClient';
+import type { VaultStatus } from '@/services/vaultClientTypes';
 import type {
   ActivityItem,
   DriveConnection,
@@ -138,8 +136,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [extension] = useState<ExtensionConnection>(disconnectedExtension);
   const { toast } = useToast();
   const lockTimer = useRef<number | null>(null);
+  const encryptionUpgradeStarted = useRef(false);
 
   const clearSensitive = useCallback(() => {
+    revokeDocumentObjectUrls();
     setVault(null);
     setUser(null);
     setDocuments([]);
@@ -155,7 +155,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadData = useCallback(async () => {
     setDataLoading(true);
     try {
-      const status = await vaultManager.status();
+      const status = await vaultClient.status();
       setVaultStatus(status);
       const prefs = await settingsService.getPreferences();
       setPreferences(prefs);
@@ -184,11 +184,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const activeVault = await vaultService.getActiveVault();
-      setVault(activeVault);
-      const profile = await profileService.getProfile();
-      setUser(deriveUser(profile));
+      if (status.requiresEncryptionUpgrade && !encryptionUpgradeStarted.current) {
+        encryptionUpgradeStarted.current = true;
+        void vaultClient.migrateEncryption()
+          .then(() => loadData())
+          .catch((error) => {
+            encryptionUpgradeStarted.current = false;
+            toast({
+              tone: 'error',
+              title: 'Encryption upgrade incomplete',
+              message: error instanceof Error ? error.message : 'Unlock the vault and retry the upgrade.',
+            });
+          });
+      }
+
       const data = await dashboardService.load();
+      setVault(data.vault);
+      setUser(deriveUser(data.profile));
       setDocuments(data.documents);
       setFields(data.fields);
       setActivity(data.activity);
@@ -198,26 +210,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setServiceStatus('online');
       void vaultService.touch();
     } catch (error) {
-      console.error('Local vault load failed', error);
+      const code = (error as { code?: string }).code;
       clearSensitive();
-      setVaultState('error');
-      setAuthState('auth_error');
-      setAuthError(error instanceof Error ? error.message : 'Unable to open the local vault.');
-      setServiceStatus('offline');
+      if (code === 'VAULT_LOCKED' || code === 'SESSION_EXPIRED') {
+        setVaultState('locked');
+        setAuthState('session_expired');
+        setServiceStatus('online');
+      } else {
+        console.error('Local vault load failed', error);
+        setVaultState('error');
+        setAuthState('auth_error');
+        setAuthError(error instanceof Error ? error.message : 'Unable to open the local vault.');
+        setServiceStatus('offline');
+      }
     } finally {
       setDataLoading(false);
     }
-  }, [clearSensitive]);
+  }, [clearSensitive, toast]);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
   useEffect(() => {
-    return vaultSession.subscribe(() => {
+    return vaultClient.subscribeState(() => {
       void loadData();
     });
   }, [loadData]);
+
+  useEffect(() => {
+    // A long-lived port keeps the MV3 worker alive while the dashboard is open.
+    // If the worker is still terminated, the vault locks and requires unlock.
+    return vaultClient.keepAlive();
+  }, []);
 
   const createVault = useCallback(async (input: { name: string; passphrase: string }) => {
     const record = await vaultService.createVault(input);
@@ -235,7 +260,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      await vaultManager.unlock(passphrase);
+      await vaultClient.unlock(passphrase);
+      try {
+        await vaultClient.migrateEncryption();
+      } catch (error) {
+        toast({
+          tone: 'error',
+          title: 'Vault unlocked, upgrade incomplete',
+          message: error instanceof Error ? error.message : 'Encryption upgrade needs to be retried.',
+        });
+      }
       await loadData();
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Unable to unlock the vault.');
@@ -243,10 +277,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setAuthLoading(false);
     }
-  }, [loadData]);
+  }, [loadData, toast]);
 
   const lockVault = useCallback(async () => {
-    await vaultManager.lock();
+    await vaultClient.lock();
     clearSensitive();
     setVaultState('locked');
     setVaultStatus((current) => (current ? { ...current, unlocked: false } : current));
@@ -254,7 +288,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [clearSensitive]);
 
   const changePassphrase = useCallback(async (currentPassphrase: string, newPassphrase: string) => {
-    await vaultManager.changePassword(currentPassphrase, newPassphrase);
+    await vaultClient.changePassphrase(currentPassphrase, newPassphrase);
     toast({ tone: 'success', title: 'Vault passphrase changed' });
   }, [toast]);
 

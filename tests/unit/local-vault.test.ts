@@ -31,23 +31,28 @@ test('rejects a wrong passphrase and tampered ciphertext', async () => {
   await assert.rejects(() => vaultManager.unlock('wrong-passphrase'), /incorrect/i);
   await vaultManager.unlock(PASSPHRASE);
   const key = await generateDataKey();
-  const encrypted = await encryptJsonWithKey(key, { secret: 'value' });
-  const encryptedAgain = await encryptJsonWithKey(key, { secret: 'value' });
+  const aad = { vaultId: 'vault_test', recordType: 'value', recordId: 'val_test', field: 'value', schemaVersion: 2 };
+  const encrypted = await encryptJsonWithKey(key, { secret: 'value' }, aad);
+  const encryptedAgain = await encryptJsonWithKey(key, { secret: 'value' }, aad);
   assert.notEqual(encrypted, encryptedAgain, 'AES-GCM must use a fresh nonce per encryption');
-  assert.deepEqual(await decryptJsonWithKey(key, encrypted), { secret: 'value' });
+  assert.deepEqual(await decryptJsonWithKey(key, encrypted, aad), { secret: 'value' });
   const parsed = JSON.parse(encrypted) as { data: string };
   const bytes = Buffer.from(parsed.data, 'base64');
   bytes[0] ^= 1;
   parsed.data = bytes.toString('base64');
-  await assert.rejects(() => decryptJsonWithKey(key, JSON.stringify(parsed)), /authenticated|malformed|valid/i);
+  await assert.rejects(() => decryptJsonWithKey(key, JSON.stringify(parsed), aad), /authenticated|malformed|valid/i);
 });
 
 test('changes the passphrase by rewrapping the vault data key', async () => {
   const newPassphrase = 'unit-test-passphrase-456';
+  await assert.rejects(() => vaultManager.changePassword('wrong-passphrase', newPassphrase), /incorrect/i);
+  await assert.rejects(() => vaultManager.changePassword(PASSPHRASE, 'short'), /10 characters/i);
+  assert.equal(await vaultManager.verifyPassword(PASSPHRASE), true, 'failed changes must not replace the passphrase');
   await vaultManager.changePassword(PASSPHRASE, newPassphrase);
   await vaultManager.lock();
   await assert.rejects(() => vaultManager.unlock(PASSPHRASE), /incorrect/i);
   await vaultManager.unlock(newPassphrase);
+  assert.equal(await vaultManager.verifyPassword(newPassphrase), true);
   await vaultManager.changePassword(newPassphrase, PASSPHRASE);
 });
 
@@ -247,4 +252,50 @@ test('records local activity and form history', async () => {
   await historyRepository.clear();
   const cleared = await historyRepository.list();
   assert.equal(cleared.length, 0);
+});
+
+test('passphrase change keeps existing encrypted documents accessible', async () => {
+  const vault = (await vaultRecordRepository.getActive())!;
+  const row = await documentRepository.create(
+    {
+      vaultId: vault.id,
+      mimeType: 'text/plain',
+      extension: 'txt',
+      category: 'Other',
+      subcategory: '',
+      status: 'stored',
+      fileType: 'txt',
+      sizeBytes: 20,
+      sizeLabel: '20 B',
+      checksum: 'passphrase-change-checksum',
+      storageKey: '',
+      source: 'device',
+      ocrUsed: false,
+      extractedTextStatus: 'pending',
+      metadata: {},
+    },
+    'passphrase-change.txt',
+  );
+  await documentRepository.saveOriginalFile(row.id, 'text/plain', new Blob(['passphrase document'], { type: 'text/plain' }));
+  const documentId = row.id;
+  const nextPassphrase = 'unit-test-passphrase-789';
+  await vaultManager.changePassword(PASSPHRASE, nextPassphrase);
+  await vaultManager.lock();
+  await assert.rejects(() => vaultManager.unlock(PASSPHRASE), /incorrect/i);
+  await vaultManager.unlock(nextPassphrase);
+  const blob = await documentRepository.getOriginalFile(documentId);
+  assert.ok(blob);
+  assert.ok((await blob.text()).length > 0);
+  await vaultManager.changePassword(nextPassphrase, PASSPHRASE);
+});
+
+test('a lock during passphrase change aborts without replacing the passphrase', async () => {
+  const nextPassphrase = 'unit-test-passphrase-interrupted';
+  const changing = vaultManager.changePassword(PASSPHRASE, nextPassphrase);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await vaultManager.lock();
+  await assert.rejects(changing, /locked|session|in progress/i);
+  await vaultManager.unlock(PASSPHRASE);
+  assert.equal(await vaultManager.verifyPassword(PASSPHRASE), true);
+  assert.equal(await vaultManager.verifyPassword(nextPassphrase), false);
 });

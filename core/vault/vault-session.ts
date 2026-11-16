@@ -6,31 +6,27 @@ export type VaultLockListener = (locked: boolean) => void;
 
 /**
  * Holds the unlocked data-encryption key for the current browser session.
- * In the extension, the raw key lives in chrome.storage.session (memory only,
- * never written to disk) and is unavailable to content scripts. Web builds use
- * sessionStorage, which is also cleared when the tab closes.
+ * In the extension the key is memory-only inside the service worker; it is not
+ * written to chrome.storage.session or IndexedDB, so extension pages cannot
+ * read it. Web development builds use sessionStorage, which is cleared when
+ * the tab closes.
+ *
+ * `generation` increments on explicit lock/unlock transitions so callers can
+ * discard responses that were produced across a lock boundary.
  */
 export class VaultSession {
   private key: CryptoKey | null = null;
   private listeners = new Set<VaultLockListener>();
+  private generation = 0;
+  private epoch = 0;
+  private transition: Promise<void> = Promise.resolve();
 
-  constructor(private readonly backend: KeySessionBackend = createDefaultSessionBackend()) {
-    this.bindStorageChanges();
-  }
+  constructor(private readonly backend: KeySessionBackend = createDefaultSessionBackend()) {}
 
-  private bindStorageChanges(): void {
-    if (typeof chrome === 'undefined' || !chrome.storage?.onChanged) return;
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'session' || !('formflow.vault.session_key' in changes)) return;
-      const next = changes['formflow.vault.session_key']?.newValue;
-      if (!next) {
-        this.key = null;
-        this.emit(true);
-        return;
-      }
-      this.key = null;
-      void this.hydrate().then((hydrated) => this.emit(!hydrated));
-    });
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const run = this.transition.then(operation, operation);
+    this.transition = run.catch(() => undefined);
+    return run;
   }
 
   private emit(locked: boolean): void {
@@ -48,13 +44,26 @@ export class VaultSession {
     return () => this.listeners.delete(listener);
   }
 
+  getGeneration(): number {
+    return this.generation;
+  }
+
+  isCurrent(generation: number): boolean {
+    return this.generation === generation;
+  }
+
   async hydrate(): Promise<boolean> {
     if (this.key) return true;
+    const epoch = this.epoch;
     const stored = await this.backend.get();
-    if (!stored) return false;
+    if (!stored || epoch !== this.epoch) return false;
     try {
       const raw = Uint8Array.from(atob(stored), (c) => c.charCodeAt(0));
       this.key = await importDataKey(raw);
+      if (epoch !== this.epoch) {
+        this.key = null;
+        return false;
+      }
       return true;
     } catch {
       await this.backend.set(null);
@@ -75,16 +84,26 @@ export class VaultSession {
   }
 
   async unlockWithDataKey(key: CryptoKey): Promise<void> {
-    const raw = await exportKeyRaw(key);
-    const b64 = bufferToBase64(raw);
-    this.key = await importDataKey(raw);
-    await this.backend.set(b64);
+    await this.enqueue(async () => {
+      const raw = await exportKeyRaw(key);
+      const b64 = bufferToBase64(raw);
+      this.epoch += 1;
+      this.key = await importDataKey(raw);
+      await this.backend.set(b64);
+      this.generation += 1;
+      this.emit(false);
+    });
   }
 
   async lock(): Promise<void> {
-    this.key = null;
-    await this.backend.set(null);
-    this.emit(true);
+    await this.enqueue(async () => {
+      const hadKey = this.key !== null;
+      this.epoch += 1;
+      this.key = null;
+      await this.backend.set(null);
+      if (hadKey) this.generation += 1;
+      this.emit(true);
+    });
   }
 }
 

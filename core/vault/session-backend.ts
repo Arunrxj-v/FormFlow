@@ -1,27 +1,7 @@
-import { VAULT_SESSION_KEY } from '@shared/constants';
-
 export interface KeySessionBackend {
-  readonly kind: 'extension' | 'web' | 'memory';
+  readonly kind: 'web' | 'memory';
   get(): Promise<string | null>;
   set(value: string | null): Promise<void>;
-}
-
-const hasChromeSession = (): boolean =>
-  typeof chrome !== 'undefined' && Boolean(chrome.storage?.session?.get);
-
-export class ChromeSessionBackend implements KeySessionBackend {
-  readonly kind = 'extension' as const;
-
-  async get(): Promise<string | null> {
-    const result = await chrome.storage.session.get(VAULT_SESSION_KEY);
-    const value = result[VAULT_SESSION_KEY];
-    return typeof value === 'string' ? value : null;
-  }
-
-  async set(value: string | null): Promise<void> {
-    if (value) await chrome.storage.session.set({ [VAULT_SESSION_KEY]: value });
-    else await chrome.storage.session.remove(VAULT_SESSION_KEY);
-  }
 }
 
 export class WebSessionBackend implements KeySessionBackend {
@@ -29,7 +9,7 @@ export class WebSessionBackend implements KeySessionBackend {
 
   async get(): Promise<string | null> {
     try {
-      return sessionStorage.getItem(VAULT_SESSION_KEY);
+      return sessionStorage.getItem('formflow.vault.session_key');
     } catch {
       return null;
     }
@@ -37,8 +17,8 @@ export class WebSessionBackend implements KeySessionBackend {
 
   async set(value: string | null): Promise<void> {
     try {
-      if (value) sessionStorage.setItem(VAULT_SESSION_KEY, value);
-      else sessionStorage.removeItem(VAULT_SESSION_KEY);
+      if (value) sessionStorage.setItem('formflow.vault.session_key', value);
+      else sessionStorage.removeItem('formflow.vault.session_key');
     } catch {
       // Ignore unavailable session storage.
     }
@@ -59,7 +39,9 @@ export class MemorySessionBackend implements KeySessionBackend {
 }
 
 export function createDefaultSessionBackend(): KeySessionBackend {
-  if (hasChromeSession()) return new ChromeSessionBackend();
+  // In the extension the DEK is memory-only inside the service worker. It is
+  // never written to chrome.storage.session, which extension pages can read.
+  if (typeof chrome !== 'undefined' && chrome.runtime?.id) return new MemorySessionBackend();
   if (typeof sessionStorage !== 'undefined') return new WebSessionBackend();
   return new MemorySessionBackend();
 }

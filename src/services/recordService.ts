@@ -1,4 +1,4 @@
-import { profileRecordService } from '../../core/application/profile-service';
+import { vaultClient } from '@/services/vaultClient';
 import type {
   AddressRecord,
   CertificationRecord,
@@ -8,80 +8,59 @@ import type {
   SkillRecord,
 } from '../../shared/types';
 
-/**
- * Compatibility facade over the local profile-record service.
- * Keeps the existing page API while the business logic lives in core/application.
- */
 export const recordService = {
   listAddresses(): Promise<AddressRecord[]> {
-    return profileRecordService.listAddresses();
+    return vaultClient.listProfileRecords<AddressRecord>('address');
   },
-
   saveAddress(input: Partial<AddressRecord> & Pick<AddressRecord, 'addressLine1'>): Promise<AddressRecord> {
-    return profileRecordService.saveAddress(input);
+    return vaultClient.saveProfileRecord<AddressRecord>('address', input as AddressRecord);
   },
-
   removeAddress(id: string): Promise<void> {
-    return profileRecordService.removeAddress(id);
+    return vaultClient.removeProfileRecord(id);
   },
-
   listEducation(): Promise<EducationRecord[]> {
-    return profileRecordService.listEducation();
+    return vaultClient.listProfileRecords<EducationRecord>('education');
   },
-
   saveEducation(record: EducationRecord, documentId?: string): Promise<EducationRecord> {
-    return profileRecordService.saveEducation(record, documentId);
+    return vaultClient.saveProfileRecord<EducationRecord>('education', record, documentId);
   },
-
   removeEducation(id: string): Promise<void> {
-    return profileRecordService.removeEducation(id);
+    return vaultClient.removeProfileRecord(id);
   },
-
   listEmployment(): Promise<EmploymentRecord[]> {
-    return profileRecordService.listEmployment();
+    return vaultClient.listProfileRecords<EmploymentRecord>('employment');
   },
-
   saveEmployment(record: EmploymentRecord, documentId?: string): Promise<EmploymentRecord> {
-    return profileRecordService.saveEmployment(record, documentId);
+    return vaultClient.saveProfileRecord<EmploymentRecord>('employment', record, documentId);
   },
-
   removeEmployment(id: string): Promise<void> {
-    return profileRecordService.removeEmployment(id);
+    return vaultClient.removeProfileRecord(id);
   },
-
   listSkills(): Promise<SkillRecord[]> {
-    return profileRecordService.listSkills();
+    return vaultClient.listProfileRecords<SkillRecord>('skill');
   },
-
   saveSkill(record: SkillRecord): Promise<SkillRecord> {
-    return profileRecordService.saveSkill(record);
+    return vaultClient.saveProfileRecord<SkillRecord>('skill', record);
   },
-
   removeSkill(id: string): Promise<void> {
-    return profileRecordService.removeSkill(id);
+    return vaultClient.removeProfileRecord(id);
   },
-
   listCertifications(): Promise<CertificationRecord[]> {
-    return profileRecordService.listCertifications();
+    return vaultClient.listProfileRecords<CertificationRecord>('certification');
   },
-
   saveCertification(record: CertificationRecord): Promise<CertificationRecord> {
-    return profileRecordService.saveCertification(record);
+    return vaultClient.saveProfileRecord<CertificationRecord>('certification', record);
   },
-
   removeCertification(id: string): Promise<void> {
-    return profileRecordService.removeCertification(id);
+    return vaultClient.removeProfileRecord(id);
   },
-
   listProjects(): Promise<ProjectRecord[]> {
-    return profileRecordService.listProjects();
+    return vaultClient.listProfileRecords<ProjectRecord>('project');
   },
-
   saveProject(record: ProjectRecord): Promise<ProjectRecord> {
-    return profileRecordService.saveProject(record);
+    return vaultClient.saveProfileRecord<ProjectRecord>('project', record);
   },
-
   removeProject(id: string): Promise<void> {
-    return profileRecordService.removeProject(id);
+    return vaultClient.removeProfileRecord(id);
   },
 };

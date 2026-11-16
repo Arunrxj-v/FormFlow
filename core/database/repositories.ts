@@ -24,24 +24,63 @@ import type {
   StoredVaultProfileRow,
   ConflictRecord as ConflictRow,
 } from '@shared/types';
-import { DEFAULT_AUTO_LOCK_MINUTES } from '@shared/constants';
+import { DEFAULT_AUTO_LOCK_MINUTES, VAULT_SCHEMA_VERSION } from '@shared/constants';
 import { getDb } from './database';
 import { vaultRepository as vaultRecordRepository } from './vault-repository';
-import { decryptBytesWithKey, decryptJsonWithKey, encryptBytesWithKey, encryptJsonWithKey } from '../encryption/crypto-service';
+import {
+  decryptBytesWithKey,
+  decryptBytesWithLegacyAad,
+  decryptJsonWithKey,
+  encryptBytesWithKey,
+  encryptJsonWithKey,
+  type RecordAad,
+} from '../encryption/crypto-service';
 import { vaultSession } from '../vault/vault-session';
 import { categoryForKey, labelForKey, SENSITIVE_KEYS } from '@shared/field-catalog';
 import { normalizeValue } from '../extraction/normalize';
+
+interface VaultIdentity {
+  vaultId: string;
+  schemaVersion: number;
+}
+
+async function identity(): Promise<VaultIdentity> {
+  const vault = await vaultRecordRepository.getActive();
+  if (!vault) throw new FormFlowError('VAULT_NOT_FOUND', 'No active local vault exists.');
+  return { vaultId: vault.id, schemaVersion: vault.schemaVersion ?? VAULT_SCHEMA_VERSION };
+}
+
+function aad(vault: VaultIdentity, recordType: string, recordId: string, field: string): RecordAad {
+  return {
+    vaultId: vault.vaultId,
+    recordType,
+    recordId,
+    field,
+    schemaVersion: vault.schemaVersion,
+  };
+}
+
+function assertVault(vault: VaultIdentity, recordVaultId: string): void {
+  if (recordVaultId !== vault.vaultId) {
+    throw new FormFlowError('VALIDATION_FAILED', 'This record belongs to a different vault.');
+  }
+}
 
 async function key(): Promise<CryptoKey> {
   return vaultSession.getDataKey();
 }
 
-async function enc(value: unknown): Promise<string> {
-  return encryptJsonWithKey(await vaultSession.getDataKey(), value);
+async function enc(value: unknown, context: RecordAad): Promise<string> {
+  return encryptJsonWithKey(await vaultSession.getDataKey(), value, context);
 }
 
-async function dec<T>(payload: string): Promise<T> {
-  return decryptJsonWithKey<T>(await vaultSession.getDataKey(), payload);
+async function dec<T>(payload: string, context?: RecordAad): Promise<T> {
+  return decryptJsonWithKey<T>(await vaultSession.getDataKey(), payload, context);
+}
+
+async function decLabel(row: { label?: string; labelEnc?: string }, context: RecordAad): Promise<string> {
+  if (row.labelEnc) return dec<string>(row.labelEnc, context);
+  return row.label ?? '';
 }
 
 function id(prefix: string): string {
@@ -50,13 +89,14 @@ function id(prefix: string): string {
 
 export const vaultRepository = {
   async getProfile(): Promise<VaultProfile> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('vaultProfile', 'me');
     if (!row) {
       const now = new Date().toISOString();
       return { id: 'me', name: '', email: '', accountType: 'Local', createdAt: now, updatedAt: now };
     }
-    return dec<VaultProfile>(row.profileEnc);
+    return dec<VaultProfile>(row.profileEnc, aad(vault, 'profile', 'me', 'profile'));
   },
 
   async saveProfile(profile: Partial<Omit<VaultProfile, 'id'>>): Promise<VaultProfile> {
@@ -67,10 +107,11 @@ export const vaultRepository = {
       id: 'me',
       updatedAt: new Date().toISOString(),
     };
+    const vault = await identity();
     const db = await getDb();
     const row: StoredVaultProfileRow = {
       id: 'me',
-      profileEnc: await enc(updated),
+      profileEnc: await enc(updated, aad(vault, 'profile', 'me', 'profile')),
       updatedAt: updated.updatedAt,
     };
     await db.put('vaultProfile', row);
@@ -78,6 +119,7 @@ export const vaultRepository = {
   },
 
   async listFields(): Promise<VaultField[]> {
+    const vault = await identity();
     const db = await getDb();
     const [rows, conflicts, documents] = await Promise.all([
       db.getAll('extractedValues'),
@@ -87,7 +129,10 @@ export const vaultRepository = {
     const documentNames = new Map<string, string>();
     for (const document of documents) {
       try {
-        documentNames.set(document.id, await dec<string>(document.nameEnc));
+        documentNames.set(
+          document.id,
+          await dec<string>(document.nameEnc, aad(vault, 'document', document.id, 'name')),
+        );
       } catch {
         documentNames.set(document.id, 'Encrypted document');
       }
@@ -102,8 +147,9 @@ export const vaultRepository = {
 
     const fields: VaultField[] = [];
     for (const row of rows) {
-      const value = await dec<string>(row.valueEnc);
-      const normalized = await dec<string>(row.normalizedValueEnc);
+      const value = await dec<string>(row.valueEnc, aad(vault, 'value', row.id, 'value'));
+      const normalized = await dec<string>(row.normalizedValueEnc, aad(vault, 'value', row.id, 'normalizedValue'));
+      const label = await decLabel(row, aad(vault, 'value', row.id, 'label'));
       const sourceDocName = documentNames.get(row.sourceDocumentId) ?? 'Local document';
       const source = {
         documentId: row.sourceDocumentId,
@@ -113,8 +159,14 @@ export const vaultRepository = {
       };
       const fieldConflicts: FieldConflict[] = [];
       for (const conflict of openByKey.get(row.key) ?? []) {
-        const existing = await dec<string>(conflict.existingValueEnc);
-        const next = await dec<string>(conflict.newValueEnc);
+        const existing = await dec<string>(
+          conflict.existingValueEnc,
+          aad(vault, 'conflict', conflict.id, 'existingValue'),
+        );
+        const next = await dec<string>(
+          conflict.newValueEnc,
+          aad(vault, 'conflict', conflict.id, 'newValue'),
+        );
         const alternateIsExisting = normalizeValue(row.key, value) === normalizeValue(row.key, existing);
         const alternateValue = alternateIsExisting ? next : existing;
         const alternateDocId = alternateIsExisting ? conflict.newSourceDocumentId : conflict.existingSourceDocumentId;
@@ -133,7 +185,7 @@ export const vaultRepository = {
       fields.push({
         id: row.id,
         key: row.key,
-        label: row.label,
+        label,
         value,
         normalizedValue: normalized,
         category: row.category,
@@ -160,6 +212,7 @@ export const vaultRepository = {
   },
 
   async addField(input: VaultFieldInput): Promise<{ field: VaultField; conflictCreated: boolean }> {
+    const vault = await identity();
     const db = await getDb();
     const now = new Date().toISOString();
     const normalized = normalizeValue(input.key, input.value);
@@ -167,12 +220,14 @@ export const vaultRepository = {
     const existing = existingRows[0];
 
     if (!existing) {
+      const fieldId = id('val');
       const row: ExtractedValueRecord = {
-        id: id('val'),
+        id: fieldId,
         key: input.key,
-        label: input.label || labelForKey(input.key),
-        valueEnc: await enc(input.value),
-        normalizedValueEnc: await enc(normalized),
+        label: '',
+        labelEnc: await enc(input.label || labelForKey(input.key), aad(vault, 'value', fieldId, 'label')),
+        valueEnc: await enc(input.value, aad(vault, 'value', fieldId, 'value')),
+        normalizedValueEnc: await enc(normalized, aad(vault, 'value', fieldId, 'normalizedValue')),
         category: input.category || categoryForKey(input.key),
         sourceDocumentId: input.source.documentId,
         sourcePage: input.sourcePage,
@@ -185,13 +240,19 @@ export const vaultRepository = {
         updatedAt: now,
       };
       await db.put('extractedValues', row);
-      const [field] = await this.listFields();
       const found = (await this.listFields()).find((item) => item.id === row.id);
-      return { field: found ?? field, conflictCreated: false };
+      if (!found) throw new FormFlowError('NOT_FOUND', 'The saved value could not be read back.');
+      return { field: found, conflictCreated: false };
     }
 
-    const existingValue = await dec<string>(existing.valueEnc);
-    const existingNormalized = await dec<string>(existing.normalizedValueEnc);
+    const existingValue = await dec<string>(
+      existing.valueEnc,
+      aad(vault, 'value', existing.id, 'value'),
+    );
+    const existingNormalized = await dec<string>(
+      existing.normalizedValueEnc,
+      aad(vault, 'value', existing.id, 'normalizedValue'),
+    );
 
     if (existingNormalized === normalized) {
       const merged: ExtractedValueRecord = {
@@ -215,8 +276,8 @@ export const vaultRepository = {
     if (input.verificationStatus === 'user_verified' || input.extractionMethod === 'manual') {
       const updated: ExtractedValueRecord = {
         ...existing,
-        valueEnc: await enc(input.value),
-        normalizedValueEnc: await enc(normalized),
+        valueEnc: await enc(input.value, aad(vault, 'value', existing.id, 'value')),
+        normalizedValueEnc: await enc(normalized, aad(vault, 'value', existing.id, 'normalizedValue')),
         confidence: 100,
         extractionMethod: 'manual',
         verificationStatus: 'user_verified',
@@ -240,26 +301,33 @@ export const vaultRepository = {
 
   async createConflict(
     existing: ExtractedValueRecord,
-    _existingValue: string,
+    existingValue: string,
     input: VaultFieldInput,
     normalized: string,
   ): Promise<boolean> {
+    const vault = await identity();
     const db = await getDb();
     const open = await db.getAllFromIndex('conflicts', 'by-key', input.key);
     for (const row of open) {
       if (row.status !== 'open') continue;
-      const newValue = await dec<string>(row.newValueEnc);
+      const newValue = await dec<string>(
+        row.newValueEnc,
+        aad(vault, 'conflict', row.id, 'newValue'),
+      );
       if (normalizeValue(input.key, newValue) === normalized) return false;
     }
     const now = new Date().toISOString();
+    const conflictId = id('conf');
+    const label = await decLabel(existing, aad(vault, 'value', existing.id, 'label'));
     const conflict: ConflictRecord = {
-      id: id('conf'),
+      id: conflictId,
       key: input.key,
-      label: existing.label,
-      existingValueEnc: existing.valueEnc,
+      label: '',
+      labelEnc: await enc(label, aad(vault, 'conflict', conflictId, 'label')),
+      existingValueEnc: await enc(existingValue, aad(vault, 'conflict', conflictId, 'existingValue')),
       existingSourceDocumentId: existing.sourceDocumentId,
       existingConfidence: existing.confidence,
-      newValueEnc: await enc(input.value),
+      newValueEnc: await enc(input.value, aad(vault, 'conflict', conflictId, 'newValue')),
       newSourceDocumentId: input.source.documentId,
       newConfidence: input.confidence,
       page: input.sourcePage,
@@ -281,13 +349,14 @@ export const vaultRepository = {
   },
 
   async updateField(fieldId: string, value: string): Promise<VaultField> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('extractedValues', fieldId);
     if (!row) throw new FormFlowError('NOT_FOUND', 'Vault value not found.');
     const updated: ExtractedValueRecord = {
       ...row,
-      valueEnc: await enc(value),
-      normalizedValueEnc: await enc(normalizeValue(row.key, value)),
+      valueEnc: await enc(value, aad(vault, 'value', row.id, 'value')),
+      normalizedValueEnc: await enc(normalizeValue(row.key, value), aad(vault, 'value', row.id, 'normalizedValue')),
       confidence: 100,
       extractionMethod: 'manual',
       verificationStatus: 'user_verified',
@@ -324,18 +393,25 @@ export const vaultRepository = {
   },
 
   async resolveConflict(fieldId: string, chosenValue: string): Promise<VaultField> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('extractedValues', fieldId);
     if (!row) throw new FormFlowError('NOT_FOUND', 'Vault value not found.');
     const conflicts = await db.getAllFromIndex('conflicts', 'by-key', row.key);
     const open = conflicts.filter((conflict) => conflict.status === 'open');
     const chosenNormalized = normalizeValue(row.key, chosenValue);
-    const currentValue = await dec<string>(row.valueEnc);
+    const currentValue = await dec<string>(row.valueEnc, aad(vault, 'value', row.id, 'value'));
     const now = new Date().toISOString();
 
     for (const conflict of open) {
-      const existingValue = await dec<string>(conflict.existingValueEnc);
-      const newValue = await dec<string>(conflict.newValueEnc);
+      const existingValue = await dec<string>(
+        conflict.existingValueEnc,
+        aad(vault, 'conflict', conflict.id, 'existingValue'),
+      );
+      const newValue = await dec<string>(
+        conflict.newValueEnc,
+        aad(vault, 'conflict', conflict.id, 'newValue'),
+      );
       const existingNormalized = normalizeValue(row.key, existingValue);
       const newNormalized = normalizeValue(row.key, newValue);
 
@@ -346,8 +422,8 @@ export const vaultRepository = {
       if (chosenNormalized === newNormalized) {
         const updated: ExtractedValueRecord = {
           ...row,
-          valueEnc: await enc(newValue),
-          normalizedValueEnc: await enc(newNormalized),
+          valueEnc: await enc(newValue, aad(vault, 'value', row.id, 'value')),
+          normalizedValueEnc: await enc(newNormalized, aad(vault, 'value', row.id, 'normalizedValue')),
           sourceDocumentId: conflict.newSourceDocumentId,
           sourcePage: conflict.page,
           confidence: conflict.newConfidence,
@@ -372,14 +448,23 @@ export const vaultRepository = {
   },
 
   async listOpenConflicts(): Promise<Array<{ id: string; key: string; label: string; count: number }>> {
+    const vault = await identity();
     const db = await getDb();
     const rows = await db.getAll('conflicts');
     const map = new Map<string, { id: string; key: string; label: string; count: number }>();
     for (const row of rows) {
       if (row.status !== 'open') continue;
-      const entry = map.get(row.key) ?? { id: row.key, key: row.key, label: row.label, count: 0 };
-      entry.count += 1;
-      map.set(row.key, entry);
+      const existing = map.get(row.key);
+      if (!existing) {
+        map.set(row.key, {
+          id: row.key,
+          key: row.key,
+          label: await decLabel(row, aad(vault, 'conflict', row.id, 'label')),
+          count: 1,
+        });
+      } else {
+        existing.count += 1;
+      }
     }
     return Array.from(map.values());
   },
@@ -387,21 +472,31 @@ export const vaultRepository = {
 
 export const documentRepository = {
   async list(): Promise<Array<{ row: DocumentRecord; name: string }>> {
+    const vault = await identity();
     const db = await getDb();
     const rows = await db.getAll('documents');
     const result = [];
     for (const row of rows) {
-      result.push({ row, name: await dec<string>(row.nameEnc) });
+      assertVault(vault, row.vaultId);
+      result.push({
+        row,
+        name: await dec<string>(row.nameEnc, aad(vault, 'document', row.id, 'name')),
+      });
     }
     result.sort((a, b) => b.row.createdAt.localeCompare(a.row.createdAt));
     return result;
   },
 
   async get(documentId: string): Promise<{ row: DocumentRecord; name: string } | null> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('documents', documentId);
     if (!row) return null;
-    return { row, name: await dec<string>(row.nameEnc) };
+    assertVault(vault, row.vaultId);
+    return {
+      row,
+      name: await dec<string>(row.nameEnc, aad(vault, 'document', row.id, 'name')),
+    };
   },
 
   async findByChecksum(checksum: string): Promise<DocumentRecord | null> {
@@ -413,17 +508,22 @@ export const documentRepository = {
     record: Omit<DocumentRecord, 'id' | 'createdAt' | 'updatedAt' | 'nameEnc' | 'originalFilenameEnc'>,
     rawName: string,
   ): Promise<DocumentRecord> {
+    const vault = await identity();
+    if (record.vaultId !== vault.vaultId) {
+      throw new FormFlowError('VALIDATION_FAILED', 'Document vault identity does not match the active vault.');
+    }
     const db = await getDb();
     const existing = await db.getFromIndex('documents', 'by-checksum', record.checksum);
     if (existing) {
       throw new FormFlowError('DUPLICATE_DOCUMENT', 'This document is already in your vault.');
     }
     const now = new Date().toISOString();
+    const documentId = id('doc');
     const row: DocumentRecord = {
       ...record,
-      id: id('doc'),
-      nameEnc: await enc(rawName),
-      originalFilenameEnc: await enc(rawName),
+      id: documentId,
+      nameEnc: await enc(rawName, aad(vault, 'document', documentId, 'name')),
+      originalFilenameEnc: await enc(rawName, aad(vault, 'document', documentId, 'originalFilename')),
       createdAt: now,
       updatedAt: now,
     };
@@ -439,16 +539,30 @@ export const documentRepository = {
   },
 
   async rename(documentId: string, name: string): Promise<void> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('documents', documentId);
     if (!row) throw new FormFlowError('NOT_FOUND', 'Document not found.');
-    await db.put('documents', { ...row, nameEnc: await enc(name), updatedAt: new Date().toISOString() });
+    assertVault(vault, row.vaultId);
+    await db.put('documents', {
+      ...row,
+      nameEnc: await enc(name, aad(vault, 'document', row.id, 'name')),
+      updatedAt: new Date().toISOString(),
+    });
   },
 
   async saveOriginalFile(documentId: string, mimeType: string, data: Blob): Promise<StoredDocumentFile> {
+    const vault = await identity();
     const db = await getDb();
+    const document = await db.get('documents', documentId);
+    if (!document) throw new FormFlowError('NOT_FOUND', 'Document not found.');
+    assertVault(vault, document.vaultId);
     const now = new Date().toISOString();
-    const encrypted = await encryptBytesWithKey(await vaultSession.getDataKey(), await data.arrayBuffer());
+    const encrypted = await encryptBytesWithKey(
+      await vaultSession.getDataKey(),
+      await data.arrayBuffer(),
+      aad(vault, 'documentFile', documentId, 'file'),
+    );
     const row: StoredDocumentFile = {
       documentId,
       storageKey: `file_${documentId}`,
@@ -457,6 +571,7 @@ export const documentRepository = {
       ciphertext: new Blob([encrypted.data], { type: 'application/octet-stream' }),
       iv: encrypted.iv,
       version: 2,
+      aadVersion: 2,
       createdAt: now,
       updatedAt: now,
     };
@@ -465,19 +580,32 @@ export const documentRepository = {
   },
 
   async getOriginalFile(documentId: string): Promise<Blob | null> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('documentFiles', documentId);
     if (!row) return null;
-    const plaintext = await decryptBytesWithKey(await vaultSession.getDataKey(), row.iv, await row.ciphertext.arrayBuffer());
+    const plaintext = row.aadVersion === 2
+      ? await decryptBytesWithKey(
+        await vaultSession.getDataKey(),
+        row.iv,
+        await row.ciphertext.arrayBuffer(),
+        aad(vault, 'documentFile', documentId, 'file'),
+      )
+      : await decryptBytesWithLegacyAad(
+        await vaultSession.getDataKey(),
+        row.iv,
+        await row.ciphertext.arrayBuffer(),
+      );
     return new Blob([plaintext], { type: row.mimeType });
   },
 
   async saveText(documentId: string, text: string, pageTexts: string[], method: StoredDocumentText['method']): Promise<void> {
+    const vault = await identity();
     const db = await getDb();
     const row: StoredDocumentText = {
       documentId,
-      textEnc: await enc(text),
-      pageTextsEnc: await enc(pageTexts),
+      textEnc: await enc(text, aad(vault, 'documentText', documentId, 'text')),
+      pageTextsEnc: await enc(pageTexts, aad(vault, 'documentText', documentId, 'pageTexts')),
       pageCount: pageTexts.length,
       method,
       createdAt: new Date().toISOString(),
@@ -486,12 +614,13 @@ export const documentRepository = {
   },
 
   async getText(documentId: string): Promise<{ text: string; pageTexts: string[]; method: StoredDocumentText['method'] } | null> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('documentText', documentId);
     if (!row) return null;
     return {
-      text: await dec<string>(row.textEnc),
-      pageTexts: await dec<string[]>(row.pageTextsEnc),
+      text: await dec<string>(row.textEnc, aad(vault, 'documentText', documentId, 'text')),
+      pageTexts: await dec<string[]>(row.pageTextsEnc, aad(vault, 'documentText', documentId, 'pageTexts')),
       method: row.method,
     };
   },
@@ -557,17 +686,19 @@ export function toVaultDocument(row: DocumentRecord, name: string): VaultDocumen
 
 export const collectionRepository = {
   async list(): Promise<Collection[]> {
+    const vault = await identity();
     const db = await getDb();
     const rows = await db.getAll('collections');
     const memberships = await db.getAll('collectionDocuments');
     const result: Collection[] = [];
     for (const row of rows) {
+      assertVault(vault, row.vaultId);
       result.push({
         id: row.id,
         vaultId: row.vaultId,
-        name: await dec<string>(row.nameEnc),
-        description: await dec<string>(row.descriptionEnc),
-        notes: await dec<string>(row.notesEnc),
+        name: await dec<string>(row.nameEnc, aad(vault, 'collection', row.id, 'name')),
+        description: await dec<string>(row.descriptionEnc, aad(vault, 'collection', row.id, 'description')),
+        notes: await dec<string>(row.notesEnc, aad(vault, 'collection', row.id, 'notes')),
         color: row.color,
         documentIds: memberships.filter((item) => item.collectionId === row.id).map((item) => item.documentId),
         createdAt: row.createdAt,
@@ -579,16 +710,16 @@ export const collectionRepository = {
   },
 
   async create(input: { name: string; description?: string; notes?: string; color?: string; documentIds?: string[] }): Promise<Collection> {
+    const vault = await identity();
     const db = await getDb();
-    const vault = await vaultRecordRepository.getActive();
-    if (!vault) throw new FormFlowError('VAULT_LOCKED', 'Create a local vault before creating collections.');
     const now = new Date().toISOString();
+    const collectionId = id('col');
     const row: CollectionRow = {
-      id: id('col'),
-      vaultId: vault.id,
-      nameEnc: await enc(input.name),
-      descriptionEnc: await enc(input.description ?? ''),
-      notesEnc: await enc(input.notes ?? ''),
+      id: collectionId,
+      vaultId: vault.vaultId,
+      nameEnc: await enc(input.name, aad(vault, 'collection', collectionId, 'name')),
+      descriptionEnc: await enc(input.description ?? '', aad(vault, 'collection', collectionId, 'description')),
+      notesEnc: await enc(input.notes ?? '', aad(vault, 'collection', collectionId, 'notes')),
       color: input.color ?? '#6366f1',
       createdAt: now,
       updatedAt: now,
@@ -615,14 +746,22 @@ export const collectionRepository = {
     collectionId: string,
     patch: { name?: string; description?: string; notes?: string; color?: string; documentIds?: string[] },
   ): Promise<Collection | null> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('collections', collectionId);
     if (!row) return null;
+    assertVault(vault, row.vaultId);
     const updated: CollectionRow = {
       ...row,
-      nameEnc: patch.name !== undefined ? await enc(patch.name) : row.nameEnc,
-      descriptionEnc: patch.description !== undefined ? await enc(patch.description) : row.descriptionEnc,
-      notesEnc: patch.notes !== undefined ? await enc(patch.notes) : row.notesEnc,
+      nameEnc: patch.name !== undefined
+        ? await enc(patch.name, aad(vault, 'collection', row.id, 'name'))
+        : row.nameEnc,
+      descriptionEnc: patch.description !== undefined
+        ? await enc(patch.description, aad(vault, 'collection', row.id, 'description'))
+        : row.descriptionEnc,
+      notesEnc: patch.notes !== undefined
+        ? await enc(patch.notes, aad(vault, 'collection', row.id, 'notes'))
+        : row.notesEnc,
       color: patch.color ?? row.color,
       updatedAt: new Date().toISOString(),
     };
@@ -639,13 +778,14 @@ export const collectionRepository = {
   },
 
   async remove(collectionId: string): Promise<void> {
+    const vault = await identity();
     const db = await getDb();
     const row = await db.get('collections', collectionId);
     await db.delete('collections', collectionId);
     const memberships = await db.getAllFromIndex('collectionDocuments', 'by-collection', collectionId);
     for (const membership of memberships) await db.delete('collectionDocuments', membership.id);
     if (row) {
-      const name = await dec<string>(row.nameEnc);
+      const name = await dec<string>(row.nameEnc, aad(vault, 'collection', row.id, 'name'));
       await activityRepository.record('document_removed', name, 'Collection deleted; documents retained.');
     }
   },
@@ -653,6 +793,7 @@ export const collectionRepository = {
 
 export const activityRepository = {
   async list(limit = 50): Promise<ActivityItem[]> {
+    const vault = await identity();
     const db = await getDb();
     const rows = (await db.getAll('activity')).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
     const items: ActivityItem[] = [];
@@ -660,8 +801,8 @@ export const activityRepository = {
       items.push({
         id: row.id,
         type: row.type,
-        title: await dec<string>(row.titleEnc),
-        detail: await dec<string>(row.detailEnc),
+        title: await dec<string>(row.titleEnc, aad(vault, 'activity', row.id, 'title')),
+        detail: await dec<string>(row.detailEnc, aad(vault, 'activity', row.id, 'detail')),
         timestamp: row.createdAt,
         relativeTime: relativeTime(row.createdAt),
       });
@@ -670,12 +811,14 @@ export const activityRepository = {
   },
 
   async record(type: ActivityItem['type'], title: string, detail: string): Promise<void> {
+    const vault = await identity();
     const db = await getDb();
+    const activityId = id('act');
     const row: ActivityRow = {
-      id: id('act'),
+      id: activityId,
       type,
-      titleEnc: await enc(title),
-      detailEnc: await enc(detail),
+      titleEnc: await enc(title, aad(vault, 'activity', activityId, 'title')),
+      detailEnc: await enc(detail, aad(vault, 'activity', activityId, 'detail')),
       createdAt: new Date().toISOString(),
     };
     await db.put('activity', row);
@@ -689,21 +832,22 @@ export const activityRepository = {
 
 export const historyRepository = {
   async list(): Promise<FormHistoryItem[]> {
+    const vault = await identity();
     const db = await getDb();
     const rows = (await db.getAll('formHistory')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const items: FormHistoryItem[] = [];
     for (const row of rows) {
       items.push({
         id: row.id,
-        website: await dec<string>(row.websiteEnc),
-        url: await dec<string>(row.urlEnc),
+        website: await dec<string>(row.websiteEnc, aad(vault, 'formHistory', row.id, 'website')),
+        url: await dec<string>(row.urlEnc, aad(vault, 'formHistory', row.id, 'url')),
         timestamp: row.createdAt,
         dateLabel: new Date(row.createdAt).toLocaleString(),
         fieldsDetected: row.fieldsDetected,
         fieldsFilled: row.fieldsFilled,
         fieldsReview: row.fieldsReview,
         status: row.status,
-        documentsUsed: await dec<string[]>(row.documentsUsedEnc),
+        documentsUsed: await dec<string[]>(row.documentsUsedEnc, aad(vault, 'formHistory', row.id, 'documentsUsed')),
         duration: formatDuration(row.durationMs),
       });
     }
@@ -720,12 +864,14 @@ export const historyRepository = {
     status: FormHistoryItem['status'];
     durationMs: number;
   }): Promise<void> {
+    const vault = await identity();
     const db = await getDb();
+    const historyId = id('hist');
     const row: FormHistoryRow = {
-      id: id('hist'),
-      websiteEnc: await enc(entry.website),
-      urlEnc: await enc(entry.url),
-      documentsUsedEnc: await enc(entry.documentsUsed ?? []),
+      id: historyId,
+      websiteEnc: await enc(entry.website, aad(vault, 'formHistory', historyId, 'website')),
+      urlEnc: await enc(entry.url, aad(vault, 'formHistory', historyId, 'url')),
+      documentsUsedEnc: await enc(entry.documentsUsed ?? [], aad(vault, 'formHistory', historyId, 'documentsUsed')),
       fieldsDetected: entry.detected,
       fieldsFilled: entry.filled,
       fieldsReview: entry.review,
@@ -791,21 +937,25 @@ export const settingsRepository = {
 
 export const profileRecordRepository = {
   async list<T>(type: ProfileRecordRow['type']): Promise<T[]> {
+    const vault = await identity();
     const db = await getDb();
     const rows = await db.getAllFromIndex('profileRecords', 'by-type', type);
     const result: T[] = [];
-    for (const row of rows) result.push(await dec<T>(row.dataEnc));
+    for (const row of rows) {
+      result.push(await dec<T>(row.dataEnc, aad(vault, `profileRecord:${row.type}`, row.id, 'data')));
+    }
     return result;
   },
 
   async save<T extends { id: string }>(type: ProfileRecordRow['type'], value: T, documentId?: string): Promise<T> {
+    const vault = await identity();
     const db = await getDb();
     const existing = await db.get('profileRecords', value.id);
     const now = new Date().toISOString();
     const row: ProfileRecordRow = {
       id: value.id,
       type,
-      dataEnc: await enc(value),
+      dataEnc: await enc(value, aad(vault, `profileRecord:${type}`, value.id, 'data')),
       documentId,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,

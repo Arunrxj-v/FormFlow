@@ -23,7 +23,8 @@ import { ConfirmDialog } from '@/components/ui/Modal';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/context/ToastContext';
 import { documentService } from '@/services/documentService';
-import { vaultManager } from '../../../core/vault/vault-manager';
+import { vaultClient } from '@/services/vaultClient';
+import type { VaultIntegrityReport } from '@/services/vaultClientTypes';
 import type { Preferences } from '@/services/types';
 
 const tabs = [
@@ -71,6 +72,8 @@ export function SettingsPage() {
   const [newPassphrase, setNewPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [passphraseBusy, setPassphraseBusy] = useState(false);
+  const [integrity, setIntegrity] = useState<VaultIntegrityReport | null>(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
 
   useEffect(() => { setPrefs(preferences); }, [preferences]);
   useEffect(() => { if (initialTab && ['profile', 'security', 'preferences'].includes(initialTab)) setTab(initialTab); }, [initialTab]);
@@ -127,10 +130,29 @@ export function SettingsPage() {
     navigate('/unlock', { replace: true });
   };
 
+  const runIntegrityCheck = async () => {
+    setIntegrityBusy(true);
+    try {
+      const report = await vaultClient.checkIntegrity();
+      setIntegrity(report);
+      toast({
+        tone: report.ok ? 'success' : 'error',
+        title: report.ok ? 'Vault integrity verified' : 'Vault integrity issues found',
+        message: report.ok
+          ? `${report.counts.documents} documents and ${report.counts.values} values verified.`
+          : `${report.issues.length} issue(s) reported. No records were deleted.`,
+      });
+    } catch (error) {
+      toast({ tone: 'error', title: 'Integrity check failed', message: error instanceof Error ? error.message : 'Could not inspect the vault.' });
+    } finally {
+      setIntegrityBusy(false);
+    }
+  };
+
   const deleteVault = async () => {
     setClearing(true);
     try {
-      await vaultManager.destroyVault();
+      await vaultClient.destroy();
       await refreshData();
       navigate('/setup', { replace: true });
       toast({ tone: 'success', title: 'Local vault deleted', message: 'All local FormFlow data was removed from this browser.' });
@@ -209,6 +231,7 @@ export function SettingsPage() {
                   <div className="ff-stack ff-gap-8">
                     <div className="ff-info-pair"><span>Lock state</span><span>{vaultStatus?.unlocked ? 'Unlocked' : 'Locked'}</span></div>
                     <div className="ff-info-pair"><span>Encryption</span><span>{vaultStatus?.encrypted ? 'AES-256-GCM' : 'Not enabled'}</span></div>
+                    <div className="ff-info-pair"><span>Record format</span><span>{vaultStatus?.encryptionFormat === 2 ? 'v2 · per-record AAD' : 'v1 · upgrade pending'}</span></div>
                     <div className="ff-info-pair"><span>Key derivation</span><span>{vaultStatus?.kdf ?? 'PBKDF2-SHA256'} · {vaultStatus?.iterations?.toLocaleString() ?? '600,000'} iterations</span></div>
                     <div className="ff-info-pair"><span>Created</span><span>{vaultStatus?.createdAt ? new Date(vaultStatus.createdAt).toLocaleString() : 'Unknown'}</span></div>
                     <div className="ff-info-pair"><span>Passphrase updated</span><span>{vaultStatus?.passwordUpdatedAt ? new Date(vaultStatus.passwordUpdatedAt).toLocaleString() : 'Unknown'}</span></div>
@@ -220,7 +243,26 @@ export function SettingsPage() {
                   <div className="ff-row ff-gap-8 ff-mt-16" style={{ flexWrap: 'wrap' }}>
                     <Button icon={LockKeyhole} onClick={() => void lockNow()}>Lock now</Button>
                     <Button icon={Download} onClick={() => navigate('/vault/migration')}>Backup &amp; migration</Button>
+                    <Button icon={ShieldCheck} loading={integrityBusy} onClick={() => void runIntegrityCheck()}>Run integrity check</Button>
                   </div>
+                  {integrity ? (
+                    <div className="ff-mt-16">
+                      <div className="ff-info-pair"><span>Integrity result</span><span>{integrity.ok ? 'Passed' : 'Issues found'}</span></div>
+                      <div className="ff-info-pair"><span>Checked</span><span>{new Date(integrity.checkedAt).toLocaleString()}</span></div>
+                      {integrity.issues.length ? (
+                        <div className="ff-stack ff-gap-6 ff-mt-12">
+                          {integrity.issues.slice(0, 10).map((issue, index) => (
+                            <div key={`${issue.code}-${issue.recordId ?? index}`} className="ff-body-sm" style={{ color: issue.severity === 'error' ? 'var(--ff-danger)' : 'var(--ff-warning)' }}>
+                              {issue.message} {issue.recordId ? `(${issue.recordId})` : ''}
+                            </div>
+                          ))}
+                          {integrity.issues.length > 10 ? <div className="ff-body-sm ff-muted">…and {integrity.issues.length - 10} more.</div> : null}
+                        </div>
+                      ) : (
+                        <div className="ff-body-sm ff-muted ff-mt-8">All encrypted records, document files, checksums, and collection relationships are valid.</div>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               </Card>
 

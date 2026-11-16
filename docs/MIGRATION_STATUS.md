@@ -2,6 +2,74 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 3.1.1 — Final security hardening (complete)
+
+Completed in this phase:
+
+- Made the background service worker the exclusive owner of the DEK. The dashboard and popup now use typed operation clients and receive no key material.
+- Removed the DEK from `chrome.storage.session`; that area now holds only a non-secret lock/state marker. A service-worker termination therefore locks the vault.
+- Added `VaultOperationCoordinator` leases for every data-bearing background operation.
+- Lock now sets `locking` synchronously, rejects new operations, drains in-flight reads/mutations, clears the key only after the drain, and only then publishes `locked`.
+- Added an operation timeout that fails closed without falsely reporting locked.
+- Added validated dashboard/popup keepalive ports so active UI does not lose the session to MV3 idle termination; forced termination still locks.
+- Serialized create/unlock/lock transitions and rejected unsafe interleavings.
+- Added backup format v3 with a canonical, length-prefixed authenticated header covering algorithms, KDF parameters, salt, nonce, encryption/schema/manifest versions, all record counts, total bytes, payload bytes, and creation time.
+- Retained genuine v1/v2 backup imports.
+- Added deterministic migration fault points for pre-batch, pre-write, during-transaction, post-commit, journal, verification, and marker boundaries.
+- Added quota-exhaustion fault injection for document upload, backup import, migration batches, journal writes, and marker writes.
+- Added exact 200 MiB (209,715,200 byte) backup boundary tests.
+- Extended Chromium E2E for DEK absence, generic-operation rejection, upload/lock draining, v3 header tampering, and genuine legacy v1/v2 imports.
+
+### Verification results
+
+| Command / test | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass |
+| `npm run test:local` | 70/70 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | Pass |
+| Chromium extension E2E | 88/88 checks pass |
+
+The Chromium suite verifies that the dashboard and popup cannot read a raw DEK, generic crypto/database operations are rejected, an 8 MB upload and lock are safely drained, no mutation starts while locked, v3 header tampering fails authentication, v3 imports work, genuine v1/v2 imports work, the service worker locks on termination, browser restart requires unlock, and encrypted documents remain readable.
+
+## Phase 3.1 — Security hardening (complete)
+
+Completed in this phase:
+
+- Replaced the vault-wide AAD with per-record authenticated context bound to vault ID, record type, record ID, field, encryption format, and schema version.
+- Added canonical length-prefixed AAD encoding and format-v2 envelopes.
+- Added ciphertext identity tests for cross-record, cross-field, cross-type, and cross-vault swapping.
+- Added a resumable v1→v2 encryption migration with a persistent journal, controlled batches, compare-and-swap writes, round-trip verification, and a full verification pass before setting the format marker.
+- Encrypted personal field labels and conflict labels at rest.
+- Added a vault integrity checker that reports invalid ciphertext, missing files, checksum mismatches, broken references, and incomplete migration state without deleting records.
+- Hardened backup archives: strict envelope/key validation, exact KDF parameters, nonce/salt/base64 bounds, record-count limits, duplicate-ID checks, relationship checks, checksum recalculation, UTF-8 failure handling, and a v2 archive AAD.
+- Kept Phase 3 v1 backups importable.
+- Added session generations so data-bearing operations are discarded when a lock occurs in flight.
+- Serialized concurrent lock/unlock transitions.
+- Cleared popup state on remote lock and revoked document preview URLs on lock.
+- Added passphrase-change verification before committing the new wrapped key.
+- Documented the threat model and residual risks in `docs/SECURITY_ARCHITECTURE.md`.
+
+### Verification results
+
+| Command / test | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass |
+| `npm run test:local` | 47/47 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | Pass |
+| Chromium extension E2E | 63/63 checks pass |
+
+The Chromium E2E covers v2 ciphertext inspection, per-record AAD metadata, cross-field ciphertext swapping and recovery, integrity checking, service-worker termination, encrypted export/import, malformed backup rollback, passphrase rotation, browser restart, popup/dashboard locking, and one shared vault.
+
+The v1→v2 migration is verified by unit tests that seed all record types in the Phase 3 format, migrate them, verify decryption and integrity, corrupt a record, confirm the marker stays at v1 with a failed journal, restore the record, and resume successfully.
+
 ## Phase 3 — Extension-owned vault and encryption (complete)
 
 Completed in this phase:

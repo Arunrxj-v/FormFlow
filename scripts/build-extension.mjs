@@ -162,11 +162,12 @@ async function main() {
       base: './',
       plugins: [react()],
       resolve: {
-        alias: {
-          '@': path.join(root, 'src'),
-          '@shared': path.join(root, 'shared'),
-          '@ext': path.join(root, 'extension', 'src'),
-        },
+        alias: [
+          { find: '@/services/vaultClient', replacement: path.join(root, 'src', 'services', 'vaultClient.ts') },
+          { find: '@', replacement: path.join(root, 'src') },
+          { find: '@shared', replacement: path.join(root, 'shared') },
+          { find: '@ext', replacement: path.join(root, 'extension', 'src') },
+        ],
       },
       define: { 'process.env.NODE_ENV': '"production"' },
       build: {

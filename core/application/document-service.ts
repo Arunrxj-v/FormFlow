@@ -1,11 +1,12 @@
 import { FormFlowError } from '@shared/errors';
-import type { DocumentCategory, VaultDocument, DocumentStatus, FileKind } from '@shared/types';
+import type { DocumentCategory, DocumentRecord, VaultDocument, DocumentStatus, FileKind } from '@shared/types';
 import { MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from '@shared/constants';
 import { sha256Hex } from '../encryption/crypto-service';
 import { documentRepository, toVaultDocument, activityRepository } from '../database/repositories';
 import { vaultRepository as vaultRecordRepository } from '../database/vault-repository';
 import { documentStorage } from '../storage/document-storage';
 import { inferFileKind, validateDocumentFile, formatSize, type ValidatedFile } from '../documents/validation';
+import { asStorageError } from '../storage/storage-errors';
 
 const MIME_ALIASES: Record<string, string[]> = {
   'application/pdf': ['pdf'],
@@ -90,35 +91,51 @@ export const documentService = {
     if (!vault) throw new FormFlowError('VAULT_LOCKED', 'Create a local vault before importing documents.');
     const fileType = inferFileKind(validated.file.name);
     const category = input.category ?? inferCategoryFromName(validated.file.name);
-    const row = await documentRepository.create(
-      {
-        vaultId: vault.id,
-        mimeType: validated.mimeType,
-        extension,
-        category,
-        subcategory: input.subcategory ?? '',
-        status: 'selected',
-        fileType: fileType as FileKind,
-        sizeBytes: validated.file.size,
-        sizeLabel: formatSize(validated.file.size),
-        checksum,
-        storageKey: '',
-        source: 'device',
-        ocrUsed: false,
-        extractedTextStatus: 'pending',
-        metadata: input.metadata,
-      },
-      validated.file.name,
-    );
+    let row: DocumentRecord | null = null;
+    try {
+      row = await documentRepository.create(
+        {
+          vaultId: vault.id,
+          mimeType: validated.mimeType,
+          extension,
+          category,
+          subcategory: input.subcategory ?? '',
+          status: 'selected',
+          fileType: fileType as FileKind,
+          sizeBytes: validated.file.size,
+          sizeLabel: formatSize(validated.file.size),
+          checksum,
+          storageKey: '',
+          source: 'device',
+          ocrUsed: false,
+          extractedTextStatus: 'pending',
+          metadata: input.metadata,
+        },
+        validated.file.name,
+      );
 
-    const storageKey = `file_${row.id}`;
-    await documentStorage.save(row.id, validated.file, validated.mimeType);
-    await documentRepository.update(row.id, { storageKey, status: 'stored' });
-    await activityRepository.record(
-      'document_added',
-      validated.file.name,
-      `${category} · Imported from device`,
-    );
+      const storageKey = `file_${row.id}`;
+      await documentStorage.save(row.id, validated.file, validated.mimeType);
+      await documentRepository.update(row.id, { storageKey, status: 'stored' });
+      await activityRepository.record(
+        'document_added',
+        validated.file.name,
+        `${category} · Imported from device`,
+      );
+    } catch (error) {
+      // A quota or transaction failure must not leave a document without its
+      // original file. Deletion is normally available even when writes fail.
+      if (row) {
+        try {
+          await documentRepository.remove(row.id);
+        } catch {
+          // Preserve the original failure; the integrity checker will report
+          // any orphan if deletion was also blocked.
+        }
+      }
+      throw asStorageError(error);
+    }
+    if (!row) throw new FormFlowError('NOT_FOUND', 'Document was not created.');
     const saved = await documentRepository.get(row.id);
     if (!saved) throw new FormFlowError('NOT_FOUND', 'Document disappeared after storage.');
     return { document: toVaultDocument(saved.row, saved.name), duplicate: false };

@@ -2,15 +2,32 @@ import {
   MESSAGE,
   type ScanPayload,
 } from '@shared/messages';
-import type { Preferences, VaultCategory, VaultField, VaultProfile } from '@shared/types';
-import { collectionRepository, documentRepository, historyRepository, settingsRepository, toVaultDocument, vaultRepository } from '../../core/database/repositories';
+import type {
+  AddressRecord,
+  CertificationRecord,
+  EducationRecord,
+  EmploymentRecord,
+  Preferences,
+  ProjectRecord,
+  SkillRecord,
+  VaultCategory,
+  VaultField,
+  VaultProfile,
+} from '@shared/types';
+import { LEGACY_VAULT_SESSION_KEY, VAULT_STATE_KEY } from '@shared/constants';
+import { activityRepository, collectionRepository, documentRepository, historyRepository, profileRecordRepository, settingsRepository, toVaultDocument, vaultRepository } from '../../core/database/repositories';
+import { FormFlowError } from '@shared/errors';
 import { vaultManager } from '../../core/vault/vault-manager';
 import { vaultSession } from '../../core/vault/vault-session';
+import { encryptionV2Migration } from '../../core/vault/encryption-v2-migration';
+import { checkVaultIntegrity } from '../../core/vault/vault-integrity';
+import { VaultOperationCoordinator, type VaultOperationKind } from '../../core/vault/operation-coordinator';
 import { vaultService } from '../../core/application/vault-service';
 import { profileService } from '../../core/application/profile-service';
 import { documentService } from '../../core/application/document-service';
 import { dashboardService } from '../../core/application/dashboard-service';
 import { vaultExportService } from '../../core/storage/vault-export';
+import { profileRecordService } from '../../core/application/profile-service';
 import { quotaManager } from '../../core/storage/quota-manager';
 import { base64ToArrayBuffer, bufferToBase64 } from '../../core/encryption/crypto-service';
 import { buildSuggestions } from './lib/matcher';
@@ -27,6 +44,38 @@ import {
 
 const VERSION = chrome.runtime.getManifest().version;
 const AUTO_LOCK_ALARM = 'formflow-auto-lock';
+
+let lastPublishedState: 'locked' | 'unlocked' | 'locking' | null = null;
+
+async function publishVaultState(state: 'locked' | 'unlocked' | 'locking'): Promise<void> {
+  if (lastPublishedState === state) return;
+  lastPublishedState = state;
+  try {
+    await chrome.storage.session.set({
+      [VAULT_STATE_KEY]: {
+        state,
+        generation: vaultSession.getGeneration(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  } catch {
+    // State notifications are best-effort and never contain key material.
+  }
+}
+
+const operationCoordinator = new VaultOperationCoordinator({
+  lockTimeoutMs: 60_000,
+  onChange: (state) => {
+    void publishVaultState(state);
+    void refreshBadge();
+  },
+});
+
+async function vaultStatus() {
+  const status = await vaultManager.status();
+  return { ...status, unlocked: status.unlocked && operationCoordinator.isUnlocked() };
+}
+
 
 async function activeTab(): Promise<chrome.tabs.Tab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -135,6 +184,60 @@ async function ensureUnlocked(): Promise<void> {
   if (!(await vaultSession.isUnlocked())) throw new Error('The vault is locked. Unlock it before using form suggestions.');
 }
 
+const PROFILE_RECORD_TYPES = ['education', 'employment', 'skill', 'certification', 'project', 'address'] as const;
+type ProfileRecordType = (typeof PROFILE_RECORD_TYPES)[number];
+
+const FIELD_CATEGORIES = ['personal', 'contact', 'address', 'education', 'employment', 'skills', 'certifications', 'projects', 'identification', 'other'] as const;
+
+function requireObject(payload: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = payload[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${key} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+function requireEnum<T extends string>(payload: Record<string, unknown>, key: string, allowed: readonly T[]): T {
+  const value = payload[key];
+  if (typeof value !== 'string' || !allowed.includes(value as T)) throw new Error(`${key} is not supported.`);
+  return value as T;
+}
+
+function requireNumber(payload: Record<string, unknown>, key: string, min: number, max: number): number {
+  const value = payload[key];
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${key} must be a number between ${min} and ${max}.`);
+  }
+  return value;
+}
+
+function validateFieldInput(value: Record<string, unknown>) {
+  const source = requireObject(value, 'source');
+  const category = value.category;
+  if (typeof category !== 'string' || !FIELD_CATEGORIES.includes(category as (typeof FIELD_CATEGORIES)[number])) {
+    throw new Error('Field category is not supported.');
+  }
+  return {
+    key: requireString(value, 'key', 1, 200),
+    label: requireString(value, 'label', 0, 300),
+    value: requireString(value, 'value', 0, 100_000),
+    category: category as (typeof FIELD_CATEGORIES)[number],
+    source: {
+      documentId: requireString(source, 'documentId', 1, 200),
+      documentName: optionalString(source, 'documentName', 300) ?? 'Local document',
+      page: typeof source.page === 'number' ? source.page : undefined,
+    },
+    sourcePage: typeof value.sourcePage === 'number' ? value.sourcePage : undefined,
+    confidence: requireNumber(value, 'confidence', 0, 100),
+    verificationStatus: typeof value.verificationStatus === 'string'
+      ? value.verificationStatus as 'extracted' | 'user_verified' | 'outdated'
+      : 'extracted',
+    sensitive: typeof value.sensitive === 'boolean' ? value.sensitive : undefined,
+    extractionMethod: typeof value.extractionMethod === 'string'
+      ? value.extractionMethod as 'deterministic' | 'ai' | 'manual' | 'derived'
+      : 'deterministic',
+    userModified: typeof value.userModified === 'boolean' ? value.userModified : false,
+  };
+}
+
 function requireStringArray(payload: Record<string, unknown>, key: string, maxItems = 1000): string[] {
   const value = payload[key];
   if (value === undefined) return [];
@@ -224,7 +327,7 @@ async function vaultSummary() {
 }
 
 async function getState() {
-  const status = await vaultManager.status();
+  const status = await vaultStatus();
   const preferences = await settingsRepository.getPreferences();
   const history = status.unlocked ? await historyRepository.list() : [];
   return { version: VERSION, vaultStatus: status, preferences, history };
@@ -253,27 +356,48 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     case MESSAGE.UPDATE_SETTINGS:
       return updateSettings(payload);
     case MESSAGE.VAULT_STATUS:
-      return vaultManager.status();
+      return vaultStatus();
     case MESSAGE.VAULT_CREATE: {
       const name = requireString(payload, 'name', 1, 120);
       const passphrase = requireString(payload, 'passphrase', 10, 200);
-      const vault = await vaultService.createVault({ name, passphrase });
-      return { vault, status: await vaultManager.status() };
+      let vault: Awaited<ReturnType<typeof vaultService.createVault>> | null = null;
+      await operationCoordinator.create(async () => {
+        vault = await vaultService.createVault({ name, passphrase });
+      });
+      if (!vault) throw new Error('Vault creation failed.');
+      return { vault, status: await vaultStatus() };
+    }
+    case MESSAGE.MIGRATE_PLAINTEXT_VAULT: {
+      const passphrase = requireString(payload, 'passphrase', 10, 200);
+      let vault: Awaited<ReturnType<typeof vaultService.migratePlaintextVault>> = null;
+      await operationCoordinator.create(async () => {
+        vault = await vaultService.migratePlaintextVault(passphrase);
+      });
+      return { vault, status: await vaultStatus() };
     }
     case MESSAGE.VAULT_UNLOCK: {
       const passphrase = requireString(payload, 'passphrase', 1, 200);
-      await vaultManager.unlock(passphrase);
-      await migrateLegacyPopupVault();
-      return vaultManager.status();
+      await operationCoordinator.unlock(async () => {
+        await vaultManager.unlock(passphrase);
+        await migrateLegacyPopupVault();
+      });
+      void operationCoordinator
+        .run('mutation', 'AUTO_ENCRYPTION_MIGRATION', () => encryptionV2Migration.runIfNeeded())
+        .catch(() => undefined);
+      return vaultStatus();
     }
     case MESSAGE.VAULT_LOCK:
-      await vaultManager.lock();
-      return vaultManager.status();
+      await operationCoordinator.lock(async () => {
+        await vaultManager.lock();
+      });
+      return vaultStatus();
+    case MESSAGE.DESTROY_VAULT:
+      await operationCoordinator.lock(async () => {
+        await vaultManager.destroyVault();
+      });
+      return { ok: true };
     case MESSAGE.VAULT_SUMMARY:
       return vaultSummary();
-    case MESSAGE.VAULT_TOUCH:
-      await vaultService.touch();
-      return { ok: true };
     case MESSAGE.GET_PROFILE:
       await ensureUnlocked();
       return profileService.getProfile();
@@ -283,6 +407,103 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const email = optionalString(payload, 'email', 320) ?? '';
       return profileService.saveProfile({ name, email });
     }
+    case MESSAGE.GET_DASHBOARD_DATA: {
+      await ensureUnlocked();
+      const [vault, profile, data] = await Promise.all([
+        vaultService.getActiveVault(),
+        profileService.getProfile(),
+        dashboardService.load(),
+      ]);
+      return { vault, profile, ...data };
+    }
+    case MESSAGE.LIST_FIELDS:
+      await ensureUnlocked();
+      return profileService.listFields();
+    case MESSAGE.ADD_FIELD: {
+      await ensureUnlocked();
+      const field = requireObject(payload, 'field');
+      return profileService.addField(validateFieldInput(field));
+    }
+    case MESSAGE.UPDATE_FIELD: {
+      await ensureUnlocked();
+      const fieldId = requireString(payload, 'id', 1, 160);
+      const value = requireString(payload, 'value', 0, 100_000);
+      return profileService.updateField(fieldId, value);
+    }
+    case MESSAGE.DELETE_FIELD: {
+      await ensureUnlocked();
+      await profileService.deleteField(requireString(payload, 'id', 1, 160));
+      return { ok: true };
+    }
+    case MESSAGE.RESOLVE_CONFLICT: {
+      await ensureUnlocked();
+      return profileService.resolveConflict(
+        requireString(payload, 'id', 1, 160),
+        requireString(payload, 'value', 0, 100_000),
+      );
+    }
+    case MESSAGE.GET_ACTIVITY:
+      await ensureUnlocked();
+      return activityRepository.list(100);
+    case MESSAGE.RECORD_ACTIVITY: {
+      await ensureUnlocked();
+      const type = requireEnum(payload, 'type', [
+        'document_added', 'document_processed', 'form_detected', 'form_filled',
+        'document_updated', 'document_removed', 'vault_created', 'model_installed',
+      ] as const);
+      await activityRepository.record(
+        type,
+        requireString(payload, 'title', 1, 300),
+        requireString(payload, 'detail', 0, 4_000),
+      );
+      return { ok: true };
+    }
+    case MESSAGE.GET_ACTIVE_VAULT:
+      await ensureUnlocked();
+      return vaultService.getActiveVault();
+    case MESSAGE.UPDATE_VAULT: {
+      await ensureUnlocked();
+      const patch = requireObject(payload, 'patch');
+      const name = patch.name === undefined ? undefined : requireString(patch, 'name', 1, 120);
+      const setupCompleted = patch.setupCompleted === undefined ? undefined : patch.setupCompleted === true;
+      return vaultService.updateVault({ ...(name !== undefined ? { name } : {}), ...(setupCompleted !== undefined ? { setupCompleted } : {}) });
+    }
+    case MESSAGE.TOUCH_VAULT:
+    case MESSAGE.VAULT_TOUCH:
+      await ensureUnlocked();
+      await vaultService.touch();
+      return { ok: true };
+    case MESSAGE.LIST_PROFILE_RECORDS: {
+      await ensureUnlocked();
+      const type = requireEnum(payload, 'type', PROFILE_RECORD_TYPES);
+      switch (type) {
+        case 'address': return profileRecordService.listAddresses();
+        case 'education': return profileRecordService.listEducation();
+        case 'employment': return profileRecordService.listEmployment();
+        case 'skill': return profileRecordService.listSkills();
+        case 'certification': return profileRecordService.listCertifications();
+        case 'project': return profileRecordService.listProjects();
+      }
+    }
+    case MESSAGE.SAVE_PROFILE_RECORD: {
+      await ensureUnlocked();
+      const type = requireEnum(payload, 'type', PROFILE_RECORD_TYPES) as ProfileRecordType;
+      const record = requireObject(payload, 'record');
+      const documentId = optionalString(payload, 'documentId', 200);
+      switch (type) {
+        case 'address': return profileRecordService.saveAddress(record as unknown as Partial<AddressRecord> & Pick<AddressRecord, 'addressLine1'>);
+        case 'education': return profileRecordService.saveEducation(record as unknown as EducationRecord, documentId);
+        case 'employment': return profileRecordService.saveEmployment(record as unknown as EmploymentRecord, documentId);
+        case 'skill': return profileRecordService.saveSkill(record as unknown as Omit<SkillRecord, 'id' | 'createdAt' | 'updatedAt'> & { id?: string });
+        case 'certification': return profileRecordService.saveCertification(record as unknown as Omit<CertificationRecord, 'id' | 'createdAt' | 'updatedAt'> & { id?: string });
+        case 'project': return profileRecordService.saveProject(record as unknown as Omit<ProjectRecord, 'id' | 'createdAt' | 'updatedAt'> & { id?: string });
+      }
+    }
+    case MESSAGE.REMOVE_PROFILE_RECORD: {
+      await ensureUnlocked();
+      await profileRecordRepository.remove(requireString(payload, 'id', 1, 160));
+      return { ok: true };
+    }
     case MESSAGE.LIST_DOCUMENTS: {
       await ensureUnlocked();
       const rows = await documentRepository.list();
@@ -290,6 +511,21 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
         documents: rows.map(({ row, name }) => toVaultDocument(row, name)),
         count: rows.length,
       };
+    }
+    case MESSAGE.RENAME_DOCUMENT: {
+      await ensureUnlocked();
+      return documentService.rename(
+        requireString(payload, 'documentId', 1, 160),
+        requireString(payload, 'name', 1, 255),
+      );
+    }
+    case MESSAGE.GET_DOCUMENT_BLOB: {
+      await ensureUnlocked();
+      const documentId = requireString(payload, 'documentId', 1, 160);
+      const document = await documentService.get(documentId);
+      const blob = await documentService.getBlob(documentId);
+      if (!document || !blob) throw new Error('Document file not found.');
+      return { dataBase64: await blobToBase64(blob), mimeType: document.mimeType, sizeBytes: blob.size };
     }
     case MESSAGE.GET_DOCUMENT_METADATA: {
       await ensureUnlocked();
@@ -306,7 +542,9 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const bytes = new Uint8Array(base64ToArrayBuffer(dataBase64));
       if (bytes.byteLength > 20 * 1024 * 1024) throw new Error('Document exceeds the 20 MB local limit.');
       const file = new File([bytes], name, { type: mimeType });
-      return documentService.importDocument({ file });
+      const category = optionalString(payload, 'category', 100) as Parameters<typeof documentService.importDocument>[0]['category'];
+      const subcategory = optionalString(payload, 'subcategory', 200);
+      return documentService.importDocument({ file, category, subcategory });
     }
     case MESSAGE.DELETE_DOCUMENT: {
       await ensureUnlocked();
@@ -382,6 +620,31 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     case MESSAGE.GET_STORAGE_STATUS: {
       const estimate = await quotaManager.estimate();
       return estimate;
+    }
+    case MESSAGE.GET_PREFERENCES:
+      return settingsRepository.getPreferences();
+    case MESSAGE.UPDATE_PREFERENCES: {
+      const allowed = new Set(['confirmBeforeAutofill', 'requireSensitiveReview', 'allowLongAnswers', 'autoDownloadFiles', 'productNotifications', 'activityNotifications', 'compactMode', 'autoLockMinutes', 'ocrLanguage']);
+      const patch: Partial<Preferences> = {};
+      for (const [key, value] of Object.entries(payload)) {
+        if (!allowed.has(key) || value === undefined) continue;
+        (patch as Record<string, unknown>)[key] = value;
+      }
+      return settingsRepository.updatePreferences(patch);
+    }
+    case MESSAGE.GET_ENCRYPTION_STATUS:
+      return encryptionV2Migration.status();
+    case MESSAGE.MIGRATE_ENCRYPTION:
+      await ensureUnlocked();
+      return encryptionV2Migration.runIfNeeded();
+    case MESSAGE.CHECK_VAULT_INTEGRITY:
+      return checkVaultIntegrity();
+    case MESSAGE.CHANGE_PASSPHRASE: {
+      await ensureUnlocked();
+      const currentPassphrase = requireString(payload, 'currentPassphrase', 1, 200);
+      const newPassphrase = requireString(payload, 'newPassphrase', 10, 200);
+      await vaultManager.changePassword(currentPassphrase, newPassphrase);
+      return { ok: true };
     }
     case MESSAGE.SCAN_ACTIVE_TAB: {
       await ensureUnlocked();
@@ -461,6 +724,68 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 
+const SESSION_STABLE_EXEMPT = new Set<string>([
+  'VAULT_STATUS',
+  'VAULT_CREATE',
+  'VAULT_UNLOCK',
+  'VAULT_LOCK',
+  'DESTROY_VAULT',
+  'MIGRATE_PLAINTEXT_VAULT',
+  'VAULT_TOUCH',
+  'UPDATE_SETTINGS',
+  'OPEN_DASHBOARD',
+  'OPEN_TAB',
+  'MODEL_STATUS',
+  'GET_ENCRYPTION_STATUS',
+  'MIGRATE_ENCRYPTION',
+]);
+
+const LEASE_KINDS: Record<string, VaultOperationKind> = {
+  [MESSAGE.GET_STATE]: 'read',
+  [MESSAGE.VAULT_SUMMARY]: 'read',
+  [MESSAGE.GET_PROFILE]: 'read',
+  [MESSAGE.UPDATE_PROFILE]: 'mutation',
+  [MESSAGE.GET_DASHBOARD_DATA]: 'read',
+  [MESSAGE.LIST_FIELDS]: 'read',
+  [MESSAGE.ADD_FIELD]: 'mutation',
+  [MESSAGE.UPDATE_FIELD]: 'mutation',
+  [MESSAGE.DELETE_FIELD]: 'mutation',
+  [MESSAGE.RESOLVE_CONFLICT]: 'mutation',
+  [MESSAGE.GET_ACTIVITY]: 'read',
+  [MESSAGE.RECORD_ACTIVITY]: 'mutation',
+  [MESSAGE.GET_ACTIVE_VAULT]: 'read',
+  [MESSAGE.UPDATE_VAULT]: 'mutation',
+  [MESSAGE.TOUCH_VAULT]: 'mutation',
+  [MESSAGE.VAULT_TOUCH]: 'mutation',
+  [MESSAGE.LIST_DOCUMENTS]: 'read',
+  [MESSAGE.GET_DOCUMENT_METADATA]: 'read',
+  [MESSAGE.GET_DOCUMENT_BLOB]: 'read',
+  [MESSAGE.IMPORT_DOCUMENT]: 'mutation',
+  [MESSAGE.RENAME_DOCUMENT]: 'mutation',
+  [MESSAGE.DELETE_DOCUMENT]: 'mutation',
+  [MESSAGE.LIST_COLLECTIONS]: 'read',
+  [MESSAGE.CREATE_COLLECTION]: 'mutation',
+  [MESSAGE.UPDATE_COLLECTION]: 'mutation',
+  [MESSAGE.DELETE_COLLECTION]: 'mutation',
+  [MESSAGE.ASSIGN_DOCUMENT]: 'mutation',
+  [MESSAGE.REMOVE_DOCUMENT]: 'mutation',
+  [MESSAGE.GET_DASHBOARD_STATS]: 'read',
+  [MESSAGE.LIST_PROFILE_RECORDS]: 'read',
+  [MESSAGE.SAVE_PROFILE_RECORD]: 'mutation',
+  [MESSAGE.REMOVE_PROFILE_RECORD]: 'mutation',
+  [MESSAGE.GET_HISTORY]: 'read',
+  [MESSAGE.RECORD_HISTORY]: 'mutation',
+  [MESSAGE.CLEAR_HISTORY]: 'mutation',
+  [MESSAGE.SCAN_ACTIVE_TAB]: 'read',
+  [MESSAGE.GET_FORM_SUGGESTIONS]: 'read',
+  [MESSAGE.FILL_ACTIVE_TAB]: 'read',
+  [MESSAGE.EXPORT_VAULT]: 'read',
+  [MESSAGE.IMPORT_VAULT]: 'mutation',
+  [MESSAGE.CHECK_VAULT_INTEGRITY]: 'read',
+  [MESSAGE.CHANGE_PASSPHRASE]: 'mutation',
+  [MESSAGE.MIGRATE_ENCRYPTION]: 'mutation',
+};
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!isTrustedExtensionSender(sender)) {
     sendResponse(failure('unknown', 'Untrusted extension sender.', 'UNAUTHORIZED'));
@@ -473,14 +798,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse(failure('unknown', error instanceof Error ? error.message : 'Malformed request.', 'INVALID_REQUEST'));
     return false;
   }
+  const sessionGeneration = vaultSession.getGeneration();
+  const leaseKind = LEASE_KINDS[request.operation];
   void (async () => {
     try {
-      const data = await handle(request);
+      const data = leaseKind
+        ? await operationCoordinator.run(leaseKind, request.operation, () => handle(request))
+        : await handle(request);
+      if (!SESSION_STABLE_EXEMPT.has(request.operation) && !vaultSession.isCurrent(sessionGeneration)) {
+        throw new FormFlowError('SESSION_EXPIRED', 'The vault locked while this request was running. Nothing was returned.');
+      }
       sendResponse(success(request.requestId, data) satisfies ExtensionResponse);
       void scheduleAutoLock();
     } catch (error) {
       const messageText = error instanceof Error ? error.message : 'Extension request failed.';
-      sendResponse(failure(request.requestId, messageText, 'REQUEST_FAILED'));
+      sendResponse(failure(request.requestId, messageText, error instanceof FormFlowError ? error.code : 'REQUEST_FAILED'));
     }
   })();
   return true;
@@ -488,14 +820,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Keep a truthful, non-sensitive extension badge for the active vault state.
 async function refreshBadge(): Promise<void> {
-  const status = await vaultManager.status();
+  const status = await vaultStatus();
   const text = status.unlocked ? 'ON' : status.exists ? 'LOCK' : '';
   await chrome.action.setBadgeText({ text });
   await chrome.action.setBadgeBackgroundColor({ color: status.unlocked ? '#16a34a' : '#6b7280' });
 }
 
 async function scheduleAutoLock(): Promise<void> {
-  const unlocked = await vaultSession.isUnlocked();
+  const unlocked = operationCoordinator.isUnlocked() && (await vaultSession.isUnlocked());
   if (!unlocked) {
     await chrome.alarms.clear(AUTO_LOCK_ALARM);
     return;
@@ -508,27 +840,44 @@ async function scheduleAutoLock(): Promise<void> {
   }
 }
 
-void refreshBadge();
-void vaultManager.status().then((status) => {
-  if (status.unlocked) {
-    void migrateLegacyPopupVault();
-    void scheduleAutoLock();
+// Publish the initial locked state before any async cleanup so a fast unlock
+// cannot be overwritten by a late startup write.
+void publishVaultState('locked');
+void (async () => {
+  // The DEK is memory-only. Remove any legacy Phase 3 session key and make
+  // sure non-secret state markers are not exposed to content scripts.
+  try {
+    await chrome.storage.session.remove(LEGACY_VAULT_SESSION_KEY);
+  } catch {
+    // Ignore unavailable session storage.
   }
+  try {
+    await chrome.storage.session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
+  } catch {
+    // Older Chrome builds may not expose setAccessLevel.
+  }
+  await refreshBadge();
+})();
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'formflow-vault-keepalive') return;
+  if (!port.sender?.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`)) {
+    port.disconnect();
+    return;
+  }
+  // Holding the port keeps the MV3 worker alive while a dashboard/popup is open.
+  // Forced worker termination still destroys the in-memory DEK and locks.
+  port.onDisconnect.addListener(() => undefined);
 });
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== AUTO_LOCK_ALARM) return;
   void (async () => {
-    await vaultManager.lock();
+    try {
+      await operationCoordinator.lock(() => vaultManager.lock());
+    } catch {
+      // A failed lock remains unlocked and is reported to the next caller.
+    }
     await refreshBadge();
   })();
-});
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'session' || !('formflow.vault.session_key' in changes)) return;
-  void refreshBadge();
-  if (changes['formflow.vault.session_key'].newValue) {
-    void migrateLegacyPopupVault();
-    void scheduleAutoLock();
-  } else {
-    void chrome.alarms.clear(AUTO_LOCK_ALARM);
-  }
 });

@@ -1,14 +1,12 @@
-import { settingsRepository } from '../../core/database/repositories';
+import { vaultClient } from '@/services/vaultClient';
 import type { Preferences } from '../../shared/types';
 
 export const settingsService = {
   isLocal: true,
-
-  async getPreferences(): Promise<Preferences> {
-    return settingsRepository.getPreferences();
+  getPreferences(): Promise<Preferences> {
+    return vaultClient.getPreferences();
   },
-
-  async updatePreferences(next: Preferences): Promise<Preferences> {
-    return settingsRepository.updatePreferences(next);
+  updatePreferences(next: Preferences): Promise<Preferences> {
+    return vaultClient.updatePreferences(next);
   },
 };

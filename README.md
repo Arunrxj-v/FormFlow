@@ -1,6 +1,6 @@
 # FormFlow
 
-> **Migration status:** Phase 3 is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with AES-256-GCM encryption at rest, passphrase unlock, auto-lock, and encrypted backup/import. The localhost dashboard remains a development and migration surface. Remote AI, document extraction, and OCR are still future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) for verified status and remaining phases.
+> **Migration status:** Phase 3.1.1 final security hardening is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels and filenames, a versioned v1→v2 migration, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Remote AI, document extraction, and OCR are still future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) and [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
 
 FormFlow is a personal document intelligence and form-filling platform. This repository contains:
 
@@ -44,7 +44,7 @@ The API listens on `http://localhost:8787` by default and creates `server/formfl
 npm test
 ```
 
-This runs the local vault/crypto/backup/migration tests, the extension classifier and form-adapter tests, and the legacy API integration tests.
+This runs the local vault, per-record AAD, migration fault injection, quota/boundary, integrity, lock-coordination, session and hostile-backup tests, the extension classifier and form-adapter tests, and the legacy API integration tests.
 
 Browser-level verification of the final build:
 
@@ -52,7 +52,7 @@ Browser-level verification of the final build:
 CHROME_PATH="/path/to/Chrome for Testing" node scripts/dev/e2e-phase3.mjs
 ```
 
-The Chromium E2E creates an encrypted vault, uploads a PDF, inspects IndexedDB for ciphertext, exercises the typed vault protocol, exports and re-imports an encrypted archive, checks popup/dashboard locking, and verifies persistence across a browser restart.
+The Chromium E2E creates an encrypted vault, uploads a PDF, verifies the dashboard and popup cannot read a DEK, inspects IndexedDB for v2 ciphertext and encrypted labels, swaps authenticated ciphertexts to confirm rejection, drains an 8 MB upload against a lock, rejects generic crypto/database operations, rotates the passphrase, rejects malformed and header-tampered backups without modifying the vault, imports v3 and genuine v1/v2 archives, checks popup/dashboard locking and service-worker termination, and verifies persistence across a browser restart.
 
 ## Chrome extension
 

@@ -1,11 +1,8 @@
 import { FormFlowError, InvalidPasswordError, VaultLockedError } from '@shared/errors';
 import type { VaultMeta } from '@shared/types';
-import { PBKDF2_ITERATIONS } from '@shared/constants';
+import { ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS } from '@shared/constants';
 import { getDb, deleteDatabase } from '../database/database';
 import {
-  base64ToArrayBuffer,
-  bufferToBase64,
-  encryptJsonWithKey,
   rewrapDataKey,
   unwrapDataKey,
   validatePasswordStrength,
@@ -20,6 +17,8 @@ export interface VaultStatus {
   unlocked: boolean;
   encrypted: boolean;
   requiresEncryptionMigration: boolean;
+  requiresEncryptionUpgrade: boolean;
+  encryptionFormat?: number;
   createdAt?: string;
   passwordUpdatedAt?: string;
   kdf?: string;
@@ -49,6 +48,8 @@ class VaultManager {
       unlocked,
       encrypted: Boolean(meta),
       requiresEncryptionMigration: !meta && vaults.length > 0,
+      requiresEncryptionUpgrade: Boolean(meta) && ((meta?.encryptionFormat ?? 1) < ENCRYPTION_FORMAT_VERSION),
+      encryptionFormat: meta?.encryptionFormat ?? (meta ? 1 : undefined),
       createdAt: meta?.createdAt,
       passwordUpdatedAt: meta?.passwordUpdatedAt,
       kdf: meta?.kdf,
@@ -70,6 +71,7 @@ class VaultManager {
       iterations: wrapped.iterations,
       salt: wrapped.salt,
       wrappedDataKey: JSON.stringify(wrapped.wrapped),
+      encryptionFormat: ENCRYPTION_FORMAT_VERSION,
       createdAt: now,
       passwordUpdatedAt: now,
     };
@@ -109,6 +111,7 @@ class VaultManager {
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
     const meta = await this.getMeta();
     if (!meta) throw new FormFlowError('VAULT_NOT_FOUND', 'No local vault exists yet.');
+    const generation = vaultSession.getGeneration();
     const strength = validatePasswordStrength(newPassword);
     if (!strength.ok) throw new FormFlowError('WEAK_PASSWORD', strength.message ?? 'Choose a stronger password.');
     const rewrapped = await rewrapDataKey(
@@ -118,6 +121,17 @@ class VaultManager {
       JSON.parse(meta.wrappedDataKey),
       newPassword,
     );
+    // Verify the new envelope before replacing the old one. A failure here
+    // leaves the existing passphrase metadata untouched.
+    await unwrapDataKey(
+      newPassword,
+      rewrapped.salt,
+      rewrapped.iterations,
+      rewrapped.wrapped,
+    );
+    if (!vaultSession.isCurrent(generation) || !(await vaultSession.isUnlocked())) {
+      throw new FormFlowError('SESSION_EXPIRED', 'The vault locked while the passphrase change was in progress. The passphrase was not changed.');
+    }
     const updated: VaultMeta = {
       ...meta,
       iterations: rewrapped.iterations,
@@ -127,6 +141,7 @@ class VaultManager {
     };
     const db = await getDb();
     await db.put('vaultMeta', updated);
+    this.failedAttempts = 0;
   }
 
   async verifyPassword(password: string): Promise<boolean> {
@@ -152,11 +167,6 @@ class VaultManager {
     } catch {
       // Cache API may be unavailable in tests.
     }
-  }
-
-  async encryptForVault(value: unknown): Promise<string> {
-    const key = await this.getDataKeyOrThrow();
-    return encryptJsonWithKey(key, value);
   }
 
   async ensureUnlocked(): Promise<void> {

@@ -24,7 +24,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { MESSAGE, type MatchSuggestion, type ScanPayload } from '@shared/messages';
-import { VAULT_SESSION_KEY } from '@shared/constants';
+import { VAULT_STATE_KEY } from '@shared/constants';
 import type { Collection, FormHistoryItem, Preferences, VaultField, VaultProfile, VaultRecord } from '@shared/types';
 
 interface VaultStatus {
@@ -179,6 +179,19 @@ export function Popup() {
   }, [collectionId]);
 
   useEffect(() => {
+    const port = typeof chrome !== 'undefined' && chrome.runtime?.connect
+      ? chrome.runtime.connect({ name: 'formflow-vault-keepalive' })
+      : null;
+    return () => {
+      try {
+        port?.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       const next = await loadState();
       if (next.vaultStatus.unlocked) {
@@ -193,8 +206,9 @@ export function Popup() {
   useEffect(() => {
     if (typeof chrome === 'undefined' || !chrome.storage?.onChanged) return;
     const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area !== 'session' || !(VAULT_SESSION_KEY in changes)) return;
-      if (!changes[VAULT_SESSION_KEY]?.newValue) {
+      if (area !== 'session' || !(VAULT_STATE_KEY in changes)) return;
+      const marker = changes[VAULT_STATE_KEY]?.newValue as { state?: string } | undefined;
+      if (marker?.state !== 'unlocked') {
         setSummary(null);
         setCollections([]);
         setMatches([]);

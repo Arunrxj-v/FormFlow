@@ -1,5 +1,5 @@
 import { FormFlowError } from '@shared/errors';
-import { PBKDF2_ITERATIONS } from '@shared/constants';
+import { ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS, VAULT_SCHEMA_VERSION } from '@shared/constants';
 import type {
   ActivityRow,
   CollectionRow,
@@ -12,11 +12,13 @@ import type {
   StoredDocumentText,
   StoredVaultProfileRow,
   VaultMeta,
+  VaultRecord,
 } from '@shared/types';
 import { getDb } from '../database/database';
 import {
   deriveKeyFromPassword,
   encryptBytesWithKey,
+  encryptBytesWithLegacyAad,
   encryptJsonWithKey,
   exportKeyRaw,
   generateDataKey,
@@ -24,6 +26,7 @@ import {
   randomBytes,
   base64ToArrayBuffer,
   bufferToBase64,
+  type RecordAad,
 } from '../encryption/crypto-service';
 import { vaultSession } from './vault-session';
 
@@ -46,7 +49,7 @@ export interface PlaintextMigrationResult {
 interface PlaintextSnapshot {
   profile: StoredVaultProfileRow | null;
   documents: Array<DocumentRecord & { originalFilename?: string }>;
-  files: Array<Omit<StoredDocumentFile, 'ciphertext' | 'iv'> & { data?: Blob; ciphertext?: Blob; iv?: string }>;
+  files: Array<Omit<StoredDocumentFile, 'ciphertext' | 'iv'> & { data?: Blob; ciphertext?: Blob; iv?: string; aadVersion?: 1 | 2 }>;
   values: ExtractedValueRecord[];
   conflicts: ConflictRecord[];
   profileRecords: ProfileRecordRow[];
@@ -82,13 +85,25 @@ export const encryptionMigrationService = {
       throw new FormFlowError('VAULT_EXISTS', 'This vault already has encryption metadata.');
     }
     const vaults = await db.getAll('vaults');
-    if (!vaults.length) throw new FormFlowError('VAULT_NOT_FOUND', 'No local vault exists to protect.');
+    const activeVault = vaults[0] as VaultRecord | undefined;
+    if (!activeVault) throw new FormFlowError('VAULT_NOT_FOUND', 'No local vault exists to protect.');
+
+    const vaultIdentity = {
+      vaultId: activeVault.id,
+      schemaVersion: activeVault.schemaVersion ?? VAULT_SCHEMA_VERSION,
+    };
+    const ctx = (recordType: string, recordId: string, field: string): RecordAad => ({
+      ...vaultIdentity,
+      recordType,
+      recordId,
+      field,
+    });
 
     const salt = randomBytes(16);
     const kek = await deriveKeyFromPassword(passphrase, salt, PBKDF2_ITERATIONS);
     const dataKey = await generateDataKey();
     const rawKey = await exportKeyRaw(dataKey);
-    const wrappedBytes = await encryptBytesWithKey(kek, rawKey);
+    const wrappedBytes = await encryptBytesWithLegacyAad(kek, rawKey);
     const now = new Date().toISOString();
     const meta: VaultMeta = {
       id: 'meta',
@@ -102,6 +117,7 @@ export const encryptionMigrationService = {
         iv: wrappedBytes.iv,
         data: bufferToBase64(wrappedBytes.data),
       }),
+      encryptionFormat: ENCRYPTION_FORMAT_VERSION,
       createdAt: now,
       passwordUpdatedAt: now,
     };
@@ -122,7 +138,14 @@ export const encryptionMigrationService = {
 
     try {
       const encryptedProfile = snapshot.profile
-        ? { ...snapshot.profile, profileEnc: await encryptJsonWithKey(dataKey, parsePlain(snapshot.profile.profileEnc)) }
+        ? {
+          ...snapshot.profile,
+          profileEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(snapshot.profile.profileEnc),
+            ctx('profile', 'me', 'profile'),
+          ),
+        }
         : null;
 
       const encryptedDocuments: DocumentRecord[] = [];
@@ -132,24 +155,35 @@ export const encryptionMigrationService = {
         const { originalFilename: _omit, ...rest } = row;
         encryptedDocuments.push({
           ...rest,
-          nameEnc: await encryptJsonWithKey(dataKey, name),
-          originalFilenameEnc: await encryptJsonWithKey(dataKey, originalFilename || name),
+          nameEnc: await encryptJsonWithKey(dataKey, name, ctx('document', row.id, 'name')),
+          originalFilenameEnc: await encryptJsonWithKey(
+            dataKey,
+            originalFilename || name,
+            ctx('document', row.id, 'originalFilename'),
+          ),
         });
       }
 
       const encryptedFiles: StoredDocumentFile[] = [];
       for (const row of snapshot.files) {
         if (row.ciphertext && row.iv) {
-          encryptedFiles.push({ ...row, ciphertext: row.ciphertext, iv: row.iv, version: 2 });
+          // A previous attempt left ciphertext; keep it and let the v2
+          // migration re-authenticate it after unlock.
+          encryptedFiles.push({ ...row, ciphertext: row.ciphertext, iv: row.iv, version: 2, aadVersion: row.aadVersion ?? 1 });
           continue;
         }
         if (!row.data) throw new FormFlowError('VALIDATION_FAILED', `Document file ${row.documentId} is missing its plaintext blob.`);
-        const encrypted = await encryptBytesWithKey(dataKey, await row.data.arrayBuffer());
+        const encrypted = await encryptBytesWithKey(
+          dataKey,
+          await row.data.arrayBuffer(),
+          ctx('documentFile', row.documentId, 'file'),
+        );
         encryptedFiles.push({
           ...row,
           ciphertext: new Blob([encrypted.data], { type: 'application/octet-stream' }),
           iv: encrypted.iv,
           version: 2,
+          aadVersion: 2,
         });
       }
 
@@ -157,8 +191,14 @@ export const encryptionMigrationService = {
       for (const row of snapshot.values) {
         encryptedValues.push({
           ...row,
-          valueEnc: await encryptJsonWithKey(dataKey, parsePlain(row.valueEnc)),
-          normalizedValueEnc: await encryptJsonWithKey(dataKey, parsePlain(row.normalizedValueEnc)),
+          label: '',
+          labelEnc: await encryptJsonWithKey(dataKey, row.label ?? '', ctx('value', row.id, 'label')),
+          valueEnc: await encryptJsonWithKey(dataKey, parsePlain(row.valueEnc), ctx('value', row.id, 'value')),
+          normalizedValueEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.normalizedValueEnc),
+            ctx('value', row.id, 'normalizedValue'),
+          ),
         });
       }
 
@@ -166,23 +206,44 @@ export const encryptionMigrationService = {
       for (const row of snapshot.conflicts) {
         encryptedConflicts.push({
           ...row,
-          existingValueEnc: await encryptJsonWithKey(dataKey, parsePlain(row.existingValueEnc)),
-          newValueEnc: await encryptJsonWithKey(dataKey, parsePlain(row.newValueEnc)),
+          label: '',
+          labelEnc: await encryptJsonWithKey(dataKey, row.label ?? '', ctx('conflict', row.id, 'label')),
+          existingValueEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.existingValueEnc),
+            ctx('conflict', row.id, 'existingValue'),
+          ),
+          newValueEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.newValueEnc),
+            ctx('conflict', row.id, 'newValue'),
+          ),
         });
       }
 
       const encryptedProfileRecords: ProfileRecordRow[] = [];
       for (const row of snapshot.profileRecords) {
-        encryptedProfileRecords.push({ ...row, dataEnc: await encryptJsonWithKey(dataKey, parsePlain(row.dataEnc)) });
+        encryptedProfileRecords.push({
+          ...row,
+          dataEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.dataEnc),
+            ctx(`profileRecord:${row.type}`, row.id, 'data'),
+          ),
+        });
       }
 
       const encryptedCollections: CollectionRow[] = [];
       for (const row of snapshot.collections) {
         encryptedCollections.push({
           ...row,
-          nameEnc: await encryptJsonWithKey(dataKey, parsePlain(row.nameEnc)),
-          descriptionEnc: await encryptJsonWithKey(dataKey, parsePlain(row.descriptionEnc)),
-          notesEnc: await encryptJsonWithKey(dataKey, parsePlain(row.notesEnc)),
+          nameEnc: await encryptJsonWithKey(dataKey, parsePlain(row.nameEnc), ctx('collection', row.id, 'name')),
+          descriptionEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.descriptionEnc),
+            ctx('collection', row.id, 'description'),
+          ),
+          notesEnc: await encryptJsonWithKey(dataKey, parsePlain(row.notesEnc), ctx('collection', row.id, 'notes')),
         });
       }
 
@@ -190,8 +251,8 @@ export const encryptionMigrationService = {
       for (const row of snapshot.activity) {
         encryptedActivity.push({
           ...row,
-          titleEnc: await encryptJsonWithKey(dataKey, parsePlain(row.titleEnc)),
-          detailEnc: await encryptJsonWithKey(dataKey, parsePlain(row.detailEnc)),
+          titleEnc: await encryptJsonWithKey(dataKey, parsePlain(row.titleEnc), ctx('activity', row.id, 'title')),
+          detailEnc: await encryptJsonWithKey(dataKey, parsePlain(row.detailEnc), ctx('activity', row.id, 'detail')),
         });
       }
 
@@ -199,9 +260,13 @@ export const encryptionMigrationService = {
       for (const row of snapshot.history) {
         encryptedHistory.push({
           ...row,
-          websiteEnc: await encryptJsonWithKey(dataKey, parsePlain(row.websiteEnc)),
-          urlEnc: await encryptJsonWithKey(dataKey, parsePlain(row.urlEnc)),
-          documentsUsedEnc: await encryptJsonWithKey(dataKey, parsePlain(row.documentsUsedEnc)),
+          websiteEnc: await encryptJsonWithKey(dataKey, parsePlain(row.websiteEnc), ctx('formHistory', row.id, 'website')),
+          urlEnc: await encryptJsonWithKey(dataKey, parsePlain(row.urlEnc), ctx('formHistory', row.id, 'url')),
+          documentsUsedEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.documentsUsedEnc),
+            ctx('formHistory', row.id, 'documentsUsed'),
+          ),
         });
       }
 
@@ -209,8 +274,12 @@ export const encryptionMigrationService = {
       for (const row of snapshot.text) {
         encryptedText.push({
           ...row,
-          textEnc: await encryptJsonWithKey(dataKey, parsePlain(row.textEnc)),
-          pageTextsEnc: await encryptJsonWithKey(dataKey, parsePlain(row.pageTextsEnc)),
+          textEnc: await encryptJsonWithKey(dataKey, parsePlain(row.textEnc), ctx('documentText', row.documentId, 'text')),
+          pageTextsEnc: await encryptJsonWithKey(
+            dataKey,
+            parsePlain(row.pageTextsEnc),
+            ctx('documentText', row.documentId, 'pageTexts'),
+          ),
         });
       }
 
@@ -229,7 +298,7 @@ export const encryptionMigrationService = {
       for (const row of encryptedActivity) await tx.objectStore('activity').put(row);
       for (const row of encryptedHistory) await tx.objectStore('formHistory').put(row);
       for (const row of encryptedText) await tx.objectStore('documentText').put(row);
-      await tx.objectStore('settings').put({ key: 'storageFormat', value: 'encrypted-v1', updatedAt: now });
+      await tx.objectStore('settings').put({ key: 'storageFormat', value: 'encrypted-v2', updatedAt: now });
       await tx.done;
 
       await vaultSession.unlockWithDataKey(await importDataKey(rawKey, true));

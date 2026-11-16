@@ -133,6 +133,13 @@ test('migrates a Phase 2 plaintext vault to encrypted storage', async () => {
   const status = await vaultManager.status();
   assert.equal(status.encrypted, true);
   assert.equal(status.unlocked, true);
+  assert.equal(status.encryptionFormat, 2);
+  const upgradedRawValues = await db.getAll('extractedValues');
+  assert.match(upgradedRawValues[0]?.valueEnc ?? '', /"v":2/);
+  assert.match(upgradedRawValues[0]?.labelEnc ?? '', /"v":2/);
+  assert.equal(upgradedRawValues[0]?.label, '');
+  const upgradedFile = await db.get('documentFiles', documentId);
+  assert.equal(upgradedFile?.aadVersion, 2);
 
   const fields = await vaultRepository.listFields();
   assert.equal(fields.length, 1);

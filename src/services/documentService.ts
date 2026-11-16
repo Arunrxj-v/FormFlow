@@ -1,49 +1,64 @@
-import { documentService as coreDocumentService } from '../../core/application/document-service';
+import { vaultClient } from '@/services/vaultClient';
 import type { DocumentCategory, VaultDocument } from '../../shared/types';
+
+const objectUrls = new Set<string>();
+
+function trackObjectUrl(url: string): void {
+  objectUrls.add(url);
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    objectUrls.delete(url);
+  }, 60_000);
+}
+
+export function revokeDocumentObjectUrls(): void {
+  for (const url of objectUrls) URL.revokeObjectURL(url);
+  objectUrls.clear();
+}
 
 export const documentService = {
   isLocal: true,
 
   list(): Promise<VaultDocument[]> {
-    return coreDocumentService.list();
+    return vaultClient.listDocuments();
   },
 
   get(id: string): Promise<VaultDocument | null> {
-    return coreDocumentService.get(id);
+    return vaultClient.getDocument(id);
   },
 
   importDocument(file: File, category?: DocumentCategory, subcategory?: string) {
-    return coreDocumentService.importDocument({ file, category, subcategory });
+    return vaultClient.importDocument(file, category, subcategory);
   },
 
   async openInBrowser(id: string): Promise<void> {
-    const blob = await coreDocumentService.getBlob(id);
-    if (!blob) throw new Error('Original document file is not available locally.');
-    const url = URL.createObjectURL(blob);
+    const result = await vaultClient.getDocumentBlob(id);
+    if (!result) throw new Error('Original document file is not available locally.');
+    const url = URL.createObjectURL(result.blob);
     window.open(url, '_blank', 'noopener,noreferrer');
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    trackObjectUrl(url);
   },
 
   async download(id: string, fileName: string): Promise<void> {
-    const blob = await coreDocumentService.getBlob(id);
-    if (!blob) throw new Error('Original document file is not available locally.');
-    const url = URL.createObjectURL(blob);
+    const result = await vaultClient.getDocumentBlob(id);
+    if (!result) throw new Error('Original document file is not available locally.');
+    const url = URL.createObjectURL(result.blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = fileName;
     anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    trackObjectUrl(url);
   },
 
   async rename(id: string, name: string): Promise<VaultDocument> {
-    return coreDocumentService.rename(id, name);
+    return vaultClient.renameDocument(id, name);
   },
 
   async remove(id: string): Promise<void> {
-    await coreDocumentService.remove(id);
+    await vaultClient.deleteDocument(id);
   },
 
   async getStorageEstimate() {
-    return coreDocumentService.getStorageEstimate();
+    return vaultClient.storageEstimate();
   },
 };

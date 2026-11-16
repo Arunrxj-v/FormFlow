@@ -5,8 +5,8 @@ import { Card, CardHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useToast } from '@/context/ToastContext';
-import { legacyMigrationService, type MigrationSummary } from '../../../core/migration/legacy-migration-service';
-import { vaultExportService } from '../../../core/storage/vault-export';
+import { vaultClient } from '@/services/vaultClient';
+import type { LegacyMigrationSummary } from '@/services/vaultClientTypes';
 import { useApp } from '@/context/AppContext';
 
 export function VaultMigrationPage() {
@@ -17,27 +17,25 @@ export function VaultMigrationPage() {
   const isExtension = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
   const [backupPassword, setBackupPassword] = useState('');
   const [importPassword, setImportPassword] = useState('');
-  const [summary, setSummary] = useState<MigrationSummary | null>(null);
+  const [summary, setSummary] = useState<LegacyMigrationSummary | null>(null);
   const [legacyBusy, setLegacyBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState<{ documents: number; values: number; collections: number } | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (isExtension) return;
     // If a legacy session already exists, show what can be migrated without re-authenticating.
-    void legacyMigrationService.probe().then((snapshot) => {
+    void vaultClient.legacyBackendStatus().then((snapshot) => {
       setLegacyEmail(snapshot.user?.email ?? '');
     }).catch(() => undefined);
-  }, []);
+  }, [isExtension]);
 
   const runLegacyMigration = async () => {
     setError('');
     setLegacyBusy(true);
     try {
-      if (legacyEmail.trim() && legacyPassword) {
-        await legacyMigrationService.login(legacyEmail, legacyPassword);
-      }
-      const result = await legacyMigrationService.migrate();
+      const result = await vaultClient.legacyBackendMigrate(legacyEmail, legacyPassword);
       setSummary(result);
       await refreshData();
       toast({
@@ -56,7 +54,7 @@ export function VaultMigrationPage() {
     setImportBusy(true);
     setError('');
     try {
-      const result = await vaultExportService.importEncrypted(file, importPassword);
+      const result = await vaultClient.importVault(file, importPassword);
       setImportResult(result);
       await refreshData();
       toast({ tone: 'success', title: 'Local vault imported', message: `${result.documents} documents restored.` });
@@ -69,7 +67,7 @@ export function VaultMigrationPage() {
 
   const exportLocalVault = async () => {
     try {
-      const blob = await vaultExportService.exportEncrypted(backupPassword);
+      const blob = await vaultClient.exportVault(backupPassword);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;

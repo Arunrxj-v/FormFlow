@@ -12,7 +12,9 @@ export const MODEL_REVISION = '54250909aca286a05b9d013c8af7a21859ee6ead';
 export const MODEL_LICENSE = 'Apache-2.0';
 export const MODEL_LICENSE_URL = 'https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE';
 
-export const VAULT_SESSION_KEY = 'formflow.vault.session_key';
+export const VAULT_STATE_KEY = 'formflow.vault.state';
+/** Legacy Phase 3 key; removed from storage.session on startup. */
+export const LEGACY_VAULT_SESSION_KEY = 'formflow.vault.session_key';
 export const VAULT_ACTIVITY_KEY = 'formflow.vault.last_activity';
 export const AUTO_LOCK_ALARM = 'formflow-auto-lock';
 export const DEFAULT_AUTO_LOCK_MINUTES = 15;
@@ -41,7 +43,7 @@ export const MODEL_MAX_OUTPUT_TOKENS = 320;
 export const MODEL_MAX_CONTEXT_TOKENS = 3072;
 
 export const BACKUP_FORMAT = 'formflow-encrypted-backup';
-export const BACKUP_VERSION = 2;
+export const BACKUP_VERSION = 3;
 export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 export const MAX_BACKUP_DOCUMENTS = 5000;
 export const MAX_BACKUP_VALUES = 50000;

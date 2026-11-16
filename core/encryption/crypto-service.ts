@@ -35,6 +35,10 @@ function lengthPrefixed(parts: string[]): Uint8Array {
   return textEncoder.encode(parts.map((part) => `${textEncoder.encode(part).length}:${part}`).join('|'));
 }
 
+export function canonicalLengthPrefixed(parts: string[]): Uint8Array {
+  return lengthPrefixed(parts);
+}
+
 export function recordAad(context: RecordAad): Uint8Array {
   return lengthPrefixed([
     'formflow',
@@ -182,6 +186,37 @@ async function decryptBytesWithAad(
   } catch (error) {
     throw new FormFlowError('VALIDATION_FAILED', 'Encrypted data could not be authenticated.', { cause: error });
   }
+}
+
+/** Encrypt bytes with an explicitly constructed, canonical AAD. */
+export async function encryptBytesWithRawAad(
+  key: CryptoKey,
+  bytes: ArrayBuffer | Uint8Array,
+  additionalData: Uint8Array,
+  ivBase64?: string,
+): Promise<{ iv: string; data: ArrayBuffer }> {
+  if (ivBase64 !== undefined) {
+    const iv = fromBase64(ivBase64);
+    if (iv.byteLength !== 12) throw new FormFlowError('VALIDATION_FAILED', 'AES-GCM nonce must be 12 bytes.');
+    const plaintext = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource, additionalData: additionalData as BufferSource, tagLength: 128 },
+      key,
+      plaintext as BufferSource,
+    );
+    return { iv: ivBase64, data: ciphertext };
+  }
+  return encryptBytesWithAad(key, bytes, additionalData);
+}
+
+/** Decrypt bytes with an explicitly constructed, canonical AAD. */
+export async function decryptBytesWithRawAad(
+  key: CryptoKey,
+  ivBase64: string,
+  ciphertext: ArrayBuffer,
+  additionalData: Uint8Array,
+): Promise<ArrayBuffer> {
+  return decryptBytesWithAad(key, ivBase64, ciphertext, additionalData);
 }
 
 /** Encrypt record bytes with per-record AAD. */
