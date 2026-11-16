@@ -18,9 +18,8 @@ import {
   validateDocumentFile,
   type DocumentDescriptor,
 } from '../documents/validation';
-import { parseDocument } from '../documents/parsers';
 import type { DocumentParseResult, DocumentParser } from '../documents/parsers/types';
-import { sanitizeMetadata, sanitizeWarnings } from '../documents/parsers/text-utils';
+import { sanitizeMetadata, sanitizeWarnings } from '../documents/text-utils';
 
 export type DocumentIngestionStage =
   | 'validating'
@@ -164,7 +163,13 @@ async function parseForDocument(
   bytes: ArrayBuffer,
   deps: DocumentIngestionDependencies,
 ): Promise<DocumentParseResult> {
-  const parser = deps.parse ?? parseDocument;
+  const parser = deps.parse;
+  if (!parser) {
+    throw new FormFlowError(
+      'PARSER_UNAVAILABLE',
+      'No isolated document parser is configured. The background must route parsing through the offscreen parser.',
+    );
+  }
   const timeoutMs = Math.max(1, deps.timeoutMs ?? MAX_EXTRACTION_TIMEOUT_MS);
   const controller = new AbortController();
   let timedOut = false;

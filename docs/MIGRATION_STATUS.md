@@ -2,6 +2,70 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 4.1.1 — Isolated offscreen document parsing (complete)
+
+Phase 4.1.1 moves untrusted PDF, DOCX, and TXT parsing out of the privileged MV3 service worker into a hidden Chrome offscreen document and request-scoped parser workers.
+
+Implemented:
+
+- Added the `offscreen` permission and raised `minimum_chrome_version` to **109**, the Chrome Offscreen API minimum.
+- Created `offscreen-parser.html` / `offscreen-parser.js` with a hidden extension page that has no user-facing UI or navigation controls. It is created with the narrow `WORKERS` reason and spawns one parser Web Worker per document.
+- Added `document-parser.worker.js`, which contains PDF.js, Mammoth, fflate, and the existing parser modules. The service-worker bundle no longer contains any parser runtime.
+- Added a strict dedicated-port protocol: `PARSE_DOCUMENT`, `CANCEL_PARSE`, `PARSE_PROGRESS`, `PARSE_RESULT`, `PARSE_ERROR` with unique request IDs, parser version, exact-key validation, bounded progress, result-size checks, and coded errors.
+- The background accepts the parser port only from the exact offscreen document URL and sender ID. The offscreen document is explicitly excluded from the general runtime operation router, so it cannot invoke `LIST_DOCUMENTS` or any vault operation.
+- Added a non-configurable runtime `indexedDB` guard in the offscreen document and parser worker. Neither bundle imports vault, database, encryption, storage, application, or vault-client modules.
+- Added a single managed offscreen lifecycle with a creation mutex, stale-document replacement, 15-second idle shutdown, maximum 2 concurrent parses, and per-request worker cancellation.
+- Parser failure, cancellation, timeout, vault lock, service-worker termination, extension reload, or offscreen-document failure cannot produce partial records. The existing single IndexedDB commit remains the only success boundary.
+- Added build-time bundle isolation checks using esbuild metafiles. The build fails if the service worker contains parser runtime, or if the offscreen page/worker contains vault, database, encryption, storage, or application modules.
+- Added a strict CSP `worker-src 'self'`; no inline/remote scripts, `unsafe-eval`, remote parser libraries, or dynamic code execution were added.
+- Kept backup v3, AAD, migrations, duplicate detection, encrypted text storage, and the dashboard UI unchanged at the data layer.
+
+### Verification results
+
+| Command / suite | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 73 files; bundle isolation verified |
+| `npm run test:local` | 125/125 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | 149/149 pass |
+| `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
+| `scripts/dev/e2e-phase4-ingestion.mjs` | 30/30 pass |
+| `scripts/dev/e2e-phase4-offscreen.mjs` | 33/33 pass (test-hooks build) |
+| `scripts/dev/e2e-phase4-interruption.mjs` | 11/11 pass |
+| `scripts/dev/e2e-migration-crash.mjs` | 23/23 pass (test-hooks build) |
+| `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
+| `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
+| `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
+
+Browser: Google Chrome for Testing 156.0.8078.4 on macOS.
+
+The Phase 4.1.1 offscreen suite verified in real Chromium:
+
+- PDF, DOCX, and TXT parsing through the offscreen document.
+- Production ingestion created the offscreen parser context.
+- Offscreen `indexedDB` access was blocked.
+- Actual offscreen request/result key allowlists contained no DEK, KEK, passphrase, AAD, or key-like fields.
+- The offscreen document could not invoke arbitrary background vault operations (`UNAUTHORIZED`).
+- Malformed parser requests, malformed parser responses, and oversized parser results were rejected.
+- A bounded parser timeout left no record.
+- An offscreen-document failure rejected the import and left no partial record; a later import recreated the offscreen document successfully.
+- Two concurrent requests were handled safely.
+- One cancellation did not terminate the other active parse.
+- Vault lock drained the offscreen parse and the import committed atomically.
+- Duplicate detection and encrypted v2 text persistence still worked.
+- Extension disable/re-enable during an active offscreen parse left zero partial records and recovered successfully.
+
+Known limitations:
+
+- Offscreen documents and parser workers share the extension origin. They have no vault authority, no vault/DB/crypto imports, and a runtime IndexedDB guard, but they are not a separate sandboxed origin.
+- The offscreen document is created with the `WORKERS` reason and uses Chrome 109+ APIs.
+- OCR remains unimplemented; image-only PDFs remain `ocrRequired`.
+- Malformed request/response and timeout tests use test-only bots/offscreen hooks in a test build; the production build was rebuilt and verified to contain no hook strings.
+- Parser workers receive only document bytes and non-secret protocol fields; the DEK never leaves the service worker.
+
 ## Phase 4.1 — Local document ingestion (complete)
 
 Phase 4.1 adds a local ingestion pipeline for PDF, DOCX, and TXT without adding cloud processing, OCR, model downloads, ONNX, or AI extraction.
@@ -14,7 +78,7 @@ Implemented:
 - DOCX extraction with Mammoth validation plus a WordprocessingML structure pass for paragraphs, headings, tables, line breaks, and document order. Table cells are preserved as tab-separated rows.
 - Strict UTF-8 TXT handling with BOM detection, CRLF/CR/LF normalization, invalid-encoding rejection, binary-control rejection, and paragraph preservation.
 - Atomic encrypted persistence: the document row, encrypted original bytes, encrypted extracted text, and encrypted extraction details are written in one strict IndexedDB transaction. A quota error, lock, parser failure, cancellation, or service-worker termination cannot leave a successful document without its text or file.
-- Parser module receives document bytes only. It has no vault session, DEK, KEK, AAD, database handle, or network access. Parsing runs in the background service-worker context, not the dashboard main thread. MV3 service workers do not expose the `Worker` constructor, so a nested parser worker is not used; an extension-API heartbeat keeps long parses alive.
+- Parser module receives document bytes only. It has no vault session, DEK, KEK, AAD, database handle, or network access. Phase 4.1.1 moved parsing to the hidden offscreen document and request-scoped workers; see the Phase 4.1.1 section.
 - Extraction details (warnings, PDF/DOCX metadata, pages requiring OCR) are encrypted under the existing `documentText` record with the distinct AAD field `extraction`. No extracted text or sensitive metadata is stored in plaintext.
 - Typed protocol operations for document text retrieval, extraction retry, cancellation, and progress. Progress travels over an extension-origin-only port and contains only stage, page, file index, and percentage — no filename, text, key, or metadata.
 - Dashboard upload dialog shows real validation/extraction/encryption/storage stages, page count, duplicate name, OCR-required state, warnings, retry, cancellation, and clear errors.
@@ -27,20 +91,21 @@ Verification results:
 |---|---|
 | `npm run typecheck` | Pass |
 | `npm run build` | Pass |
-| `npm run build:extension` | Pass; 70 files |
-| `npm run test:local` | 113/113 pass |
+| `npm run build:extension` | Pass; 73 files |
+| `npm run test:local` | 125/125 pass |
 | `npm run test:extension` | 12/12 pass |
 | `npm run test:server` | 12/12 pass |
 | `npm test` | Pass |
 | `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
-| `scripts/dev/e2e-phase4-ingestion.mjs` | 29/29 pass |
-| `scripts/dev/e2e-phase4-interruption.mjs` | 10/10 pass |
+| `scripts/dev/e2e-phase4-ingestion.mjs` | 30/30 pass |
+| `scripts/dev/e2e-phase4-offscreen.mjs` | 33/33 pass (test-hooks build) |
+| `scripts/dev/e2e-phase4-interruption.mjs` | 11/11 pass |
 | `scripts/dev/e2e-migration-crash.mjs` | 23/23 pass |
 | `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
 | `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
 | `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
 
-Browser: Google Chrome for Testing 156.0.8078.4, Playwright persistent profiles, production extension build. The ingestion E2E imports a real Chromium-generated multi-page PDF, a DOCX with headings/tables, a BOM/CRLF TXT, an image-only PDF, a corrupted PDF, and a password-protected PDF; it verifies encrypted-at-rest text, v2 AAD, duplicates, OCR state, retry, cancellation, real progress, and the dashboard upload dialog. The interruption E2E disables the extension during an 18 MB import, re-enables it, unlocks, and verifies that no partial document/file/text triple exists.
+Browser: Google Chrome for Testing 156.0.8078.4, Playwright persistent profiles, production extension build. The ingestion E2E imports a real Chromium-generated multi-page PDF, a DOCX with headings/tables, a BOM/CRLF TXT, an image-only PDF, a corrupted PDF, and a password-protected PDF; it verifies encrypted-at-rest text, v2 AAD, duplicates, OCR state, retry, cancellation, real progress, and the dashboard upload dialog. The interruption E2E reaches the offscreen parser during a 1,000-page PDF import, disables the extension, re-enables it, unlocks, and verifies that no partial document/file/text triple exists.
 
 Known Phase 4.1 limitations:
 
@@ -49,7 +114,7 @@ Known Phase 4.1 limitations:
 - Complex PDF layout and DOCX table/heading structure are normalized to text; visual layout is not reproduced.
 - PDF metadata extraction is best-effort and may be absent.
 - Password-protected PDFs are rejected rather than decrypted.
-- PDF/DOCX parsing runs in the service worker (not a nested worker) because MV3 service workers do not expose `Worker`. It is off the dashboard thread but shares the service-worker event loop.
+- Parsing runs in the hidden offscreen document and request-scoped workers, outside the service-worker key boundary.
 - Local OCR/field extraction, ONNX, model downloads, Qwen inference, intelligent extraction, and autofill are out of scope for this phase.
 
 ## Phase 3.1.2.1 — Final runtime security verification (complete)

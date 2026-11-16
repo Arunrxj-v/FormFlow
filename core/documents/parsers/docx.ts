@@ -8,7 +8,7 @@ import {
   sanitizeMetadataValue,
   sanitizeWarnings,
   stripControlCharacters,
-} from './text-utils';
+} from '../text-utils';
 import {
   throwIfAborted,
   warning,

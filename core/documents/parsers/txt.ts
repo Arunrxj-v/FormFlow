@@ -1,6 +1,6 @@
 import { EXTRACTION_VERSION } from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
-import { normalizeExtractedText } from './text-utils';
+import { normalizeExtractedText } from '../text-utils';
 import {
   throwIfAborted,
   type DocumentParseInput,

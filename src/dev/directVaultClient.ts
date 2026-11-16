@@ -25,6 +25,7 @@ import type {
 } from '@shared/types';
 import { dashboardService } from '../../core/application/dashboard-service';
 import { documentService } from '../../core/application/document-service';
+import { parseDocument } from '../../core/documents/parsers';
 import { profileRecordService, profileService } from '../../core/application/profile-service';
 import { historyService } from '../../core/application/history-service';
 import { vaultService } from '../../core/application/vault-service';
@@ -99,9 +100,10 @@ export const vaultClient: VaultClientApi = {
           fileCount: options.fileCount ?? 1,
         })
         : undefined,
-    }),
+    }, { parse: parseDocument }),
   cancelDocumentImport: async () => ({ cancelled: false }),
   retryDocumentExtraction: (id, options) => documentService.retryExtraction(id, {
+    parse: parseDocument,
     onProgress: options?.onProgress
       ? (event) => options.onProgress!({
         ...event,

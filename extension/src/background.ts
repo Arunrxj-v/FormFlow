@@ -27,8 +27,13 @@ import { VaultOperationCoordinator, type VaultOperationKind } from '../../core/v
 import { vaultService } from '../../core/application/vault-service';
 import { profileService } from '../../core/application/profile-service';
 import { documentService } from '../../core/application/document-service';
-import { parseDocument } from '../../core/documents/parsers';
 import type { DocumentParseInput } from '../../core/documents/parsers/types';
+import { acceptOffscreenParserPort, parseDocumentInOffscreen } from './offscreen/parser-client';
+import {
+  OFFSCREEN_PARSER_DOCUMENT,
+  OFFSCREEN_PARSER_PORT,
+  isOffscreenParserDocumentUrl,
+} from '../../shared/offscreen-parser-protocol';
 import { dashboardService } from '../../core/application/dashboard-service';
 import { vaultExportService } from '../../core/storage/vault-export';
 import { profileRecordService } from '../../core/application/profile-service';
@@ -74,7 +79,7 @@ function publishDocumentProgress(
 }
 
 async function documentParser(input: DocumentParseInput) {
-  return parseDocument(input);
+  return parseDocumentInOffscreen(input, input.signal);
 }
 
 function startImportHeartbeat(): () => void {
@@ -610,6 +615,21 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       if (activeDocumentImports.has(importId)) {
         throw new FormFlowError('VALIDATION_FAILED', 'A document with this import id is already being processed.');
       }
+      const requestedTimeout = payload.testParserTimeoutMs;
+      if (requestedTimeout !== undefined && !__FORMFLOW_TEST_HOOKS__) {
+        throw new FormFlowError('VALIDATION_FAILED', 'Unknown document import option.');
+      }
+      if (requestedTimeout !== undefined && (
+        typeof requestedTimeout !== 'number'
+        || !Number.isFinite(requestedTimeout)
+        || requestedTimeout < 50
+        || requestedTimeout > 120_000
+      )) {
+        throw new FormFlowError('VALIDATION_FAILED', 'Test parser timeout is out of range.');
+      }
+      const parserTimeoutMs = __FORMFLOW_TEST_HOOKS__ && typeof requestedTimeout === 'number'
+        ? Math.trunc(requestedTimeout)
+        : undefined;
       const controller = new AbortController();
       activeDocumentImports.set(importId, controller);
       const stopHeartbeat = startImportHeartbeat();
@@ -620,6 +640,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
             parse: documentParser,
             signal: controller.signal,
             onProgress: (event) => publishDocumentProgress(importId, fileIndex, fileCount, event),
+            ...(parserTimeoutMs !== undefined ? { timeoutMs: parserTimeoutMs } : {}),
           },
         );
       } finally {
@@ -972,6 +993,19 @@ void (async () => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (!port.sender?.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`)) {
+    port.disconnect();
+    return;
+  }
+  const fromOffscreen = isOffscreenParserDocumentUrl(port.sender.url, chrome.runtime.id);
+  if (port.name === OFFSCREEN_PARSER_PORT) {
+    if (!fromOffscreen) {
+      port.disconnect();
+      return;
+    }
+    acceptOffscreenParserPort(port);
+    return;
+  }
+  if (fromOffscreen) {
     port.disconnect();
     return;
   }

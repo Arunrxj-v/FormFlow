@@ -28,6 +28,9 @@ test('rejects malformed, versioned, or unidentified requests', () => {
 test('accepts only trusted extension pages', () => {
   assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'chrome-extension://test-extension-id/popup.html' }), true);
   assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'chrome-extension://test-extension-id/dashboard.html#/dashboard' }), true);
+  assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'chrome-extension://test-extension-id/offscreen-parser.html' }), false);
+  assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'chrome-extension://test-extension-id/offscreen-parser.html#probe' }), false);
+  assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'chrome-extension://test-extension-id/offscreen-parser.html?probe=1' }), false);
   assert.equal(isTrustedExtensionSender({ id: 'test-extension-id', url: 'https://example.com/form' }), false);
   assert.equal(isTrustedExtensionSender({ id: 'other-extension', url: 'chrome-extension://other-extension/popup.html' }), false);
 });

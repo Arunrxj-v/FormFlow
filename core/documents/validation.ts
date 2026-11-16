@@ -127,42 +127,45 @@ export function hasZipSignature(bytes: Uint8Array): boolean {
     || startsWith(bytes, [0x50, 0x4b, 0x07, 0x08]);
 }
 
+/** Content signature validation that does not need File/DOM APIs. */
+export function validateDocumentContentSignature(
+  bytes: Uint8Array,
+  format: DocumentFormat,
+  fileName = 'document',
+): void {
+  if (bytes.byteLength <= 0) {
+    throw new FormFlowError('EMPTY_DOCUMENT', `${fileName} is empty.`);
+  }
+  if (bytes.byteLength > MAX_DOCUMENT_BYTES) {
+    throw new FormFlowError('FILE_TOO_LARGE', `${fileName} exceeds the 20 MB local processing limit.`);
+  }
+  if (format === 'pdf') {
+    if (!hasPdfSignature(bytes)) {
+      throw new FormFlowError('UNSUPPORTED_FILE', `${fileName} does not contain a valid PDF signature.`);
+    }
+    return;
+  }
+  if (format === 'docx') {
+    if (!hasZipSignature(bytes)) {
+      throw new FormFlowError('UNSUPPORTED_FILE', `${fileName} does not contain a valid DOCX container signature.`);
+    }
+    return;
+  }
+  if (hasPdfSignature(bytes) || hasZipSignature(bytes)) {
+    throw new FormFlowError('UNSUPPORTED_FILE', `${fileName} looks like a binary document, not UTF-8 text.`);
+  }
+  const prefix = bytes.subarray(0, Math.min(bytes.byteLength, 8192));
+  if (prefix.includes(0)) {
+    throw new FormFlowError('INVALID_ENCODING', `${fileName} contains binary data rather than UTF-8 text.`);
+  }
+}
+
 /**
  * Content validation for the supported formats. Renaming a different file
  * type to .pdf/.docx/.txt is rejected here before parsing or persistence.
  */
 export function validateDocumentBytes(bytes: Uint8Array, descriptor: DocumentDescriptor): void {
-  if (bytes.byteLength <= 0) {
-    throw new FormFlowError('EMPTY_DOCUMENT', `${descriptor.file.name} is empty.`);
-  }
-  if (bytes.byteLength > MAX_DOCUMENT_BYTES) {
-    throw new FormFlowError('FILE_TOO_LARGE', `${descriptor.file.name} exceeds the 20 MB local processing limit.`);
-  }
-  if (descriptor.format === 'pdf') {
-    if (!hasPdfSignature(bytes)) {
-      throw new FormFlowError('UNSUPPORTED_FILE', `${descriptor.file.name} does not contain a valid PDF signature.`);
-    }
-    return;
-  }
-  if (descriptor.format === 'docx') {
-    if (!hasZipSignature(bytes)) {
-      throw new FormFlowError(
-        'UNSUPPORTED_FILE',
-        `${descriptor.file.name} does not contain a valid DOCX container signature.`,
-      );
-    }
-    return;
-  }
-  if (hasPdfSignature(bytes) || hasZipSignature(bytes)) {
-    throw new FormFlowError(
-      'UNSUPPORTED_FILE',
-      `${descriptor.file.name} looks like a binary document, not UTF-8 text.`,
-    );
-  }
-  const prefix = bytes.subarray(0, Math.min(bytes.byteLength, 8192));
-  if (prefix.includes(0)) {
-    throw new FormFlowError('INVALID_ENCODING', `${descriptor.file.name} contains binary data rather than UTF-8 text.`);
-  }
+  validateDocumentContentSignature(bytes, descriptor.format, descriptor.file.name);
 }
 
 /** Kept for older callers that only need the legacy extension list. */

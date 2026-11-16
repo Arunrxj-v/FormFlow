@@ -7,6 +7,7 @@ const { vaultManager } = await import('../../core/vault/vault-manager');
 const { vaultRepository: vaultRecordRepository } = await import('../../core/database/vault-repository');
 const { documentRepository, vaultRepository, collectionRepository } = await import('../../core/database/repositories');
 const { documentService } = await import('../../core/application/document-service');
+const { parseDocument } = await import('../../core/documents/parsers');
 const { vaultExportService, assertBackupSize, BACKUP_SIZE_LIMIT_BYTES } = await import('../../core/storage/vault-export');
 const { sha256Hex } = await import('../../core/encryption/crypto-service');
 const { MAX_BACKUP_BYTES } = await import('../../shared/constants');
@@ -92,7 +93,10 @@ test('quota failure during document upload removes the partial document', async 
   } as typeof IDBObjectStore.prototype.put;
   try {
     await assert.rejects(
-      () => documentService.importDocument({ file: new File(['quota document'], 'quota.txt', { type: 'text/plain' }) }),
+      () => documentService.importDocument(
+        { file: new File(['quota document'], 'quota.txt', { type: 'text/plain' }) },
+        { parse: parseDocument },
+      ),
       /storage|quota/i,
     );
   } finally {

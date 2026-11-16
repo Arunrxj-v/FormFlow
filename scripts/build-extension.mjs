@@ -12,7 +12,7 @@ const buildRoot = path.join(root, 'extension', '.build');
 const tempOut = path.join(buildRoot, `dist-${process.pid}-${Date.now()}`);
 const backupOut = path.join(buildRoot, `dist-backup-${process.pid}`);
 
-const TARGET = ['chrome102'];
+const TARGET = ['chrome109'];
 const testHooks = process.env.FORMFLOW_TEST_HOOKS === '1';
 
 async function exists(target) {
@@ -35,7 +35,7 @@ async function requireFile(target, label = path.relative(tempOut, target)) {
 
 async function bundle(entryPoint, outfile, options = {}) {
   assertInside(tempOut, outfile);
-  await build({
+  const result = await build({
     entryPoints: [entryPoint],
     outfile,
     bundle: true,
@@ -47,6 +47,25 @@ async function bundle(entryPoint, outfile, options = {}) {
     ...options,
   });
   await requireFile(outfile);
+  return result;
+}
+
+function bundledInputs(result) {
+  return Object.keys(result.metafile?.inputs ?? {});
+}
+
+function assertNoInputs(label, inputs, patterns) {
+  for (const input of inputs) {
+    if (patterns.some((pattern) => pattern.test(input))) {
+      throw new Error(`${label} bundle includes forbidden module: ${input}`);
+    }
+  }
+}
+
+function assertHasInput(label, inputs, pattern) {
+  if (!inputs.some((input) => pattern.test(input))) {
+    throw new Error(`${label} bundle is missing required module: ${pattern}`);
+  }
 }
 
 function assertInside(parent, target) {
@@ -71,6 +90,16 @@ async function validateManifest(distDir) {
   }
   if (!manifest.name || !manifest.version) {
     throw new Error('Extension manifest is missing its name or version.');
+  }
+  if (Number(manifest.minimum_chrome_version) < 109) {
+    throw new Error('The offscreen document requires minimum_chrome_version 109 or newer.');
+  }
+  if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes('offscreen')) {
+    throw new Error('The extension manifest must declare the offscreen permission.');
+  }
+  const extensionCsp = String(manifest.content_security_policy?.extension_pages ?? '');
+  if (!/script-src\s+'self'/.test(extensionCsp) || !/worker-src\s+'self'/.test(extensionCsp)) {
+    throw new Error('The extension CSP must allow only local scripts and workers.');
   }
 
   const referenced = new Set();
@@ -102,11 +131,25 @@ async function verifyBuild(distDir) {
   await requireFile(path.join(distDir, 'manifest.json'), 'manifest.json');
   await requireFile(path.join(distDir, 'background.js'), 'background.js');
   await requireFile(path.join(distDir, 'content.js'), 'content.js');
+  await requireFile(path.join(distDir, 'offscreen-parser.html'), 'offscreen-parser.html');
+  await requireFile(path.join(distDir, 'offscreen-parser.js'), 'offscreen-parser.js');
+  await requireFile(path.join(distDir, 'document-parser.worker.js'), 'document-parser.worker.js');
   await requireFile(path.join(distDir, 'popup.js'), 'popup.js');
   await requireFile(path.join(distDir, 'popup.html'), 'popup.html');
   await requireFile(path.join(distDir, 'popup.css'), 'popup.css');
   await requireFile(path.join(distDir, 'dashboard.html'), 'dashboard.html');
   await requireFile(path.join(distDir, 'BUILD.txt'), 'BUILD.txt');
+
+  const offscreenHtml = await readFile(path.join(distDir, 'offscreen-parser.html'), 'utf8');
+  if (/<script\b(?![^>]*\bsrc=)[^>]*>/i.test(offscreenHtml)) {
+    throw new Error('Offscreen parser HTML must not contain inline scripts.');
+  }
+  if (/<script\b[^>]*src=["'](?:https?:|data:)/i.test(offscreenHtml)) {
+    throw new Error('Offscreen parser HTML must not load remote scripts.');
+  }
+  if (/\bon[a-z]+\s*=/i.test(offscreenHtml)) {
+    throw new Error('Offscreen parser HTML must not contain inline event handlers.');
+  }
 
   const dashboardHtml = await readFile(path.join(distDir, 'dashboard.html'), 'utf8');
   const assetReferences = [...dashboardHtml.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
@@ -148,13 +191,62 @@ async function main() {
       define: { 'process.env.NODE_ENV': '"production"' },
     });
 
-    await bundle(path.join(src, testHooks ? 'background.test.ts' : 'background.ts'), path.join(tempOut, 'background.js'), {
+    const backgroundResult = await bundle(path.join(src, testHooks ? 'background.test.ts' : 'background.ts'), path.join(tempOut, 'background.js'), {
       format: 'esm',
+      metafile: true,
+      define: { __FORMFLOW_TEST_HOOKS__: testHooks ? 'true' : 'false' },
     });
 
     await bundle(path.join(src, 'content.ts'), path.join(tempOut, 'content.js'), {
       format: 'iife',
     });
+
+    const offscreenProductionStub = {
+      name: 'offscreen-production-diagnostics-stub',
+      setup(build) {
+        if (testHooks) return;
+        build.onResolve({ filter: /^\.\/diagnostics$/ }, () => ({
+          path: path.join(src, 'offscreen', 'diagnostics.prod.ts'),
+        }));
+      },
+    };
+    const offscreenResult = await bundle(path.join(src, 'offscreen', 'main.ts'), path.join(tempOut, 'offscreen-parser.js'), {
+      format: 'iife',
+      metafile: true,
+      define: { __FORMFLOW_TEST_HOOKS__: testHooks ? 'true' : 'false' },
+      plugins: [offscreenProductionStub],
+    });
+    const parserWorkerResult = await bundle(path.join(src, 'offscreen', 'parser-worker.ts'), path.join(tempOut, 'document-parser.worker.js'), {
+      format: 'esm',
+      metafile: true,
+      define: { __FORMFLOW_TEST_HOOKS__: testHooks ? 'true' : 'false' },
+    });
+    await cp(path.join(src, 'offscreen', 'parser.html'), path.join(tempOut, 'offscreen-parser.html'));
+
+    const vaultAuthorityPatterns = [
+      /core[\\/]vault[\\/]/,
+      /core[\\/]database[\\/]/,
+      /core[\\/]encryption[\\/]/,
+      /core[\\/]storage[\\/]/,
+      /core[\\/]application[\\/]/,
+      /src[\\/]services[\\/]vaultClient/,
+      /extension[\\/]src[\\/]background/,
+    ];
+    const parserPatterns = [
+      /core[\\/]documents[\\/]parsers[\\/]/,
+      /node_modules[\\/]pdfjs-dist/,
+      /node_modules[\\/]mammoth/,
+      /node_modules[\\/]fflate/,
+    ];
+    const backgroundInputs = bundledInputs(backgroundResult);
+    const offscreenInputs = bundledInputs(offscreenResult);
+    const parserInputs = bundledInputs(parserWorkerResult);
+    assertNoInputs('Service worker', backgroundInputs, parserPatterns);
+    assertNoInputs('Offscreen document', offscreenInputs, [...vaultAuthorityPatterns, ...parserPatterns]);
+    assertNoInputs('Offscreen parser worker', parserInputs, vaultAuthorityPatterns);
+    assertHasInput('Offscreen parser worker', parserInputs, /core[\\/]documents[\\/]parsers[\\/]index\.ts$/);
+    assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]pdfjs-dist/);
+    assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]mammoth/);
 
     const dashboardOut = path.join(buildRoot, `dashboard-${process.pid}-${Date.now()}`);
     await viteBuild({
@@ -174,7 +266,7 @@ async function main() {
       build: {
         outDir: dashboardOut,
         emptyOutDir: true,
-        target: 'chrome102',
+        target: 'chrome109',
         sourcemap: false,
         copyPublicDir: false,
         rollupOptions: {
@@ -185,6 +277,13 @@ async function main() {
     });
     await requireFile(path.join(dashboardOut, 'index.html'), 'dashboard.html');
     await rename(path.join(dashboardOut, 'index.html'), path.join(dashboardOut, 'dashboard.html'));
+    for (const file of await listFiles(dashboardOut)) {
+      if (!file.endsWith('.js')) continue;
+      const text = await readFile(path.join(dashboardOut, file), 'utf8');
+      if (/pdfjs-dist|mammoth\/mammoth|document-parser\.worker\.js|offscreen-parser\.html/.test(text)) {
+        throw new Error(`Dashboard bundle must not contain parser internals: ${file}`);
+      }
+    }
     for (const entry of await readdir(dashboardOut)) {
       await cp(path.join(dashboardOut, entry), path.join(tempOut, entry), { recursive: true });
     }
@@ -221,6 +320,7 @@ async function main() {
 
     console.log(`\nFormFlow extension built${testHooks ? ' (TEST HOOKS)' : ''} → ${out}`);
     console.log(`Manifest ${verification.manifest.version}; ${verification.files.length} files; ${(verification.totalBytes / 1024).toFixed(1)} KB`);
+    console.log('Bundle isolation verified: service worker has no parser runtime; offscreen document has no vault/DB/crypto authority.');
     console.log('Manifest references verified:');
     for (const reference of verification.referenced) console.log(`  ✓ ${reference}`);
     console.log('\nLoad extension/dist as an unpacked extension in chrome://extensions.\n');

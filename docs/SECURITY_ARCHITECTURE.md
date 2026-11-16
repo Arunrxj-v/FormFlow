@@ -1,6 +1,6 @@
 # FormFlow Security Architecture
 
-Status: Phase 4.1 local document ingestion. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
+Status: Phase 4.1.1 isolated offscreen-document parsing. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
 
 ## 1. Threat model
 
@@ -39,8 +39,11 @@ Untrusted web page
 Trusted extension origin  chrome-extension://<id>
   ├── popup      ── validated operation protocol ──► service worker
   ├── dashboard  ── validated operation protocol ──► service worker
-  └── service worker ── sole DEK owner + privileged vault operations
-        │
+  ├── service worker ── sole DEK owner + privileged vault operations
+  │      │ narrow parser port
+  │      └──► offscreen parser document (no vault/DB/crypto imports)
+  │              └──► request-scoped parser Web Worker (bytes only)
+  │
 Local browser storage
   ├── IndexedDB formflow-local (ciphertext + structural metadata)
   └── chrome.storage.session (non-secret lock/state marker only)
@@ -55,6 +58,8 @@ Separate origin
 | Extension dashboard | No direct vault access | No | Typed operation client; receives only the minimum response data |
 | Popup | No direct DB | No | Typed operation client through the service worker |
 | Content script | No | No | Receives only approved fill values and page scan data |
+| Offscreen parser | No | No | Extension-origin hidden document; narrow parser port only; IndexedDB runtime-blocked; no vault/DB/crypto imports |
+| Parser worker | No | No | One worker per parse; receives base64-decoded bytes and no key/AAD/session |
 | Localhost page | Separate dev DB | Dev-only | Development alias; excluded from the extension build |
 
 The dashboard cannot retrieve the DEK, export key material, or send arbitrary encryption/decryption/AAD parameters. It calls explicit operations. The popup and content script receive no key material. `chrome.storage.session` contains only a non-secret `{state, generation, updatedAt}` marker.
@@ -65,7 +70,7 @@ A DEK persisted in `chrome.storage.session` would be readable by extension pages
 
 ### Extension-origin hardening
 
-- MVP CSP: `script-src 'self'; object-src 'none'`.
+- CSP: `script-src 'self'; object-src 'none'; worker-src 'self'`.
 - Dashboard/popup HTML adds `base-uri 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob:`.
 - No `unsafe-eval`, remote scripts, inline scripts, dynamic code evaluation, or remote executable JavaScript.
 - The content-script page-world ping/pong bridge was removed; the host page has no extension bridge.
@@ -224,7 +229,7 @@ Search is performed after decryption in the trusted extension context. There is 
 
 JavaScript cannot guarantee that copies of a key or decrypted value have been erased from all engine memory.
 
-## 6.1 Local document ingestion (Phase 4.1)
+## 6.1 Local document ingestion (Phase 4.1.1)
 
 ### Trust boundary
 
@@ -235,51 +240,84 @@ Dashboard file picker
               ├── validates format signature, size, MIME hint, and vault state
               ├── computes SHA-256 and rejects duplicates
               ├── encrypts original bytes with the documentFile AAD
-              ├── parser module (bytes only; no DEK/KEK/session/DB/network)
-              ├── normalizes text and page boundaries
+              ├── sends only non-secret parse fields + base64 bytes over a
+              │   dedicated port to the hidden offscreen parser document
+              │       └── request-scoped parser Web Worker
+              ├── validates every parser result again
               ├── encrypts text/pageTexts/extraction details with documentText AAD
               └── one strict IndexedDB transaction for document + file + text
 ```
 
-The parser module receives only an `ArrayBuffer`, the format, a filename for diagnostics, an optional abort signal, and a page-progress callback. It has no vault handle, cryptographic key, AAD, session token, or storage access. It does not make network requests.
+The offscreen document is created with Chrome's Offscreen API using the narrow **`WORKERS`** reason. It runs a hidden extension page (`offscreen-parser.html`) with no user-facing UI or navigation controls. The page creates one parser Web Worker per request. The worker receives only the selected document bytes (base64 decoded by the offscreen page), format, filename, parser version, and a request ID. It has no vault session, DEK, KEK, AAD, database handle, repository import, generic RPC bridge, or network access.
 
-MV3 service workers do not expose the `Worker` constructor, so the parser is a dedicated module running in the service-worker context. Parsing is therefore off the dashboard main thread, but it shares the service-worker event loop. An extension-API heartbeat runs during ingestion to reduce MV3 idle termination during long parses. A service-worker termination still aborts the import; because persistence is one transaction, no partial record is committed.
+The background remains the exclusive authority for duplicate detection, encryption/decryption, AAD construction, vault IndexedDB access, atomic persistence, and lock/unlock. Parser output is treated as untrusted and validated by both the offscreen document and the background before persistence.
 
-### Format validation
+### Offscreen lifecycle
 
-- PDF: `%PDF-` signature in the header (small leading whitespace tolerated), PDF.js parse, page limit, password/corruption classification.
-- DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, and structural XML parsing. A renamed ZIP or non-DOCX container is rejected.
-- TXT: strict UTF-8 decode, BOM detection, CRLF/CR/LF normalization, NUL/control-character rejection, and empty-content rejection.
+- A single module-level creation promise prevents conflicting document creation.
+- The background waits for the offscreen page to connect over the exact `formflow-offscreen-parser` port and validates `sender.id` plus the exact `chrome-extension://<id>/offscreen-parser.html` URL.
+- If an existing document is present without a live port, the background closes it and recreates it. This covers service-worker restarts and stale documents.
+- The offscreen document becomes idle and closes after 15 seconds with no active parses. The background recreates it on demand.
+- A background port disconnect cancels all active workers and closes the offscreen document. A service-worker restart or extension reload therefore cannot leave an orphan parser.
+- Every parse has its own worker. User cancellation terminates only that worker; a second active parse is unaffected.
+- The offscreen document enforces a maximum of **2 concurrent parses**. Additional requests receive `PARSER_BUSY`.
+- A hard parser timeout is enforced by the ingestion coordinator (60 seconds) and the background parser client. Cancellation sends `CANCEL_PARSE`; the offscreen terminates the request-scoped worker.
+
+### Parser message protocol
+
+Only these operations exist:
+
+| Operation | Direction | Purpose |
+|---|---|---|
+| `PARSE_DOCUMENT` | background → offscreen → worker | Strict request with `protocol`, `requestId`, `parserVersion`, `format`, `fileName`, `sizeBytes`, and base64 bytes |
+| `CANCEL_PARSE` | background → offscreen → worker | Request-scoped cancellation |
+| `PARSE_PROGRESS` | worker → offscreen → background | Bounded page/progress update |
+| `PARSE_RESULT` | worker → offscreen → background | Structured text/page/warning/metadata result |
+| `PARSE_ERROR` | worker → offscreen → background | Coded, bounded error |
+
+Every message uses a unique request ID and strict exact-key validation. Unknown operations, extra fields, invalid request IDs, unsupported formats/parser versions, size mismatches, malformed progress, oversized results, inconsistent page boundaries, excess warnings, and unexpected metadata are rejected. The protocol is not a generic RPC bridge. The offscreen document cannot call `LIST_DOCUMENTS` or any other vault operation: the background runtime router explicitly rejects the offscreen document URL as an untrusted privileged sender. Its only accepted channel is the dedicated parser port.
+
+### Resource limits
+
+- 20 MB per original document.
+- 1,000 PDF pages.
+- 10,000,000 extracted characters; the offscreen result cap allows the duplicated `text` + `pageTexts` representation with a fixed headroom.
+- 24 MB per DOCX XML part and 96 MB total uncompressed DOCX content.
+- 100 extraction warnings per document.
+- Maximum 2 concurrent parser workers.
+- 60-second ingestion timeout; request-scoped cancellation; 15-second offscreen idle shutdown.
+
+### Format validation and extraction behavior
+
+- PDF: `%PDF-` signature, PDF.js parse, page limit, password/corruption classification, per-page text, page count, best-effort metadata, image-operator detection, and warnings. Image-only pages are marked OCR-required; **OCR is not implemented**.
+- DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, and structural WordprocessingML parsing without HTML rendering. Tables are tab-separated; headings and line breaks are preserved. DOCX is stored as one logical page with a warning.
+- TXT: strict UTF-8 decode, BOM detection, CRLF/CR/LF normalization, NUL/control rejection, and empty-content rejection.
 - Browser MIME and extension are cross-checked but are not trusted as the format authority.
-
-### Extraction behavior
-
-- PDF: per-page text, page count, page numbers, best-effort metadata, image-operator detection on pages with little/no text, and warnings. Empty, image-only, mixed text/image, password-protected, corrupted, and oversized PDFs are classified. Image-only pages are marked OCR-required; **OCR is not implemented**.
-- DOCX: paragraphs, headings, tables (tab-separated cells), line breaks, and document order. Mammoth validates the container and provides a raw-text fallback; the structural pass preserves headings/tables without using HTML rendering. DOCX page count is not reliable and is stored as one logical page with a warning.
-- TXT: UTF-8 text with preserved paragraphs and line breaks.
 
 ### Encrypted persistence and atomicity
 
 - The document row (`documents`), original bytes (`documentFiles`), and extracted text (`documentText`) are encrypted before commit.
 - `StoredDocumentText.textEnc` uses AAD `documentText` / `text`; `pageTextsEnc` uses `pageTexts`; the optional `extractionEnc` uses `extraction`.
 - The `extractionEnc` payload contains warnings, pages requiring OCR, and PDF/DOCX metadata. It is never stored in plaintext record metadata or logs.
-- The three records are written in a single IndexedDB transaction with `durability: 'strict'`. Duplicate checksum validation happens before the record is created and again inside the transaction. A quota error, parser failure, lock, cancellation, or worker termination rolls back the whole transaction. The UI is not told that an import succeeded until after that transaction completes.
+- The three records are written in a single IndexedDB transaction with `durability: 'strict'`. Duplicate checksum validation happens before the record is created and again inside the transaction. A quota error, parser failure, lock, cancellation, offscreen failure, or worker termination rolls back the whole transaction. The UI is not told that an import succeeded until after that transaction completes.
 - SHA-256 duplicate detection returns the existing document and never silently replaces it. The UI displays the existing document name.
-- Extraction retry reads the encrypted original, re-runs the parser, and replaces the text/extraction details in one transaction without creating a second document.
-- Progress is sent over an extension-origin-only `formflow-document-progress` port. It contains stage, percentage, file index/count, and page number only — no filename, extracted text, key, AAD, or metadata.
+- Extraction retry reads the encrypted original, re-runs the isolated parser, and replaces the text/extraction details in one transaction without creating a second document.
+- Dashboard progress travels over a separate extension-origin-only port and contains stage, percentage, file index/count, and page number only — no filename, extracted text, key, AAD, or metadata.
 
-### Limits
+### Build-time isolation proof
 
-- 20 MB per original document.
-- 1,000 PDF pages.
-- 10,000,000 extracted characters.
-- 24 MB per DOCX XML part and 96 MB total uncompressed DOCX content.
-- 100 extraction warnings per document.
-- 60-second ingestion timeout enforced by the coordinator. The parser receives an abort signal; the import is rejected and no record is committed.
+The extension build uses esbuild metafiles and fails if:
 
-### Schema and backup compatibility
+- `background.js` contains PDF.js, Mammoth, or parser modules.
+- `offscreen-parser.js` contains parser runtime or any `core/vault`, `core/database`, `core/encryption`, `core/storage`, `core/application`, or vault-client input.
+- `document-parser.worker.js` contains any vault, database, encryption, storage, or application input.
+- The offscreen HTML contains inline scripts, remote scripts, or inline event handlers.
+- The manifest does not declare `offscreen`, Chrome < 109, or a CSP missing `worker-src 'self'`.
+- The dashboard bundle contains parser internals.
 
-The schema change is additive: optional `DocumentRecord.extractionVersion`, `extractedAt`, `ocrRequired`, and optional `StoredDocumentText.extractionEnc`. No database version bump is required. Existing documents without extraction data remain readable. Backup v3 exports/imports the extraction payload with the same AAD; older v1/v2/v3 archives without `extraction` still import. The integrity checker decrypts `extractionEnc` when present and warns about legacy documents marked extracted without a text row.
+### Chrome compatibility
+
+The Offscreen API requires Chrome 109 and the `"offscreen"` permission. The manifest now requires Chrome 109 or newer. The tested browser is Google Chrome for Testing 156.0.8078.4. The offscreen document uses the `WORKERS` reason because it must spawn request-scoped parser workers.
 
 ## 7. Vault migrations
 
@@ -451,8 +489,10 @@ The checker reports issues and never deletes or rewrites corrupted records. The 
 - A real Chromium process kill during backup restore, followed by restart, journal inspection, and successful retry.
 - A real Chromium SIGKILL during v1→v2 migration after a committed `documents` journal batch, followed by restart, resume, integrity verification, record-count comparison, duplicate detection, ciphertext inspection, and document-blob access.
 - Real Chromium Phase 4.1 ingestion: a Chromium-generated multi-page PDF, DOCX headings/tables, BOM/CRLF TXT, image-only OCR-required PDF, corrupted PDF, and password-protected PDF; encrypted-at-rest text and v2 AAD verified; duplicate, retry, cancellation, progress, and dashboard states verified.
-- Real Chromium interruption during an 18 MB ingestion: extension disabled, worker terminated, re-enabled, unlocked, and no partial document/file/text triple found; a later import succeeded atomically.
+- Real Chromium interruption during a 1,000-page offscreen ingestion: extension disabled, offscreen/worker terminated, re-enabled, unlocked, and no partial document/file/text triple found; a later import succeeded atomically.
 - Atomic ingestion rollback for parser failure, cancellation, vault lock, and quota failure; backup v3 round-trip preserves encrypted extraction details.
+- Phase 4.1.1 real Chromium offscreen suite: PDF/DOCX/TXT parsed through the offscreen document; offscreen context presence, IndexedDB blocking, exact request/result field allowlists, denial of arbitrary background vault operations, malformed request/response rejection, oversized result rejection, parser timeout, offscreen failure recovery, concurrency, one-of-two cancellation, vault lock draining, duplicate detection, and encrypted persistence.
+- Build-time bundle isolation checks prove the service worker contains no parser runtime and the offscreen document/worker contain no vault, database, encryption, storage, or application modules.
 - An in-place extension disable/re-enable lifecycle using a test-only management helper: worker restart, no persisted DEK, dashboard/popup locked UI, unlock persistence, and interruption of a 20 MB document mutation without a partial document/file pair.
 - Runtime HTTP and HTTPS page isolation: content script absent, no extension APIs/session storage/vault IndexedDB/page-world bridge.
 - Runtime Google Forms-origin injection and background scan through the real content script.
@@ -464,7 +504,8 @@ The migration fixture is generated by test-only files (`extension/src/background
 - Migration crash boundaries are also covered by deterministic fault injection, which complements the real migration SIGKILL test.
 - Storage quota is simulated by throwing `QuotaExceededError` from IndexedDB `put`; it is not a physical disk-full test.
 - The 200 MB boundary uses synthetic `Blob` size/text shims and a small valid archive; it does not allocate a 200 MB fixture.
-- The ingestion timeout is unit-tested with a short bounded parser stub; a real 60-second parser stall is not exercised in Chromium.
+- The real Chromium timeout test uses a test-only bounded timeout and parse-delay hook; the production 60-second timeout is not stalled for a full minute.
+- Malformed offscreen request/response and oversized-result tests use a test-only injection hook in the offscreen test build; production offscreen code does not expose those hooks.
 - The extension reload test uses `chrome.management.setEnabled(false/true)` with a test-only helper extension, not `chrome.runtime.reload()`, because the Playwright `--load-extension` harness blocks extension navigation after `runtime.reload()`. It preserves extension ID/storage and restarts the worker, exercising the same DEK-loss and lock behavior.
 - The Google Forms runtime page is served at the real `https://docs.google.com/forms/...` origin through Playwright route interception, not fetched from Google's production servers.
 
@@ -492,10 +533,11 @@ The migration fixture is generated by test-only files (`extension/src/background
 10. **OCR is not implemented.** Scanned/image-only PDFs are stored and marked `ocrRequired`; their image text is not extracted, and no external OCR service is called.
 11. **DOCX page boundaries are approximate.** DOCX is stored as one logical page because the format does not expose reliable page count/layout without a renderer.
 12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, and complex table styling are normalized to text; the original file remains available for fidelity.
-13. **Parsers share the service-worker context.** MV3 service workers do not expose the `Worker` constructor, so PDF.js/Mammoth run in the background service-worker context while holding no key argument, DB handle, or session secret. A memory-safety exploit in a parser would be inside the privileged extension process. Moving parsing to an offscreen document/worker would add isolation but would raise the Chrome minimum version and add another privileged surface; it is not implemented in Phase 4.1.
-10. **Transitional v1 fallback.** Readers accept legacy v1 envelopes while a vault is being upgraded. The migration verifies that no v1 field remains before setting the v2 marker, after which integrity checks flag any legacy envelope.
-11. **Auto-lock precision.** The dashboard timer handles the interactive interval; the background alarm is a backstop with Chrome alarm granularity.
-12. **AAD schema source.** The schema version in the AAD comes from the active vault record. If that metadata is corrupted, records fail closed rather than decrypting under a different context.
-13. **Dashboard operation client availability.** The localhost development dashboard uses a separate direct client and web session storage. That client is not packaged in the extension build, but development data is less isolated than production.
-14. **CSP limitations.** The extension manifest supports `script-src` and `object-src` hardening; the HTML meta policy adds `base-uri`, image/font/media restrictions. Chrome does not provide a fully general per-extension `connect-src` policy through the MV3 extension-page CSP, so network restriction relies on application code and the absence of remote scripts.
-15. **No third-party audit.** The implementation has targeted tests, not a professional security certification.
+13. **Offscreen documents share the extension origin.** The offscreen parser has no vault/DB/crypto imports, no privileged runtime sender acceptance, a narrow port protocol, and a non-configurable runtime `indexedDB` guard. It is not a separate browser origin; a compromised offscreen page could still attempt other extension-origin APIs. It cannot decrypt vault records without the DEK, which never leaves the service worker.
+14. **Parser workers share the offscreen page origin.** Each worker is request-scoped and receives only bytes/non-secret fields, but it is not a separate sandboxed origin. The worker blocks `indexedDB` and child-worker creation at runtime. The offscreen document is nonetheless outside the service-worker key boundary.
+15. **Transitional v1 fallback.** Readers accept legacy v1 envelopes while a vault is being upgraded. The migration verifies that no v1 field remains before setting the v2 marker, after which integrity checks flag any legacy envelope.
+16. **Auto-lock precision.** The dashboard timer handles the interactive interval; the background alarm is a backstop with Chrome alarm granularity.
+17. **AAD schema source.** The schema version in the AAD comes from the active vault record. If that metadata is corrupted, records fail closed rather than decrypting under a different context.
+18. **Dashboard operation client availability.** The localhost development dashboard uses a separate direct client and web session storage. That client is not packaged in the extension build, but development data is less isolated than production.
+19. **CSP limitations.** The extension manifest hardens `script-src`, `object-src`, and `worker-src`; the HTML meta policy adds `base-uri`, image/font/media restrictions. Chrome does not provide a fully general per-extension `connect-src` policy through the MV3 extension-page CSP, so network restriction also relies on the absence of network code in the offscreen bundles.
+20. **No third-party audit.** The implementation has targeted tests, not a professional security certification.

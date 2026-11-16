@@ -1,3 +1,5 @@
+import { isOffscreenParserDocumentUrl } from '../../../shared/offscreen-parser-protocol';
+
 export const PROTOCOL_VERSION = 1;
 
 export interface ExtensionRequest<T = Record<string, unknown>> {
@@ -18,7 +20,12 @@ export interface ExtensionResponse<T = unknown> {
 
 export function isTrustedExtensionSender(sender: chrome.runtime.MessageSender): boolean {
   if (sender.id !== chrome.runtime.id) return false;
-  return Boolean(sender.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`));
+  const origin = `chrome-extension://${chrome.runtime.id}/`;
+  if (!sender.url?.startsWith(origin)) return false;
+  // The offscreen parser has its own narrow port protocol. It must never be
+  // able to invoke arbitrary vault operations through the runtime router,
+  // including with a query string or fragment appended to its URL.
+  return !isOffscreenParserDocumentUrl(sender.url, chrome.runtime.id);
 }
 
 export function parseRequest(value: unknown): ExtensionRequest {

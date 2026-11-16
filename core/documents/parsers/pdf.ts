@@ -7,7 +7,7 @@ import {
   sanitizeMetadata,
   sanitizeMetadataValue,
   sanitizeWarnings,
-} from './text-utils';
+} from '../text-utils';
 import {
   throwIfAborted,
   warning,
@@ -42,12 +42,50 @@ function pdfError(error: unknown, signal?: AbortSignal): FormFlowError {
   return new FormFlowError('EXTRACTION_FAILED', detail || 'PDF text extraction failed.', { cause: error });
 }
 
+async function installPdfLoopbackWorker(pdfjs: PdfModule): Promise<void> {
+  if (typeof self !== 'undefined' && typeof Worker === 'function') {
+    const workerScope = self as unknown as {
+      postMessage: (...args: unknown[]) => void;
+      onmessage: ((event: MessageEvent<unknown>) => void) | null;
+    };
+    const previousPostMessage = workerScope.postMessage;
+    const previousOnMessage = workerScope.onmessage;
+    try {
+      // pdf.worker.mjs auto-initializes on a dedicated worker and would post
+      // PDF.js protocol messages to our parent. Suppress that handshake during
+      // import; our worker's own protocol handler is restored immediately.
+      try {
+        Object.defineProperty(workerScope, 'postMessage', {
+          configurable: true,
+          writable: true,
+          value: () => undefined,
+        });
+      } catch {
+        workerScope.postMessage = () => undefined;
+      }
+      const worker = await import('pdfjs-dist/build/pdf.worker.mjs');
+      (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+    } finally {
+      try {
+        Object.defineProperty(workerScope, 'postMessage', {
+          configurable: true,
+          writable: true,
+          value: previousPostMessage,
+        });
+      } catch {
+        workerScope.postMessage = previousPostMessage;
+      }
+      workerScope.onmessage = previousOnMessage;
+    }
+    return;
+  }
+  const worker = await import('pdfjs-dist/build/pdf.worker.mjs');
+  (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+}
+
 async function loadPdf(bytes: ArrayBuffer): Promise<{ pdfjs: PdfModule; document: PdfDocument }> {
   const pdfjs = await import('pdfjs-dist');
-  const worker = await import('pdfjs-dist/build/pdf.worker.mjs');
-  // Running PDF.js with its loopback worker inside our own parser worker avoids
-  // a second worker/CSP dependency while keeping the dashboard thread free.
-  (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+  await installPdfLoopbackWorker(pdfjs);
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(bytes),
     useWorkerFetch: false,

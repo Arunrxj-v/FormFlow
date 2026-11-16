@@ -17,6 +17,7 @@ const { vaultSession } = await import('../../core/vault/vault-session');
 const { decryptJsonWithKey } = await import('../../core/encryption/crypto-service');
 const { checkVaultIntegrity } = await import('../../core/vault/vault-integrity');
 const { FormFlowError } = await import('../../shared/errors');
+const { parseDocument } = await import('../../core/documents/parsers');
 
 const PASSPHRASE = 'phase-4-ingestion-passphrase';
 const encoder = new TextEncoder();
@@ -43,6 +44,20 @@ function docxFile(bytes: Uint8Array, name = 'fixture.docx') {
   });
 }
 
+function importDocument(
+  input: Parameters<typeof documentService.importDocument>[0],
+  deps: Parameters<typeof documentService.importDocument>[1] = {},
+) {
+  return documentService.importDocument(input, { parse: parseDocument, ...deps });
+}
+
+function retryExtraction(
+  id: string,
+  deps: Parameters<typeof documentService.retryExtraction>[1] = {},
+) {
+  return documentService.retryExtraction(id, { parse: parseDocument, ...deps });
+}
+
 async function rows() {
   const db = await getDb();
   const [documents, files, text] = await Promise.all([
@@ -53,11 +68,23 @@ async function rows() {
   return { documents, files, text };
 }
 
+test('background ingestion requires an injected isolated parser', async () => {
+  await seedVault();
+  await assert.rejects(
+    () => documentService.importDocument({ file: txtFile('no parser configured') }),
+    (error: unknown) => error instanceof FormFlowError && error.code === 'PARSER_UNAVAILABLE',
+  );
+  const state = await rows();
+  assert.equal(state.documents.length, 0);
+  assert.equal(state.files.length, 0);
+  assert.equal(state.text.length, 0);
+});
+
 test('TXT ingestion persists encrypted original, text, and extraction details', async () => {
   const vaultId = await seedVault();
   const secret = 'Private address: 42 Example Street\nBengaluru 560001';
   const file = txtFile(secret, 'private-address.txt', { bom: true, lineEndings: 'crlf' });
-  const result = await documentService.importDocument({ file });
+  const result = await importDocument({ file });
   assert.equal(result.duplicate, false);
   assert.equal(result.document.pageCount, 1);
   assert.equal(result.document.extractedTextStatus, 'extracted');
@@ -94,7 +121,7 @@ test('TXT ingestion persists encrypted original, text, and extraction details', 
 test('extracted text is bound to the document, format, and field by AAD', async () => {
   await seedVault();
   const file = txtFile('AAD binding check content');
-  const result = await documentService.importDocument({ file });
+  const result = await importDocument({ file });
   const state = await rows();
   const document = state.documents[0]!;
   const text = state.text[0]!;
@@ -114,7 +141,7 @@ test('extracted text is bound to the document, format, and field by AAD', async 
 
 test('PDF ingestion preserves pages and PDF metadata in encrypted extraction details', async () => {
   await seedVault();
-  const result = await documentService.importDocument({
+  const result = await importDocument({
     file: pdfFile(pdfFixtures.multiPage(), 'academic.pdf'),
     category: 'Education',
   });
@@ -139,7 +166,7 @@ test('DOCX ingestion preserves headings and table cells in encrypted text', asyn
     tables: [[['Employer', 'Northstar Labs'], ['Role', 'Engineer']]],
     core: { title: 'Employment DOCX', author: 'Fixture Author' },
   });
-  const result = await documentService.importDocument({ file: docxFile(bytes, 'employment.docx') });
+  const result = await importDocument({ file: docxFile(bytes, 'employment.docx') });
   const stored = await documentRepository.getText(result.document.id);
   assert.ok(stored);
   assert.match(stored.text, /Employment Record/);
@@ -152,7 +179,7 @@ test('DOCX ingestion preserves headings and table cells in encrypted text', asyn
 
 test('scanned PDFs are stored as OCR-required without external OCR', async () => {
   await seedVault();
-  const result = await documentService.importDocument({
+  const result = await importDocument({
     file: pdfFile(pdfFixtures.imageOnly(), 'scanned.pdf'),
     category: 'Identity',
   });
@@ -169,8 +196,8 @@ test('scanned PDFs are stored as OCR-required without external OCR', async () =>
 
 test('identical files are detected by SHA-256 and never create a second record', async () => {
   await seedVault();
-  const first = await documentService.importDocument({ file: txtFile('duplicate content', 'first.txt') });
-  const second = await documentService.importDocument({ file: txtFile('duplicate content', 'second.txt') });
+  const first = await importDocument({ file: txtFile('duplicate content', 'first.txt') });
+  const second = await importDocument({ file: txtFile('duplicate content', 'second.txt') });
   assert.equal(first.duplicate, false);
   assert.equal(second.duplicate, true);
   assert.equal(second.document.id, first.document.id);
@@ -198,7 +225,7 @@ test('empty, corrupted, unsupported, and password-protected files leave no recor
   ];
   for (const item of cases) {
     await assert.rejects(
-      () => documentService.importDocument({ file: item.file }),
+      () => importDocument({ file: item.file }),
       (error: unknown) => error instanceof FormFlowError && error.code === item.code,
     );
     const state = await rows();
@@ -211,7 +238,7 @@ test('empty, corrupted, unsupported, and password-protected files leave no recor
 test('extraction timeout aborts bounded processing and leaves no partial record', async () => {
   await seedVault();
   await assert.rejects(
-    () => documentService.importDocument(
+    () => importDocument(
       { file: txtFile('timeout content') },
       {
         timeoutMs: 20,
@@ -230,7 +257,7 @@ test('cancellation during extraction leaves no partial document or text', async 
   await seedVault();
   const controller = new AbortController();
   await assert.rejects(
-    () => documentService.importDocument(
+    () => importDocument(
       { file: txtFile('cancel this import'), signal: controller.signal },
       {
         signal: controller.signal,
@@ -253,7 +280,7 @@ test('cancellation during extraction leaves no partial document or text', async 
 test('vault locking during extraction prevents the atomic commit', async () => {
   await seedVault();
   await assert.rejects(
-    () => documentService.importDocument(
+    () => importDocument(
       { file: txtFile('lock during parse') },
       {
         parse: async () => {
@@ -290,7 +317,7 @@ test('a storage failure during commit rolls back document, file, and text togeth
   } as typeof IDBObjectStore.prototype.put;
   try {
     await assert.rejects(
-      () => documentService.importDocument({ file: txtFile('quota rollback content') }),
+      () => importDocument({ file: txtFile('quota rollback content') }),
       /storage|quota/i,
     );
   } finally {
@@ -304,8 +331,8 @@ test('a storage failure during commit rolls back document, file, and text togeth
 
 test('retry extraction replaces encrypted text without creating another document', async () => {
   await seedVault();
-  const imported = await documentService.importDocument({ file: txtFile('original extracted text') });
-  const retried = await documentService.retryExtraction(
+  const imported = await importDocument({ file: txtFile('original extracted text') });
+  const retried = await retryExtraction(
     imported.document.id,
     {
       parse: async () => ({
@@ -334,7 +361,7 @@ test('retry extraction replaces encrypted text without creating another document
 
 test('tampered extraction details are reported by the vault integrity checker', async () => {
   await seedVault();
-  const imported = await documentService.importDocument({ file: txtFile('integrity protected text') });
+  const imported = await importDocument({ file: txtFile('integrity protected text') });
   const db = await getDb();
   const text = await db.get('documentText', imported.document.id);
   assert.ok(text?.extractionEnc);
@@ -351,7 +378,7 @@ test('tampered extraction details are reported by the vault integrity checker', 
 test('no plaintext extracted text is stored in the IndexedDB record shape', async () => {
   await seedVault();
   const text = 'No plaintext should survive at rest 938475';
-  await documentService.importDocument({ file: txtFile(text) });
+  await importDocument({ file: txtFile(text) });
   const db = await getDb();
   const rawRows = await db.getAll('documentText');
   assert.ok(!JSON.stringify(rawRows).includes(text));

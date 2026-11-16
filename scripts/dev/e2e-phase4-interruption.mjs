@@ -12,6 +12,39 @@ let context;
 let failures = 0;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+
+function escapePdf(value) {
+  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function buildLargePdf(pages = 1_000) {
+  const objects = [];
+  const add = (body) => { objects.push(body); return objects.length; };
+  const catalogId = add('');
+  const pagesId = add('');
+  const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const pageIds = [];
+  for (let index = 0; index < pages; index += 1) {
+    const content = `BT /F1 18 Tf 72 720 Td (Interrupted offscreen page ${index + 1}) Tj ET`;
+    const contentId = add(`<< /Length ${Buffer.byteLength(content, 'binary')} >>\nstream\n${content}\nendstream`);
+    const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+    pageIds.push(pageId);
+  }
+  objects[catalogId - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`;
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, 'binary'));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, 'binary');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let index = 1; index <= objects.length; index += 1) pdf += `${String(offsets[index]).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, 'binary');
+}
+
 const check = (label, condition, detail = '') => {
   console.log(`${condition ? 'PASS' : 'FAIL'} ${label}${detail ? ` :: ${String(detail).slice(0, 260)}` : ''}`);
   if (!condition) failures += 1;
@@ -96,14 +129,22 @@ try {
   // limit for a document record, so validation rejects it before persistence.
   // Use 18 MB of content to stay under the 20 MB document limit while keeping
   // decoding/parsing long enough to interrupt the service worker.
-  const largeText = Buffer.alloc(18 * 1024 * 1024, 0x61);
   const pending = message(dashboard, 'phase4_interrupt_import', 'IMPORT_DOCUMENT', {
-    name: 'interrupted-large.txt',
-    mimeType: 'text/plain',
-    dataBase64: largeText.toString('base64'),
+    name: 'interrupted-large.pdf',
+    mimeType: 'application/pdf',
+    dataBase64: buildLargePdf().toString('base64'),
     importId: 'phase4_interrupt_import',
   }).catch(() => null);
-  await wait(15);
+  let offscreenSeen = false;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const contexts = await dashboard.evaluate(() => chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] })).catch(() => []);
+    if (contexts.some((context) => context.documentUrl?.endsWith('/offscreen-parser.html'))) {
+      offscreenSeen = true;
+      break;
+    }
+    await wait(10);
+  }
+  check('ingestion reached the offscreen parser before extension termination', offscreenSeen);
   await helperPage.evaluate((id) => chrome.management.setEnabled(id, false), target);
   await wait(1200);
   const workerGone = !context.serviceWorkers().some((worker) => worker.url().startsWith(`chrome-extension://${formflowId}/`));

@@ -3,6 +3,13 @@ import { encryptionV2Migration, type EncryptionMigrationFaultPoint } from '../..
 import { documentRepository } from '../../core/database/repositories';
 import { vaultRepository as vaultRecordRepository } from '../../core/database/vault-repository';
 import { sha256Hex } from '../../core/encryption/crypto-service';
+import {
+  closeOffscreenForTests,
+  getOffscreenDiagnosticsForTests,
+  getPendingOffscreenJobsForTests,
+  injectOffscreenMessageForTests,
+  injectOffscreenWorkerResponseForTests,
+} from './offscreen/parser-client';
 
 declare global {
   var __formflowTestHooks:
@@ -10,6 +17,13 @@ declare global {
       downgradeVaultToV1: typeof downgradeVaultToV1;
       runMigration: () => Promise<unknown>;
       seedDocuments: (count: number, sizeBytes: number) => Promise<number>;
+      offscreen: {
+        injectMessage: (message: unknown) => boolean;
+        injectWorkerResponse: (requestId: string, message: unknown) => boolean;
+        jobIds: () => string[];
+        diagnostics: () => unknown;
+        close: () => Promise<void>;
+      };
     }
     | undefined;
   var __formflowMigrationRelease: (() => void) | undefined;
@@ -18,6 +32,13 @@ declare global {
 export function installTestHooks(): void {
   globalThis.__formflowTestHooks = {
     downgradeVaultToV1,
+    offscreen: {
+      injectMessage: (message) => injectOffscreenMessageForTests(message),
+      injectWorkerResponse: (requestId, message) => injectOffscreenWorkerResponseForTests(requestId, message),
+      jobIds: () => getPendingOffscreenJobsForTests(),
+      diagnostics: () => getOffscreenDiagnosticsForTests(),
+      close: () => closeOffscreenForTests(),
+    },
     seedDocuments: async (count, sizeBytes) => {
       const vault = await vaultRecordRepository.getActive();
       if (!vault) throw new Error('No active vault for test fixture.');

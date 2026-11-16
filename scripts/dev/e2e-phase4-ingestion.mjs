@@ -166,6 +166,9 @@ try {
   check('real Chromium PDF imported', pdfImport?.ok === true, pdfImport?.error);
   check('real PDF page boundaries extracted', pdfImport?.data?.document?.pageCount >= 2, pdfImport?.data?.document?.pageCount);
   check('real PDF status is stored with extracted text', pdfImport?.data?.document?.status === 'stored' && pdfImport?.data?.document?.extractedTextStatus === 'extracted', JSON.stringify(pdfImport?.data?.document));
+  const offscreenContexts = await page.evaluate(() => chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }));
+  check('production ingestion created the isolated offscreen parser document', offscreenContexts.some((context) => context.documentUrl?.endsWith('/offscreen-parser.html')), JSON.stringify(offscreenContexts));
+
   const pdfText = await message(page, 'p4_pdf_text', 'GET_DOCUMENT_TEXT', { documentId: pdfImport.data.document.id, maxChars: 1_000_000 });
   check('real PDF text is readable after encrypted storage', pdfText?.ok === true && pdfText.data.text.includes(marker), pdfText?.error);
   check('real PDF page text count matches page count', pdfText?.ok === true && pdfText.data.pageTexts.length === pdfImport.data.document.pageCount, JSON.stringify({ pages: pdfText?.data?.pageTexts?.length, count: pdfImport?.data?.document?.pageCount }));
