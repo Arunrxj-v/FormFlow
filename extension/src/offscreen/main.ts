@@ -1,8 +1,15 @@
 import { validateDocumentContentSignature } from '../../../core/documents/validation';
 import { hasMeaningfulText, normalizeExtractedText, sanitizeWarnings } from '../../../core/documents/text-utils';
+import { buildOcrPageStructure } from '../../../core/documents/ocr-structure';
+import { replaceStructurePages } from '../../../core/documents/structure';
 import { OCR_MAX_PAGES, OCR_PAGE_TIMEOUT_MS } from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
-import type { ExtractionWarning, OcrPageDetails } from '@shared/types';
+import type {
+  DocumentStructureBlock,
+  DocumentStructurePage,
+  ExtractionWarning,
+  OcrPageDetails,
+} from '@shared/types';
 import { createOcrWorker, ocrDetails, type OcrWorkerHandle } from './ocr';
 import { openPdfRenderer, renderPdfPage, type PdfRenderSession } from './pdf-renderer';
 import { publishOffscreenDiagnostics } from './diagnostics';
@@ -263,6 +270,8 @@ async function runOcrForJob(job: ParseJob): Promise<void> {
   const failedPages = new Set<number>(allPages);
   const ocrPages: OcrPageDetails[] = [];
   const ocrWarnings: ExtractionWarning[] = [];
+  const structureReplacements: Array<{ page: DocumentStructurePage; blocks: DocumentStructureBlock[] }> = [];
+  const structureWarnings: ExtractionWarning[] = [];
   let completedPages = 0;
   let ocrWorker: OcrWorkerHandle | null = null;
   let pdfSession: PdfRenderSession | null = null;
@@ -355,20 +364,42 @@ async function runOcrForJob(job: ParseJob): Promise<void> {
           failedPages.delete(pageNumber);
           const nativeText = pageTexts[pageNumber - 1] ?? '';
           const ocrText = recognized.text.trim();
+          let pageTextReplaced = false;
           if (!nativeText.trim()) {
             pageTexts[pageNumber - 1] = ocrText;
+            pageTextReplaced = true;
           } else if (ocrText.length > nativeText.trim().length * 1.2) {
             pageTexts[pageNumber - 1] = ocrText;
+            pageTextReplaced = true;
           } else if (ocrText) {
             ocrWarnings.push({
               code: 'OCR_NATIVE_OVERLAP',
-              message: 'OCR text overlapped existing native PDF text; the native text was kept to avoid duplication.',
+              message: 'OCR text overlapped existing native PDF text; the native text and native structure were kept to avoid duplication.',
               page: pageNumber,
             });
           }
           ocrPages.push(recognized.details);
           const warnings = recognized.details.warnings ?? [];
           ocrWarnings.push(...warnings);
+          if (pageTextReplaced && native.structure && rendered) {
+            const built = buildOcrPageStructure({
+              pageNumber,
+              details: recognized.details,
+              text: recognized.text,
+              renderWidth: rendered.width,
+              renderHeight: rendered.height,
+              pageWidthPoints: rendered.pageWidth,
+              pageHeightPoints: rendered.pageHeight,
+            });
+            structureReplacements.push({ page: built.page, blocks: built.blocks });
+            for (const item of built.warnings) {
+              const duplicate = (list: ExtractionWarning[]) => list.some((entry) => (
+                entry.code === item.code && entry.message === item.message && entry.page === item.page
+              ));
+              if (!duplicate(structureWarnings)) structureWarnings.push(item);
+              if (!duplicate(ocrWarnings)) ocrWarnings.push(item);
+            }
+          }
         }
       } catch (error) {
         if (abort.signal.aborted || pageAbort.signal.aborted) throw new FormFlowError('CANCELLED', 'OCR was cancelled.');
@@ -444,6 +475,17 @@ async function runOcrForJob(job: ParseJob): Promise<void> {
     });
   }
   const text = normalizeExtractedText(pageTexts.join('\n\n'));
+  let structure = native.structure;
+  if (structure && structureReplacements.length > 0) {
+    try {
+      structure = replaceStructurePages(structure, structureReplacements, structureWarnings);
+    } catch {
+      ocrWarnings.push({
+        code: 'OCR_STRUCTURE_INVALID',
+        message: 'OCR layout could not be merged into the structured representation; native structure was preserved.',
+      });
+    }
+  }
   const nativeTextPages = native.pageTexts.filter(hasMeaningfulText).length;
   const method = completedPages > 0
     ? (nativeTextPages > 0 ? 'mixed' : 'ocr')
@@ -467,6 +509,7 @@ async function runOcrForJob(job: ParseJob): Promise<void> {
     pagesNeedingOcr,
     warnings: sanitizeWarnings([...retainedNativeWarnings, ...ocrWarnings]),
     ocr,
+    ...(structure ? { structure } : {}),
   };
   let validated: OffscreenParserResult;
   try {

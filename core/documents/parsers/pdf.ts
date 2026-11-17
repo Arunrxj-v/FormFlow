@@ -1,13 +1,20 @@
 import { EXTRACTION_VERSION, MAX_PDF_PAGES } from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
-import type { DocumentExtractionMetadata, ExtractionWarning } from '@shared/types';
+import type { DocumentExtractionMetadata, DocumentStructureBlock, DocumentStructurePage, ExtractionWarning } from '@shared/types';
+import { finalizeStructure } from '../structure';
 import {
   hasMeaningfulText,
   normalizeExtractedText,
   sanitizeMetadata,
   sanitizeMetadataValue,
-  sanitizeWarnings,
 } from '../text-utils';
+import {
+  buildPdfPageStructure,
+  groupPdfItemsIntoLines,
+  repeatedMarginTexts,
+  type PdfLayoutItem,
+  type PdfLayoutLine,
+} from './pdf-layout';
 import {
   throwIfAborted,
   warning,
@@ -116,6 +123,58 @@ function textItemsToText(items: Array<{ str?: string; hasEOL?: boolean }>): stri
   return normalizeExtractedText(output);
 }
 
+function layoutItemsFromContent(
+  pdfjs: PdfModule,
+  content: { items: unknown[]; styles?: Record<string, { fontFamily?: string }> },
+  viewport: { width: number; height: number; transform: number[] },
+): PdfLayoutItem[] {
+  const output: PdfLayoutItem[] = [];
+  for (const raw of content.items) {
+    if (!raw || typeof raw !== 'object' || !('str' in raw)) continue;
+    const item = raw as {
+      str?: unknown;
+      transform?: number[];
+      width?: number;
+      height?: number;
+      fontName?: string;
+      dir?: string;
+      hasEOL?: boolean;
+    };
+    if (typeof item.str !== 'string') continue;
+    const transform = Array.isArray(item.transform) && item.transform.length === 6
+      ? item.transform
+      : [1, 0, 0, 1, 0, 0];
+    let tx: number[];
+    try {
+      tx = pdfjs.Util.transform(viewport.transform, transform);
+    } catch {
+      tx = transform;
+    }
+    const fontName = item.fontName ?? '';
+    const family = (item.fontName ? content.styles?.[item.fontName]?.fontFamily : undefined) ?? fontName;
+    const rawHeight = Math.abs(item.height ?? 0);
+    const transformedHeight = Math.hypot(tx[2] ?? 0, tx[3] ?? 0);
+    const fontSize = rawHeight || transformedHeight || 10;
+    const x0 = tx[4] ?? 0;
+    const baseline = tx[5] ?? 0;
+    const width = Math.max(1, Math.abs(item.width ?? 0));
+    output.push({
+      text: item.str,
+      x0,
+      y0: baseline - fontSize,
+      x1: x0 + width,
+      y1: baseline,
+      fontSize,
+      fontName: family,
+      bold: /bold|black|heavy|semibold|demi|medium/i.test(`${family} ${fontName}`),
+      italic: /italic|oblique/i.test(`${family} ${fontName}`),
+      direction: item.dir ?? 'ltr',
+      hasEOL: Boolean(item.hasEOL),
+    });
+  }
+  return output;
+}
+
 function metadataFromPdf(info: Record<string, unknown>, xmp: Record<string, unknown>): DocumentExtractionMetadata {
   const read = (key: string): string | undefined => sanitizeMetadataValue(info[key], 1000);
   const xmpValue = (key: string): string | undefined => sanitizeMetadataValue(xmp[key], 1000);
@@ -151,6 +210,13 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
     const warnings: ExtractionWarning[] = [];
     const pageTexts: string[] = [];
     const pagesNeedingOcr: number[] = [];
+    const pageLayouts: Array<{
+      pageNumber: number;
+      pageWidth: number;
+      pageHeight: number;
+      lines: PdfLayoutLine[];
+      pageType: 'text' | 'image_only' | 'blank' | 'unknown';
+    }> = [];
     let textPages = 0;
     let imageOnlyPages = 0;
     let blankPages = 0;
@@ -159,18 +225,30 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       throwIfAborted(input.signal);
       let pageText = '';
+      let pageType: 'text' | 'image_only' | 'blank' | 'unknown' = 'unknown';
+      let pageWidth = 0;
+      let pageHeight = 0;
+      let pageLines: PdfLayoutLine[] = [];
       try {
         const page = await document.getPage(pageNumber);
         try {
+          const viewport = page.getViewport({ scale: 1 });
+          pageWidth = viewport.width;
+          pageHeight = viewport.height;
           const content = await page.getTextContent();
           const items = content.items
             .map((item) => ('str' in item ? { str: item.str, hasEOL: item.hasEOL } : null))
             .filter((item): item is { str: string; hasEOL: boolean } => item !== null);
           pageText = textItemsToText(items);
+          pageLines = groupPdfItemsIntoLines(
+            layoutItemsFromContent(loaded.pdfjs, content, viewport),
+            viewport.width,
+          );
 
           const meaningful = hasMeaningfulText(pageText);
           if (meaningful) {
             textPages += 1;
+            pageType = 'text';
           } else {
             // Operator-list inspection is intentionally limited to pages without
             // meaningful text so large text PDFs do not pay a render-analysis cost.
@@ -188,6 +266,7 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
 
             if (hasImages) {
               imageOnlyPages += 1;
+              pageType = 'image_only';
               pagesNeedingOcr.push(pageNumber);
               warnings.push(warning(
                 'PAGE_REQUIRES_OCR',
@@ -196,6 +275,7 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
               ));
             } else {
               blankPages += 1;
+              pageType = 'blank';
               warnings.push(warning(
                 'PAGE_WITHOUT_TEXT',
                 'This page contains no extractable text.',
@@ -223,6 +303,7 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
         ));
       }
       pageTexts.push(pageText);
+      pageLayouts.push({ pageNumber, pageWidth, pageHeight, lines: pageLines, pageType });
       input.onPage?.(pageNumber, document.numPages);
       throwIfAborted(input.signal);
     }
@@ -270,6 +351,31 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
       warnings.push(warning('METADATA_UNAVAILABLE', 'PDF metadata could not be read.'));
     }
 
+    const repeatedMargins = repeatedMarginTexts(pageLayouts);
+    const structurePages: DocumentStructurePage[] = [];
+    const structureBlocks: DocumentStructureBlock[] = [];
+    for (const layout of pageLayouts) {
+      const built = buildPdfPageStructure({
+        pageNumber: layout.pageNumber,
+        pageWidth: layout.pageWidth,
+        pageHeight: layout.pageHeight,
+        lines: layout.lines,
+        pageType: layout.pageType,
+        repeatedMarginText: repeatedMargins,
+      });
+      structurePages.push(built.page);
+      structureBlocks.push(...built.blocks);
+      warnings.push(...built.warnings);
+    }
+    const structure = finalizeStructure({
+      extractionVersion: EXTRACTION_VERSION,
+      documentFormat: 'pdf',
+      pageSemantics: 'physical',
+      pages: structurePages,
+      blocks: structureBlocks,
+      warnings,
+    });
+
     return {
       text,
       pageTexts,
@@ -278,8 +384,9 @@ export async function parsePdf(input: DocumentParseInput): Promise<DocumentParse
       version: EXTRACTION_VERSION,
       ocrRequired,
       pagesNeedingOcr,
-      warnings: sanitizeWarnings(warnings),
+      warnings: structure.warnings,
       metadata,
+      structure,
     };
   } catch (error) {
     if (error instanceof FormFlowError) throw error;

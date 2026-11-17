@@ -11,6 +11,7 @@ import {
   MAX_BACKUP_VALUES,
   MAX_DOCUMENT_BYTES,
   MAX_EXTRACTED_TEXT_CHARS,
+  MAX_STRUCTURE_SERIALIZED_CHARS,
   PBKDF2_ITERATIONS,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
@@ -36,6 +37,7 @@ import type {
 } from '@shared/types';
 import { getDb } from '../database/database';
 import { vaultRepository as vaultRecordRepository } from '../database/vault-repository';
+import { DocumentStructureValidationError, validateDocumentStructure } from '@shared/document-structure';
 import {
   BACKUP_AAD,
   base64ToArrayBuffer,
@@ -713,11 +715,26 @@ function validateOcrDetails(value: unknown, pagesNeedingOcr: number[], pageCount
 
 function validateExtractionDetails(value: unknown, pageCount: number): DocumentExtractionDetails {
   const details = object(value, 'Backup extraction details');
-  allowedKeys(details, ['version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr'], 'Backup extraction details');
+  allowedKeys(details, ['version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr', 'structure'], 'Backup extraction details');
   const warnings = validateExtractionWarnings(details.warnings, 'Backup extraction warnings');
   const pagesNeedingOcr = array(details.pagesNeedingOcr, 'Backup extraction OCR pages', pageCount)
     .map((page, index) => integer(page, `Backup extraction OCR page ${index}`, 1, pageCount));
   const ocr = details.ocr === undefined ? undefined : validateOcrDetails(details.ocr, pagesNeedingOcr, pageCount);
+  let structure: DocumentExtractionDetails['structure'];
+  if (details.structure !== undefined) {
+    try {
+      structure = validateDocumentStructure(details.structure);
+    } catch (error) {
+      if (error instanceof DocumentStructureValidationError) invalid(error.message);
+      throw error;
+    }
+    if (structure.metadata.pageCount > pageCount) {
+      invalid('Backup document structure has more pages than its text record.');
+    }
+    if (JSON.stringify(structure).length > MAX_STRUCTURE_SERIALIZED_CHARS) {
+      invalid('Backup document structure exceeds the supported size.');
+    }
+  }
   const metadata = object(details.metadata, 'Backup extraction metadata');
   allowedKeys(
     metadata,
@@ -745,6 +762,7 @@ function validateExtractionDetails(value: unknown, pageCount: number): DocumentE
     pagesNeedingOcr,
     warnings,
     ...(ocr ? { ocr } : {}),
+    ...(structure ? { structure } : {}),
     metadata: {
       ...(optionalText('title', 500) !== undefined ? { title: optionalText('title', 500) } : {}),
       ...(optionalText('author', 300) !== undefined ? { author: optionalText('author', 300) } : {}),

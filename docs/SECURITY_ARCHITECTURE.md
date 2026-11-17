@@ -1,6 +1,6 @@
 # FormFlow Security Architecture
 
-Status: Phase 4.1.2 local OCR for scanned PDFs. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
+Status: Phase 4.1.3 structured document extraction. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
 
 ## 1. Threat model
 
@@ -229,7 +229,7 @@ Search is performed after decryption in the trusted extension context. There is 
 
 JavaScript cannot guarantee that copies of a key or decrypted value have been erased from all engine memory.
 
-## 6.1 Local document ingestion (Phase 4.1.1) and local OCR (Phase 4.1.2)
+## 6.1 Local document ingestion (Phase 4.1.1), local OCR (Phase 4.1.2), and structured extraction (Phase 4.1.3)
 
 ### Trust boundary
 
@@ -323,6 +323,18 @@ Every message uses a unique request ID and strict exact-key validation. Unknown 
 - **Incremental processing:** only OCR-required pages are rendered, one canvas at a time. Canvas dimensions are capped, page resources are released after processing, and the request-scoped Tesseract worker and PDF renderer are destroyed in `finally` paths. Cancellation aborts the current page and terminates the request-scoped workers.
 - **Failure isolation:** language availability, engine initialization, rendering, per-page timeout, worker crash, offscreen shutdown, cancellation, or malformed OCR output never overwrites the encrypted original. A failed OCR attempt is stored as `failed`/`partial` with `pagesNeedingOcr` for retry; the original and any native text remain available.
 - **Encrypted persistence:** recognized text and OCR details use the existing `documentText` AAD fields `text`, `pageTexts`, and `extraction`. The AAD includes document ID, so cross-document ciphertext swapping fails.
+
+### Structured extraction (Phase 4.1.3)
+
+- The parsers emit a versioned `DocumentStructure` v1 in addition to the unchanged plain text and per-page text. It is optional on older records and is validated by `validateDocumentStructure` in both the offscreen protocol and the host backup importer.
+- Structure is stored only inside the encrypted `extractionEnc` payload, under the existing `documentText` / `extraction` AAD. No structure text, table content, OCR text, or source references are placed in plaintext document metadata.
+- Page semantics are explicit: PDF pages are `physical`; DOCX and TXT pages are `logical`. PDF page bounds use `pdf_page_points`; OCR blocks use `ocr_render_pixels` with rendered dimensions and, when available, a page-level scale conversion to PDF points. DOCX blocks omit coordinates rather than fabricating them.
+- PDF layout is deterministic: line grouping uses baseline proximity; column detection uses vertical whitespace and bounded line width; paragraphs use spacing/font continuity; headings require size/weight and short-line evidence; lists use explicit markers; tables require aligned multi-row/cell geometry. Uncertain tables/reading order retain ordered text and emit warnings.
+- DOCX structure comes from WordprocessingML (styles, outline levels, numbering, tables, spans/merges, hyperlinks, header/footer parts), not rendered HTML. Mammoth raw text remains a compatibility fallback.
+- OCR structure reuses existing Tesseract lines/words/confidence and geometry; it does not rerun OCR. OCR heading/list inference is warned as heuristic.
+- Provenance is per block (`pdf_native`, `docx_xml`, `ocr`, `mixed`, `inferred_from_layout`, `txt_native`), with `layoutInferred` where layout heuristics selected a type. OCR confidence is never treated as semantic confidence.
+- Structural limits: 20,000 blocks, 2,000 sections, 1,000 tables, 5,000 rows, 20,000 cells, depth 32, 2,000,000 text characters, 20,000 bounding boxes, 100 warnings. Truncation emits `STRUCTURE_TRUNCATED`; plain text remains complete.
+- Structure is included in the strict offscreen result allowlist, revalidated in the background, preserved by backup export/import, and covered by AAD/tamper and round-trip tests. No LLM, semantic entity extraction, ONNX, model download, or form filling is used.
 
 ### Build-time isolation proof
 
@@ -514,6 +526,7 @@ The checker reports issues and never deletes or rewrites corrupted records. The 
 - Atomic ingestion rollback for parser failure, cancellation, vault lock, and quota failure; backup v3 round-trip preserves encrypted extraction details.
 - Phase 4.1.1 real Chromium offscreen suite: PDF/DOCX/TXT parsed through the offscreen document; offscreen context presence, IndexedDB blocking, exact request/result field allowlists, denial of arbitrary background vault operations, malformed request/response rejection, oversized result rejection, parser timeout, offscreen failure recovery, concurrency, one-of-two cancellation, vault lock draining, duplicate detection, and encrypted persistence.
 - Phase 4.1.2 real Chromium OCR suite with genuine Tesseract recognition (no mocked output): image-only, multi-page scanned, mixed text/image, rotated, and low-quality pages; OCR language initialization and missing-language failure; confidence/line/word/bbox persistence; progress; cancellation; timeout; offscreen crash and recovery; extension restart during OCR; partial success; duplicate OCR prevention; encrypted OCR at rest; AAD tamper rejection; no key material in offscreen diagnostics; and zero external network requests with external DNS disabled.
+- Phase 4.1.3 structured extraction tests: PDF headings/paragraphs/lists/tables, single/two/three-column reading order, repeated headers/footers, page breaks, rotated pages, uncertain layout warnings, DOCX heading hierarchy/nested lists/tables/merged cells/hyperlinks/headers/footers, OCR geometry grouping, strict structure validation, encrypted backup round-trip, and real Chromium structure tab/provenance checks.
 - Build-time bundle isolation checks prove the service worker contains no parser runtime or OCR dependencies, and the offscreen document/worker contain no vault, database, encryption, storage, or application modules.
 - An in-place extension disable/re-enable lifecycle using a test-only management helper: worker restart, no persisted DEK, dashboard/popup locked UI, unlock persistence, and interruption of a 20 MB document mutation without a partial document/file pair.
 - Runtime HTTP and HTTPS page isolation: content script absent, no extension APIs/session storage/vault IndexedDB/page-world bridge.
@@ -554,7 +567,7 @@ The migration fixture is generated by test-only files (`extension/src/background
 9. **Service-worker termination locks the vault.** This is the deliberate consequence of keeping the DEK out of extension-readable storage. Frequent MV3 worker termination can interrupt a long idle session; an active dashboard connection reduces this in practice.
 10. **OCR accuracy and language coverage.** Only English is bundled. OCR output depends on scan quality, resolution, skew, rotation, handwriting, tables, and column layout; Tesseract confidence is a heuristic, not a guarantee. Bounding boxes refer to the rendered OCR image. No external OCR service is used. Additional languages require new bundled, SHA-256-pinned assets before they can be claimed.
 11. **DOCX page boundaries are approximate.** DOCX is stored as one logical page because the format does not expose reliable page count/layout without a renderer.
-12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, and complex table styling are normalized to text; the original file remains available for fidelity.
+12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, complex tables, and styling are normalized to text and a deterministic structure; the original file remains available for fidelity. Structured layout is heuristic and can be uncertain or truncated at the explicit limits.
 13. **Offscreen documents share the extension origin.** The offscreen parser has no vault/DB/crypto imports, no privileged runtime sender acceptance, a narrow port protocol, and a non-configurable runtime `indexedDB` guard. It is not a separate browser origin; a compromised offscreen page could still attempt other extension-origin APIs. It cannot decrypt vault records without the DEK, which never leaves the service worker.
 14. **Parser workers share the offscreen page origin.** Each worker is request-scoped and receives only bytes/non-secret fields, but it is not a separate sandboxed origin. The worker blocks `indexedDB` and child-worker creation at runtime. The offscreen document is nonetheless outside the service-worker key boundary.
 15. **Transitional v1 fallback.** Readers accept legacy v1 envelopes while a vault is being upgraded. The migration verifies that no v1 field remains before setting the v2 marker, after which integrity checks flag any legacy envelope.

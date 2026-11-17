@@ -3,11 +3,14 @@ import {
   MAX_EXTRACTED_TEXT_CHARS,
   MAX_EXTRACTION_WARNINGS,
   MAX_PDF_PAGES,
+  MAX_STRUCTURE_SERIALIZED_CHARS,
   OCR_LANGUAGE_ASSETS,
 } from './constants';
+import { DocumentStructureValidationError, validateDocumentStructure } from './document-structure';
 import { FormFlowError } from './errors';
 import type {
   DocumentExtractionMetadata,
+  DocumentStructure,
   ExtractionWarning,
   OcrExtractionDetails,
   OcrLine,
@@ -111,6 +114,7 @@ export interface OffscreenParserResult {
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
   ocr?: OcrExtractionDetails;
+  structure?: DocumentStructure;
 }
 
 export type OffscreenInboundMessage = OffscreenParseRequest | OffscreenCancelRequest;
@@ -143,7 +147,7 @@ const CANCEL_KEYS = ['type', 'protocol', 'requestId'];
 const PROGRESS_KEYS = ['type', 'protocol', 'requestId', 'progress', 'page', 'totalPages', 'stage'];
 const RESULT_MESSAGE_KEYS = ['type', 'protocol', 'requestId', 'result'];
 const ERROR_MESSAGE_KEYS = ['type', 'protocol', 'requestId', 'error'];
-const RESULT_KEYS = ['text', 'pageTexts', 'pageCount', 'method', 'version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr'];
+const RESULT_KEYS = ['text', 'pageTexts', 'pageCount', 'method', 'version', 'ocrRequired', 'pagesNeedingOcr', 'warnings', 'metadata', 'ocr', 'structure'];
 const WARNING_KEYS = ['code', 'message', 'page'];
 const METADATA_KEYS = ['title', 'author', 'subject', 'keywords', 'creator', 'producer', 'creationDate', 'modDate', 'headings', 'tableCount', 'rowCount', 'encoding', 'bom', 'lineEndings'];
 const HEADING_KEYS = ['level', 'text'];
@@ -531,6 +535,18 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
   const warnings = value.warnings.map((warning) => parseWarning(warning, pageCount));
   const metadata = parseMetadata(value.metadata);
   const ocr = value.ocr === undefined ? undefined : parseOcrDetails(value.ocr, pageCount);
+  let structure: DocumentStructure | undefined;
+  if (value.structure !== undefined) {
+    try {
+      structure = validateDocumentStructure(value.structure);
+    } catch (error) {
+      if (error instanceof DocumentStructureValidationError) throw protocolError(error.message);
+      throw error;
+    }
+    if (JSON.stringify(structure).length > MAX_STRUCTURE_SERIALIZED_CHARS) {
+      throw protocolError('Document structure exceeds the response size limit.');
+    }
+  }
   if (ocr) {
     if (ocr.status === 'completed' && (ocrRequired || pagesNeedingOcr.length > 0)) {
       throw protocolError('Completed OCR cannot still require OCR pages.');
@@ -551,6 +567,7 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
     metadata,
   };
   if (ocr) result.ocr = ocr;
+  if (structure) result.structure = structure;
   if (ocr && JSON.stringify(ocr).length > OFFSCREEN_PARSER_MAX_OCR_DETAIL_CHARS) {
     throw protocolError('OCR details exceed the response size limit.');
   }

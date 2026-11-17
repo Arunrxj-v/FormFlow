@@ -7,6 +7,8 @@ export interface RenderedPdfPage {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
+  pageWidth: number;
+  pageHeight: number;
   cleanup: () => void;
 }
 
@@ -104,6 +106,8 @@ export async function renderPdfPage(
       canvas,
       width: canvas.width,
       height: canvas.height,
+      pageWidth: base.width,
+      pageHeight: base.height,
       cleanup: () => {
         try {
           page?.cleanup();

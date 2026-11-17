@@ -1,5 +1,7 @@
 import { EXTRACTION_VERSION } from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
+import type { DocumentStructureBlock } from '@shared/types';
+import { finalizeStructure, structureBlock, structureBlockId, structurePage } from '../structure';
 import { normalizeExtractedText } from '../text-utils';
 import {
   throwIfAborted,
@@ -36,6 +38,37 @@ export async function parseTxt(input: DocumentParseInput): Promise<DocumentParse
     throw new FormFlowError('EMPTY_DOCUMENT', 'This TXT file contains no text.');
   }
 
+  const blocks: DocumentStructureBlock[] = [];
+  const paragraphs = text.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const blockIds: string[] = [];
+  for (let index = 0; index < paragraphs.length; index += 1) {
+    const blockId = structureBlockId(1, index + 1);
+    blockIds.push(blockId);
+    blocks.push(structureBlock({
+      blockId,
+      type: 'paragraph',
+      text: paragraphs[index]!,
+      pageNumber: 1,
+      order: index,
+      provenance: 'txt_native',
+      sourceRef: `txt:paragraph${index + 1}`,
+    }));
+  }
+  const structure = finalizeStructure({
+    extractionVersion: EXTRACTION_VERSION,
+    documentFormat: 'txt',
+    pageSemantics: 'logical',
+    pages: [structurePage({
+      pageNumber: 1,
+      pageKind: 'logical',
+      pageType: text ? 'text' : 'blank',
+      extractionMethod: 'txt_native',
+      blockIds,
+    })],
+    blocks,
+    warnings: [],
+  });
+
   return {
     text,
     pageTexts: [text],
@@ -50,5 +83,6 @@ export async function parseTxt(input: DocumentParseInput): Promise<DocumentParse
       bom: hadBom,
       lineEndings,
     },
+    structure,
   };
 }

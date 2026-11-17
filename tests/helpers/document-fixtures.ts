@@ -4,9 +4,19 @@ function escapePdfText(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
+interface PdfTextItem {
+  text: string;
+  x: number;
+  y: number;
+  fontSize?: number;
+  bold?: boolean;
+}
+
 interface PdfPage {
   text?: string;
   image?: boolean;
+  textItems?: PdfTextItem[];
+  rotate?: 0 | 90 | 180 | 270;
 }
 
 export interface PdfFixtureOptions {
@@ -24,6 +34,7 @@ export function buildPdf(options: PdfFixtureOptions): Uint8Array {
   const catalogId = add('');
   const pagesId = add('');
   const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const boldFontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
   const pageIds: number[] = [];
   for (const page of options.pages) {
     let xObject = '';
@@ -33,14 +44,22 @@ export function buildPdf(options: PdfFixtureOptions): Uint8Array {
       );
       xObject = `/XObject << /Im1 ${imageId} 0 R >>`;
     }
-    const content = page.text
+    const items = page.textItems?.length
+      ? page.textItems.map((item) => {
+        const font = item.bold ? 'F2' : 'F1';
+        const size = item.fontSize ?? 12;
+        return `BT /${font} ${size} Tf ${item.x} ${item.y} Td (${escapePdfText(item.text)}) Tj ET`;
+      }).join('\n')
+      : '';
+    const content = items || (page.text
       ? `BT /F1 18 Tf 72 720 Td (${escapePdfText(page.text)}) Tj ET`
       : page.image
         ? 'q 100 0 0 100 72 600 cm /Im1 Do Q'
-        : '';
+        : '');
     const contentId = add(`<< /Length ${Buffer.byteLength(content, 'binary')} >>\nstream\n${content}\nendstream`);
+    const rotation = page.rotate ? ` /Rotate ${page.rotate}` : '';
     const pageId = add(
-      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> ${xObject} >> /Contents ${contentId} 0 R >>`,
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792]${rotation} /Resources << /Font << /F1 ${fontId} 0 R /F2 ${boldFontId} 0 R >> ${xObject} >> /Contents ${contentId} 0 R >>`,
     );
     pageIds.push(pageId);
   }
@@ -87,12 +106,26 @@ export interface DocxFixtureParagraph {
   text: string;
   heading?: number;
   lineBreak?: boolean;
+  list?: { level?: number; numId?: number; ordered?: boolean };
+  hyperlink?: boolean;
+  alignment?: 'left' | 'center' | 'right' | 'justify';
 }
+
+export interface DocxFixtureCell {
+  text: string;
+  colSpan?: number;
+  vMerge?: 'restart' | 'continue';
+}
+
+export type DocxFixtureTable = Array<Array<string | DocxFixtureCell>>;
 
 export interface DocxFixtureOptions {
   paragraphs?: DocxFixtureParagraph[];
-  tables?: string[][][];
+  tables?: DocxFixtureTable[];
   includeStyles?: boolean;
+  includeNumbering?: boolean;
+  headers?: string[];
+  footers?: string[];
   core?: { title?: string; author?: string };
   empty?: boolean;
 }
@@ -107,16 +140,34 @@ function escapeXml(value: string): string {
 }
 
 function paragraphXml(paragraph: DocxFixtureParagraph): string {
-  const style = paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading${paragraph.heading}"/></w:pPr>` : '';
+  const properties: string[] = [];
+  if (paragraph.heading) properties.push(`<w:pStyle w:val="Heading${paragraph.heading}"/>`);
+  if (paragraph.alignment) properties.push(`<w:jc w:val="${paragraph.alignment}"/>`);
+  if (paragraph.list) {
+    properties.push(
+      `<w:numPr><w:ilvl w:val="${paragraph.list.level ?? 0}"/><w:numId w:val="${paragraph.list.numId ?? 1}"/></w:numPr>`,
+    );
+  }
+  const style = properties.length ? `<w:pPr>${properties.join('')}</w:pPr>` : '';
   const runs = paragraph.text.split('\n').map((part, index) => (
     `${index > 0 || paragraph.lineBreak ? '<w:br/>' : ''}<w:t xml:space="preserve">${escapeXml(part)}</w:t>`
   )).join('');
-  return `<w:p>${style}<w:r>${runs}</w:r></w:p>`;
+  const runWrapper = paragraph.hyperlink
+    ? `<w:hyperlink r:id="rIdLink"><w:r>${runs}</w:r></w:hyperlink>`
+    : `<w:r>${runs}</w:r>`;
+  return `<w:p>${style}${runWrapper}</w:p>`;
 }
 
-function tableXml(rows: string[][]): string {
+function tableXml(rows: DocxFixtureTable): string {
   const trs = rows.map((row) => (
-    `<w:tr>${row.map((cell) => `<w:tc><w:p><w:r><w:t xml:space="preserve">${escapeXml(cell)}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`
+    `<w:tr>${row.map((cell) => {
+      const value = typeof cell === 'string' ? { text: cell } : cell;
+      const properties: string[] = [];
+      if (value.colSpan && value.colSpan > 1) properties.push(`<w:gridSpan w:val="${value.colSpan}"/>`);
+      if (value.vMerge) properties.push(`<w:vMerge w:val="${value.vMerge}"/>`);
+      const cellProperties = properties.length ? `<w:tcPr>${properties.join('')}</w:tcPr>` : '';
+      return `<w:tc>${cellProperties}<w:p><w:r><w:t xml:space="preserve">${escapeXml(value.text)}</w:t></w:r></w:p></w:tc>`;
+    }).join('')}</w:tr>`
   )).join('');
   return `<w:tbl>${trs}</w:tbl>`;
 }
@@ -129,12 +180,20 @@ export function buildDocx(options: DocxFixtureOptions = {}): Uint8Array {
     bodyParts.push(paragraphXml({ text: 'Default fixture paragraph' }));
   }
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${bodyParts.join('')}<w:sectPr/></w:body></w:document>`;
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr/></w:body></w:document>`;
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
   <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
 </w:styles>`;
+  const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+    <w:lvl w:ilvl="1"><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>`;
   const coreXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">
   <dc:title>${escapeXml(options.core?.title ?? 'Fixture document')}</dc:title>
@@ -163,6 +222,17 @@ export function buildDocx(options: DocxFixtureOptions = {}): Uint8Array {
     'docProps/core.xml': strToU8(coreXml),
   };
   if (options.includeStyles !== false) files['word/styles.xml'] = strToU8(stylesXml);
+  if (options.includeNumbering !== false) files['word/numbering.xml'] = strToU8(numberingXml);
+  const headerParagraphs = (options.headers ?? []).map((text) => paragraphXml({ text })).join('');
+  if (headerParagraphs) {
+    files['word/header1.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${headerParagraphs}</w:hdr>`);
+  }
+  const footerParagraphs = (options.footers ?? []).map((text) => paragraphXml({ text })).join('');
+  if (footerParagraphs) {
+    files['word/footer1.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${footerParagraphs}</w:ftr>`);
+  }
   return zipSync(files);
 }
 

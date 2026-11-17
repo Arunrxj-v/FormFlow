@@ -152,6 +152,7 @@ function extractionDetails(result: DocumentParseResult): DocumentExtractionDetai
     warnings: result.warnings,
     metadata: result.metadata,
     ...(result.ocr ? { ocr: result.ocr } : {}),
+    ...(result.structure ? { structure: result.structure } : {}),
   };
 }
 

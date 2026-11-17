@@ -26,6 +26,7 @@ import {
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
+import { DocumentStructureView } from '@/components/documents/DocumentStructureView';
 import { useToast } from '@/context/ToastContext';
 import { documentService as localDocumentService } from '@/services/documentService';
 import type { DocumentTextResult, VaultDocument } from '@/services/types';
@@ -39,7 +40,7 @@ interface DocumentInspectorProps {
   onOpenRecord: () => void;
 }
 
-type TabType = 'preview' | 'facts' | 'history';
+type TabType = 'preview' | 'structure' | 'facts' | 'history';
 
 export function DocumentInspector({
   document,
@@ -64,7 +65,7 @@ export function DocumentInspector({
     setCurrentPage(1);
     setTextResult(null);
     setTextError(null);
-    if (document.extractedTextStatus !== 'extracted') {
+    if (document.extractedTextStatus !== 'extracted' && !document.ocrStatus) {
       setTextLoading(false);
       return () => { active = false; };
     }
@@ -234,6 +235,14 @@ export function DocumentInspector({
         <button
           type="button"
           className="ff-tab"
+          data-active={activeTab === 'structure'}
+          onClick={() => setActiveTab('structure')}
+        >
+          <FileText size={13} style={{ marginRight: 4, verticalAlign: -1 }} /> Structure
+        </button>
+        <button
+          type="button"
+          className="ff-tab"
           data-active={activeTab === 'facts'}
           onClick={() => setActiveTab('facts')}
         >
@@ -355,7 +364,22 @@ export function DocumentInspector({
         </div>
       )}
 
-      {/* TAB 2: Facts & Entities */}
+      {/* TAB 2: Structure */}
+      {activeTab === 'structure' && (
+        textLoading ? (
+          <div className="ff-row ff-gap-4" style={{ opacity: 0.75, fontSize: 11 }}>
+            <Loader2 size={12} className="ff-spin" /> Loading structured extraction…
+          </div>
+        ) : textResult?.structure ? (
+          <DocumentStructureView structure={textResult.structure} />
+        ) : (
+          <div className="ff-note">
+            No structured layout is available for this document. The plain-text preview and original file remain available.
+          </div>
+        )
+      )}
+
+      {/* TAB 3: Facts & Entities */}
       {activeTab === 'facts' && (
         <div className="ff-scroll" style={{ maxHeight: 320, paddingRight: 2 }}>
           {entities.length > 0 ? (
@@ -453,7 +477,7 @@ export function DocumentInspector({
         </div>
       )}
 
-      {/* TAB 3: History & Audit */}
+      {/* TAB 4: History & Audit */}
       {activeTab === 'history' && (
         <div className="ff-scroll" style={{ maxHeight: 320, paddingRight: 2 }}>
           {history.length > 0 ? (

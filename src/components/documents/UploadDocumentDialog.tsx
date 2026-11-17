@@ -340,7 +340,7 @@ export function UploadDocumentDialog({ open, onClose }: UploadDocumentDialogProp
       ) : null}
 
       <div className="ff-note ff-mt-12">
-        <strong>Local ingestion:</strong> Files never leave this browser. Text extraction and OCR run in the isolated offscreen parser using locally bundled assets. Recognized text is encrypted with the rest of the document before the import is reported complete.
+        <strong>Local ingestion:</strong> Files never leave this browser. Text extraction, deterministic layout structure, and OCR run in the isolated offscreen parser using locally bundled assets. Recognized text and structure are encrypted with the rest of the document before the import is reported complete.
       </div>
     </Modal>
   );

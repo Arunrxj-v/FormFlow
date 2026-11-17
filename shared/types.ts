@@ -421,6 +421,150 @@ export interface OcrExtractionDetails {
   pages: OcrPageDetails[];
 }
 
+export type DocumentStructureSchemaVersion = 1;
+export type DocumentStructureFormat = 'pdf' | 'docx' | 'txt';
+export type DocumentPageSemantics = 'physical' | 'logical';
+export type DocumentPageType = 'text' | 'image_only' | 'blank' | 'unknown';
+export type DocumentPageExtractionMethod = 'pdf_native' | 'docx_xml' | 'ocr' | 'mixed' | 'txt_native';
+export type DocumentBlockType =
+  | 'heading'
+  | 'paragraph'
+  | 'list'
+  | 'list_item'
+  | 'table'
+  | 'table_row'
+  | 'table_cell'
+  | 'header'
+  | 'footer'
+  | 'caption'
+  | 'unknown';
+export type DocumentExtractionProvenance =
+  | 'pdf_native'
+  | 'docx_xml'
+  | 'ocr'
+  | 'mixed'
+  | 'inferred_from_layout'
+  | 'txt_native';
+export type DocumentCoordinateSpace = 'pdf_page_points' | 'ocr_render_pixels';
+
+export interface DocumentStructureBoundingBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  coordinateSpace: DocumentCoordinateSpace;
+  pageWidth?: number;
+  pageHeight?: number;
+}
+
+export interface DocumentStructureTextStyle {
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  alignment?: 'left' | 'center' | 'right' | 'justified' | 'unknown';
+  direction?: string;
+  hyperlink?: boolean;
+  styleId?: string;
+  styleName?: string;
+}
+
+export interface DocumentStructureBlock {
+  blockId: string;
+  type: DocumentBlockType;
+  text: string;
+  pageId: string;
+  pageNumber: number;
+  order: number;
+  parentId?: string;
+  children?: string[];
+  boundingBox?: DocumentStructureBoundingBox;
+  confidence?: number;
+  provenance: DocumentExtractionProvenance;
+  layoutInferred?: boolean;
+  sourceRef?: string;
+  level?: number;
+  style?: DocumentStructureTextStyle;
+  listMarker?: string;
+  tableId?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  rowSpan?: number;
+  columnSpan?: number;
+  warnings?: ExtractionWarning[];
+}
+
+export interface DocumentStructurePageBounds {
+  width: number;
+  height: number;
+  coordinateSpace: DocumentCoordinateSpace;
+}
+
+export interface DocumentStructureCoordinateConversion {
+  from: 'ocr_render_pixels';
+  to: 'pdf_page_points';
+  scaleX: number;
+  scaleY: number;
+  width: number;
+  height: number;
+}
+
+export interface DocumentStructurePage {
+  pageId: string;
+  pageNumber: number;
+  pageKind: DocumentPageSemantics;
+  pageType: DocumentPageType;
+  extractionMethod: DocumentPageExtractionMethod;
+  blockIds: string[];
+  pageBounds?: DocumentStructurePageBounds;
+  conversion?: DocumentStructureCoordinateConversion;
+  warnings?: ExtractionWarning[];
+}
+
+export interface DocumentStructureSection {
+  sectionId: string;
+  headingBlockId?: string;
+  level: number;
+  title: string;
+  blockIds: string[];
+  pageStart: number;
+  pageEnd: number;
+  parentSectionId?: string;
+}
+
+export interface DocumentStructureTable {
+  tableId: string;
+  blockId: string;
+  pageId: string;
+  pageNumber: number;
+  rowBlockIds: string[];
+  columnCount: number;
+  rowCount: number;
+}
+
+export interface DocumentStructureMetadata {
+  pageCount: number;
+  blockCount: number;
+  sectionCount: number;
+  tableCount: number;
+  ocrPageCount: number;
+  truncated: boolean;
+}
+
+export interface DocumentStructure {
+  schemaVersion: DocumentStructureSchemaVersion;
+  extractionVersion: number;
+  documentFormat: DocumentStructureFormat;
+  pageSemantics: DocumentPageSemantics;
+  pages: DocumentStructurePage[];
+  blocks: DocumentStructureBlock[];
+  sections: DocumentStructureSection[];
+  tables: DocumentStructureTable[];
+  readingOrder: string[];
+  warnings: ExtractionWarning[];
+  metadata: DocumentStructureMetadata;
+}
+
 export interface DocumentExtractionDetails {
   version: number;
   ocrRequired: boolean;
@@ -428,6 +572,7 @@ export interface DocumentExtractionDetails {
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
   ocr?: OcrExtractionDetails;
+  structure?: DocumentStructure;
 }
 
 export type DocumentIngestionStage =
@@ -460,6 +605,7 @@ export interface DocumentTextResult {
   warnings: ExtractionWarning[];
   metadata: DocumentExtractionMetadata;
   ocr?: OcrExtractionDetails;
+  structure?: DocumentStructure;
   ocrRequired: boolean;
   pagesNeedingOcr?: number[];
   extractionVersion?: number;

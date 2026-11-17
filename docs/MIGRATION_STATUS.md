@@ -2,6 +2,100 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 4.1.3 — Structured document extraction (complete)
+
+Phase 4.1.3 upgrades local ingestion from flat text to a versioned, deterministic `DocumentStructure` while preserving all plain-text interfaces and the existing vault/offscreen security boundary.
+
+### Schema
+
+`DocumentStructure` v1 is stored inside the existing encrypted `extractionEnc` field with the `documentText` / `extraction` AAD. It is optional, so old records and v1/v2/v3 backups remain readable; new backups carry it.
+
+The schema contains:
+
+- `schemaVersion`, `extractionVersion`, `documentFormat`, `pageSemantics` (`physical` for PDF, `logical` for DOCX/TXT).
+- Pages with stable `pageId`, page number, page kind/type, extraction method, block IDs, optional page bounds, and optional OCR-to-PDF coordinate conversion.
+- Blocks with stable IDs, type (`heading`, `paragraph`, `list`, `list_item`, `table`, `table_row`, `table_cell`, `header`, `footer`, `caption`, `unknown`), text, page reference, order, parent/children, optional bounding box, optional OCR confidence, provenance, optional heading level/list marker/style/table indices, source reference, and warnings.
+- Sections derived from heading hierarchy.
+- Tables with row/cell block references and column/row counts.
+- Deterministic reading order.
+- Document and page warnings, including explicit layout-uncertainty warnings.
+- Metadata counts and a `truncated` flag. Document title/author/PDF properties remain in the existing extraction metadata envelope; the structure itself contains deterministic IDs and layout metadata.
+- Block IDs are deterministic (`p<page>_b<order>`, table/list child IDs derived from parent order), so identical input and parser versions produce the same structure.
+
+### PDF layout behavior
+
+- PDF text items are transformed into page-point coordinates with the PDF.js viewport, preserving page dimensions, text direction, font size, bold/italic hints, and original item order before grouping.
+- Line grouping uses baseline proximity; large horizontal gaps split columns/table cells without destroying line order.
+- Paragraphs use vertical spacing, font continuity, indentation, and column boundaries.
+- Headings require relative font size and/or bold evidence plus stable short/large-line conditions; large text is not automatically a heading.
+- Lists use explicit bullet/number markers and indentation levels.
+- Tables require at least two consecutive aligned rows with consistent cell starts and bounded cell widths; otherwise ordered text is preserved and `TABLE_RECONSTRUCTION_UNCERTAIN` is emitted.
+- Reading order detects one-to-three-column regions from vertical whitespace, preserves full-width headings/headers/footers, and emits `READING_ORDER_UNCERTAIN` when column bands cross or cannot be resolved confidently.
+- Repeated top/bottom margin text across pages is classified as header/footer.
+- OCR-only pages are replaced with OCR structure blocks after recognition; native text pages retain native structure. Mixed PDFs therefore keep per-page provenance.
+
+### DOCX structure behavior
+
+- WordprocessingML is the structural authority; Mammoth remains a compatibility fallback for raw text.
+- Heading styles/outline levels, paragraph boundaries, alignment, hyperlink text, numbered/bulleted lists, nested list levels, tables, rows, cells, horizontal spans, vertical merges, and header/footer parts are preserved.
+- DOCX remains one explicitly **logical** page. No physical pagination is claimed.
+- Table cell boundaries are retained in the structure; the existing tab-separated plain text remains a backward-compatible derivative.
+- Header/footer placement across sections is approximate and reported with `DOCX_HEADERS_FOOTERS_APPROXIMATE`.
+
+### OCR structure behavior
+
+- Existing Tesseract line/word boxes and confidence are reused; OCR is not rerun for structure.
+- OCR lines are grouped into paragraphs and likely headings using geometry only. Headings are heuristic and carry `OCR_HEADING_HEURISTIC`.
+- OCR bounding boxes retain `coordinateSpace: 'ocr_render_pixels'` and the rendered page dimensions. When a PDF page is available, the page records explicit `scaleX`/`scaleY` conversion metadata to PDF page points.
+- OCR confidence remains OCR confidence, not semantic confidence.
+- Native PDF text/structure is retained when OCR overlaps it; successful non-overlapping OCR pages get OCR blocks.
+
+### Limits and compatibility
+
+- Maximum 20,000 structured blocks, 2,000 sections, 1,000 tables, 5,000 table rows, 20,000 table cells, 32 hierarchy depth, 2,000,000 structure text characters, 20,000 bounding boxes, and 100 warnings.
+- Plain `text`, `pageTexts`, search, previews, duplicate detection, and the existing `extractionEnc` model remain unchanged.
+- Structure is encrypted at rest, validated by the strict offscreen protocol and backup importer, and preserved through export/import.
+- No ONNX, Qwen, LLM inference, AI model download, semantic entity extraction, Phase 4.2/4.3, or autofill was added.
+
+### Verification results
+
+| Command / suite | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 78 files; bundle isolation verified |
+| `npm run test:local` | 137/137 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm test` | 161/161 pass |
+| `scripts/dev/e2e-phase412-ocr.mjs` | 54/54 pass (test-hooks build) |
+| `scripts/dev/e2e-phase4-ingestion.mjs` | 32/32 pass |
+| `scripts/dev/e2e-phase4-offscreen.mjs` | 33/33 pass |
+| `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
+| `scripts/dev/e2e-phase4-interruption.mjs` | 11/11 pass |
+| `scripts/dev/e2e-migration-crash.mjs` | 23/23 pass |
+| `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
+| `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
+| `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
+
+Measured on Google Chrome for Testing 156.0.8078.4 on macOS:
+
+- Structured extraction of a synthetic 40-page PDF with 480 blocks: **20 ms** parser time in the local unit suite; heap delta approximately **1.18 MB**.
+- Phase 4.1.2 OCR production check remained **711 ms** at 94% confidence for a 1600×900 scanned page; the final structured OCR suite measured **984 ms** in its test build (run-to-run range approximately 0.8–1.0 s).
+- OCR heap peak remained approximately **15.6 MB** for one page; two-page OCR peaked at approximately **18.8 MB** with structure included.
+
+These are representative measurements, not universal benchmarks.
+
+### Known limitations
+
+- Layout inference is deterministic but heuristic; perfect reading order, table reconstruction, and column detection are not claimed.
+- PDF text extraction can only use the geometry and font metadata exposed by PDF.js. Scanned pages have no native font-size/weight evidence.
+- DOCX page boundaries remain logical; header/footer section placement is approximate.
+- OCR heading/list inference is geometric and is explicitly warned.
+- Bounding boxes for OCR are rendered-image pixels with explicit conversion metadata; they are not silently treated as PDF points.
+- Structures may be truncated at the explicit limits while plain text remains complete.
+- No semantic understanding, field extraction, or AI processing is performed in this phase.
+
 ## Phase 4.1.2 — Local OCR for scanned PDFs (complete)
 
 Phase 4.1.2 adds genuine local OCR for scanned and image-only PDF pages without moving document content outside the browser.
@@ -50,7 +144,7 @@ Each OCR page records its original PDF page number, language, confidence, lines,
 | `npm run test:local` | 125/125 pass |
 | `npm run test:extension` | 12/12 pass |
 | `npm run test:server` | 12/12 pass |
-| `scripts/dev/e2e-phase412-ocr.mjs` | 46/46 pass (test-hooks build) |
+| `scripts/dev/e2e-phase412-ocr.mjs` | 54/54 pass (test-hooks build; extended in Phase 4.1.3 with structure assertions) |
 
 The Phase 4.1.2 Chromium suite verified with genuine recognition, not mocks:
 

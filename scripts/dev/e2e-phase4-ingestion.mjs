@@ -183,6 +183,10 @@ try {
   check('DOCX imported with extracted text', docxImport?.ok === true && docxImport.data.document.pageCount === 1, docxImport?.error);
   const docxText = await message(page, 'p4_docx_text', 'GET_DOCUMENT_TEXT', { documentId: docxImport.data.document.id });
   check('DOCX headings, line breaks, and table cells survive', docxText?.ok === true && /Admissions Heading/.test(docxText.data.text) && /DOCX line two/.test(docxText.data.text) && /Degree\tB\.Tech/.test(docxText.data.text), docxText?.data?.text?.slice(0, 200));
+  check('real Chromium DOCX extraction preserves logical-page structure and table cells', docxText?.data?.structure?.pageSemantics === 'logical'
+    && docxText.data.structure.blocks.some((block) => block.type === 'heading' && block.text.includes('Admissions Heading'))
+    && docxText.data.structure.tables.length === 1
+    && docxText.data.structure.blocks.some((block) => block.type === 'table_cell' && block.text === 'B.Tech'), JSON.stringify({ pages: docxText?.data?.structure?.pages, tables: docxText?.data?.structure?.tables }));
 
   const txt = Buffer.from('\uFEFFTXT paragraph one\r\n\r\nTXT paragraph two', 'utf8');
   const txtImport = await message(page, 'p4_txt', 'IMPORT_DOCUMENT', {
@@ -292,8 +296,15 @@ try {
   await uiPage.locator('tr', { hasText: 'ui-upload.txt' }).click();
   await uiPage.waitForSelector('text=UI upload paragraph one', { timeout: 30000 });
   check('inspector shows the decrypted extracted-text preview', (await uiPage.locator('body').innerText()).includes('UI upload paragraph one'));
+  await uiPage.click('button:has-text("Structure")');
+  await uiPage.waitForSelector('text=Deterministic local layout:', { timeout: 30000 });
+  const structureView = await uiPage.locator('body').innerText();
+  check('inspector shows the deterministic structured view', structureView.includes('Deterministic local layout:')
+    && structureView.includes('UI upload paragraph one')
+    && structureView.includes('Plain text'));
 
   await uiPage.locator('tr', { hasText: 'ui-progress.pdf' }).click();
+  await uiPage.click('button:has-text("Preview")');
   await uiPage.waitForSelector('text=Page 1 of 250', { timeout: 30000 });
   check('inspector shows the extracted page count', (await uiPage.locator('body').innerText()).includes('Page 1 of 250'));
 

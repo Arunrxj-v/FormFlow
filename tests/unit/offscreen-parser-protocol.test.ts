@@ -48,6 +48,40 @@ function result(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function structure(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    extractionVersion: OFFSCREEN_PARSER_VERSION,
+    documentFormat: 'pdf',
+    pageSemantics: 'physical',
+    pages: [{
+      pageId: 'p1',
+      pageNumber: 1,
+      pageKind: 'physical',
+      pageType: 'text',
+      extractionMethod: 'pdf_native',
+      blockIds: ['p1_b1'],
+      pageBounds: { width: 612, height: 792, coordinateSpace: 'pdf_page_points' },
+    }],
+    blocks: [{
+      blockId: 'p1_b1',
+      type: 'paragraph',
+      text: 'Extracted text',
+      pageId: 'p1',
+      pageNumber: 1,
+      order: 0,
+      provenance: 'pdf_native',
+      boundingBox: { x0: 10, y0: 10, x1: 100, y1: 30, coordinateSpace: 'pdf_page_points', pageWidth: 612, pageHeight: 792 },
+    }],
+    sections: [],
+    tables: [],
+    readingOrder: ['p1_b1'],
+    warnings: [],
+    metadata: { pageCount: 1, blockCount: 1, sectionCount: 0, tableCount: 0, ocrPageCount: 0, truncated: false },
+    ...overrides,
+  };
+}
+
 test('accepts a strict offscreen parse request', () => {
   const parsed = parseOffscreenParseRequest(request());
   assert.equal(parsed.format, 'pdf');
@@ -175,6 +209,22 @@ test('validates result structure, page boundaries, warnings, and metadata', () =
   assert.throws(() => parseOffscreenParserResult(result({ ocrRequired: true, pagesNeedingOcr: [] })), /OCR/);
   assert.throws(() => parseOffscreenParserResult(result({ text: '', pageTexts: [''], warnings: [] })), /empty text/);
   assert.throws(() => parseOffscreenParserResult(result({ text: 'x'.repeat(MAX_EXTRACTED_TEXT_CHARS + 1) })), /text/);
+});
+
+test('validates structured extraction payloads exactly', () => {
+  const parsed = parseOffscreenParserResult(result({ structure: structure() }), 'pdf');
+  assert.equal(parsed.structure?.schemaVersion, 1);
+  assert.equal(parsed.structure?.blocks[0]?.provenance, 'pdf_native');
+  assert.throws(() => parseOffscreenParserResult(result({ structure: structure({ extra: true }) }), 'pdf'), /unexpected property/);
+  assert.throws(() => parseOffscreenParserResult(result({ structure: structure({ metadata: { ...structure().metadata, blockCount: 2 } }) }), 'pdf'), /counts/);
+  assert.throws(() => parseOffscreenParserResult(result({
+    structure: structure({
+      blocks: [{ ...structure().blocks[0], blockId: 'p1_b1' }, structure().blocks[0]],
+    }),
+  }), 'pdf'), /duplicate block/);
+  assert.throws(() => parseOffscreenParserResult(result({
+    structure: structure({ readingOrder: ['missing'] }),
+  }), 'pdf'), /unknown block/);
 });
 
 test('rejects oversized parser result messages', () => {

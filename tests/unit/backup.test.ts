@@ -120,6 +120,39 @@ await documentRepository.saveText(ocrDocument.id, 'OCR BACKUP TEXT', ['OCR BACKU
       warnings: [],
     }],
   },
+  structure: {
+    schemaVersion: 1,
+    extractionVersion: 1,
+    documentFormat: 'pdf',
+    pageSemantics: 'physical',
+    pages: [{
+      pageId: 'p1',
+      pageNumber: 1,
+      pageKind: 'physical',
+      pageType: 'text',
+      extractionMethod: 'ocr',
+      blockIds: ['p1_b1'],
+      pageBounds: { width: 1000, height: 1400, coordinateSpace: 'ocr_render_pixels' },
+      conversion: { from: 'ocr_render_pixels', to: 'pdf_page_points', scaleX: 0.612, scaleY: 0.5657, width: 612, height: 792 },
+    }],
+    blocks: [{
+      blockId: 'p1_b1',
+      type: 'paragraph',
+      text: 'OCR BACKUP TEXT',
+      pageId: 'p1',
+      pageNumber: 1,
+      order: 0,
+      boundingBox: { x0: 10, y0: 20, x1: 300, y1: 50, coordinateSpace: 'ocr_render_pixels', pageWidth: 1000, pageHeight: 1400 },
+      confidence: 91,
+      provenance: 'ocr',
+      sourceRef: 'ocr:page1:line1',
+    }],
+    sections: [],
+    tables: [],
+    readingOrder: ['p1_b1'],
+    warnings: [],
+    metadata: { pageCount: 1, blockCount: 1, sectionCount: 0, tableCount: 0, ocrPageCount: 1, truncated: false },
+  },
 });
 await vaultRepository.addField({
   key: 'contact.email',
@@ -192,6 +225,9 @@ test('rejects a wrong backup passphrase and imports into an empty vault', async 
   assert.equal(ocrText.extraction?.ocr?.averageConfidence, 91);
   assert.equal(ocrText.extraction?.ocr?.pages[0]?.lines?.[0]?.text, 'OCR BACKUP TEXT');
   assert.deepEqual(ocrText.extraction?.ocr?.pages[0]?.words?.[0]?.bbox, { x0: 10, y0: 20, x1: 80, y1: 50 });
+  assert.equal(ocrText.extraction?.structure?.blocks[0]?.text, 'OCR BACKUP TEXT');
+  assert.equal(ocrText.extraction?.structure?.pages[0]?.conversion?.to, 'pdf_page_points');
+  assert.equal(ocrText.extraction?.structure?.metadata.ocrPageCount, 1);
   const fields = await vaultRepository.listFields();
   assert.equal(fields[0]!.value, 'backup@example.com');
 });

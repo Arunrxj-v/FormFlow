@@ -41,11 +41,19 @@ function buildPdf(pages) {
   const catalogId = add('');
   const pagesId = add('');
   const fontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const boldFontId = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
   const pageIds = [];
   for (const page of pages) {
     let content;
     const resources = [];
-    if (page.text !== undefined) {
+    if (page.textItems?.length) {
+      content = page.textItems.map((item) => {
+        const font = item.bold ? 'F2' : 'F1';
+        const size = item.fontSize ?? 12;
+        return `BT /${font} ${size} Tf ${item.x} ${item.y} Td (${escapePdf(item.text)}) Tj ET`;
+      }).join('\n');
+      resources.push(`/Font << /F1 ${fontId} 0 R /F2 ${boldFontId} 0 R >>`);
+    } else if (page.text !== undefined) {
       content = `BT /F1 18 Tf 72 720 Td (${escapePdf(page.text)}) Tj ET`;
       resources.push(`/Font << /F1 ${fontId} 0 R >>`);
     } else {
@@ -292,6 +300,17 @@ try {
   );
   check('stale OCR-required warnings are removed after completion', !(imageOnlyText?.data?.warnings ?? []).some((warning) => warning.code === 'OCR_REQUIRED' || warning.code === 'PAGE_REQUIRES_OCR'), JSON.stringify(imageOnlyText?.data?.warnings));
   check('document record exposes OCR status and confidence', imageOnly?.data?.document?.ocrStatus === 'completed' && typeof imageOnly?.data?.document?.ocrConfidence === 'number', JSON.stringify({ status: imageOnly?.data?.document?.ocrStatus, confidence: imageOnly?.data?.document?.ocrConfidence }));
+  const imageStructure = imageOnlyText?.data?.structure;
+  const imageStructureBlock = imageStructure?.blocks?.find((block) => block.text?.includes('FORMFLOW OCR TEST'));
+  check('OCR contributes a validated physical-page structure', imageStructure?.documentFormat === 'pdf'
+    && imageStructure?.pageSemantics === 'physical'
+    && imageStructure.pages?.[0]?.extractionMethod === 'ocr'
+    && imageStructure.metadata?.ocrPageCount === 1, JSON.stringify({ format: imageStructure?.documentFormat, page: imageStructure?.pages?.[0]?.extractionMethod, metadata: imageStructure?.metadata }));
+  check('OCR structure preserves explicit image coordinates and conversion metadata', imageStructureBlock?.boundingBox?.coordinateSpace === 'ocr_render_pixels'
+    && imageStructure?.pages?.[0]?.conversion?.to === 'pdf_page_points'
+    && Boolean(imageStructure?.pages?.[0]?.conversion?.scaleX), JSON.stringify({ box: imageStructureBlock?.boundingBox, conversion: imageStructure?.pages?.[0]?.conversion }));
+  check('OCR structure retains source provenance and confidence', imageStructureBlock?.provenance === 'ocr' && typeof imageStructureBlock?.confidence === 'number', JSON.stringify({ provenance: imageStructureBlock?.provenance, confidence: imageStructureBlock?.confidence }));
+  check('completed OCR structure removes stale OCR-required warnings', !(imageStructure?.warnings ?? []).some((warning) => warning.code === 'OCR_REQUIRED' || warning.code === 'PAGE_REQUIRES_OCR'), JSON.stringify(imageStructure?.warnings));
   const ocrDiag = await worker.evaluate(() => globalThis.__formflowTestHooks?.offscreen?.diagnostics?.() ?? null);
   const pendingOcrJobs = await worker.evaluate(() => globalThis.__formflowTestHooks?.offscreen?.jobIds?.() ?? []);
   check('OCR releases its worker, renderer, and job after completion', pendingOcrJobs.length === 0 && ocrDiag?.active === 0 && ocrDiag?.lastOcrStage === 'page_complete:1', JSON.stringify({ jobs: pendingOcrJobs, active: ocrDiag?.active, stage: ocrDiag?.lastOcrStage }));
@@ -311,6 +330,43 @@ try {
 
   const nativeText = await importPdf('ocr-native.pdf', buildPdf([{ text: 'NATIVE PDF TEXT MARKER' }]), 'ocr_native');
   check('native text PDF still parses without OCR', nativeText?.ok === true && nativeText.data.document.ocrStatus === 'not_required', JSON.stringify(nativeText?.data?.document));
+
+  const structuredPdf = buildPdf([{
+    textItems: [
+      { text: 'Chromium Structured Heading', x: 72, y: 720, fontSize: 22, bold: true },
+      { text: 'Chromium paragraph line one.', x: 72, y: 680, fontSize: 12 },
+      { text: 'Chromium paragraph line two.', x: 72, y: 664, fontSize: 12 },
+      { text: '1. Chromium list item', x: 72, y: 628, fontSize: 12 },
+      { text: '2. Second Chromium list item', x: 72, y: 612, fontSize: 12 },
+      { text: 'Field', x: 72, y: 560, fontSize: 12, bold: true },
+      { text: 'Value', x: 220, y: 560, fontSize: 12, bold: true },
+      { text: 'Degree', x: 72, y: 540, fontSize: 12 },
+      { text: 'B.Tech', x: 220, y: 540, fontSize: 12 },
+      { text: 'Year', x: 72, y: 520, fontSize: 12 },
+      { text: '2026', x: 220, y: 520, fontSize: 12 },
+    ],
+  }]);
+  const structured = await importPdf('ocr-structured-layout.pdf', structuredPdf, 'ocr_structured_layout');
+  const structuredText = structured?.ok ? await getText(structured.data.document.id) : null;
+  check('real Chromium PDF extraction produces structured headings, lists, and tables', structured?.ok === true
+    && structuredText?.data?.structure?.blocks?.some((block) => block.type === 'heading' && block.text.includes('Chromium Structured Heading'))
+    && structuredText?.data?.structure?.blocks?.some((block) => block.type === 'list')
+    && structuredText?.data?.structure?.tables?.length === 1
+    && structuredText.data.structure.tables[0].rowCount >= 3, JSON.stringify({ blocks: structuredText?.data?.structure?.blocks?.map((block) => block.type), tables: structuredText?.data?.structure?.tables }));
+
+  const columnPdf = buildPdf([{
+    textItems: [1, 2, 3, 4, 5].flatMap((index) => [
+      { text: `CHROMIUM LEFT ${index}`, x: 72, y: 720 - index * 24, fontSize: 11 },
+      { text: `CHROMIUM RIGHT ${index}`, x: 330, y: 720 - index * 24, fontSize: 11 },
+    ]),
+  }]);
+  const columnImport = await importPdf('ocr-two-column.pdf', columnPdf, 'ocr_two_column');
+  const columnText = columnImport?.ok ? await getText(columnImport.data.document.id) : null;
+  const columnOrder = (columnText?.data?.structure?.readingOrder ?? [])
+    .map((blockId) => columnText.data.structure.blocks.find((block) => block.blockId === blockId)?.text ?? '')
+    .join('\n');
+  check('real Chromium two-column PDF preserves left-to-right reading order', columnImport?.ok === true
+    && columnOrder.indexOf('CHROMIUM LEFT 5') < columnOrder.indexOf('CHROMIUM RIGHT 1'), JSON.stringify({ order: columnOrder, structure: Boolean(columnText?.data?.structure) }));
 
   const originalExtraction = rawText.extractionEnc;
   const tampered = await page.evaluate(async ({ documentId, replacement }) => {
@@ -400,6 +456,9 @@ try {
       status: mixedText?.data?.ocr?.status,
       required: mixedText?.data?.ocrRequired,
     }));
+  check('mixed PDF structure preserves per-page provenance', mixedText?.data?.structure?.pages?.[0]?.extractionMethod === 'pdf_native'
+    && mixedText?.data?.structure?.pages?.[1]?.extractionMethod === 'ocr'
+    && mixedText?.data?.structure?.blocks?.some((block) => block.pageNumber === 2 && block.provenance === 'ocr'), JSON.stringify(mixedText?.data?.structure?.pages));
 
   // 5. Rotated text.
   const rotatedImage = await makeImage(page, `
@@ -532,6 +591,9 @@ try {
     && restoredText.data.ocr?.status === 'completed'
     && restoredText.data.ocr?.language === 'eng'
     && restoredText.data.ocr?.averageConfidence === 95, JSON.stringify({ text: restoredText?.data?.text, ocr: restoredText?.data?.ocr?.status, confidence: restoredText?.data?.ocr?.averageConfidence }));
+  check('backup round-trip preserves the encrypted structured layout', restoredText?.data?.structure?.pages?.[0]?.extractionMethod === 'ocr'
+    && restoredText.data.structure.blocks?.some((block) => block.text?.includes('FORMFLOW OCR TEST') && block.boundingBox?.coordinateSpace === 'ocr_render_pixels')
+    && restoredText.data.structure.metadata?.ocrPageCount === 1, JSON.stringify(restoredText?.data?.structure?.metadata));
   await target.context.close();
 
   // 12. Offscreen worker crash during OCR and recovery.
