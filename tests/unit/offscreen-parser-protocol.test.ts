@@ -78,6 +78,14 @@ function structure(overrides: Record<string, unknown> = {}) {
     readingOrder: ['p1_b1'],
     warnings: [],
     metadata: { pageCount: 1, blockCount: 1, sectionCount: 0, tableCount: 0, ocrPageCount: 0, truncated: false },
+    pagination: {
+      status: 'explicit_breaks',
+      mechanism: 'wordprocessingml_breaks',
+      pageCount: 1,
+      pages: [{ pageNumber: 1, pageKind: 'explicit_break_segment', blockIds: ['p1_b1'], breakReason: 'document_start', pageWidthPt: 612, pageHeightPt: 792, orientation: 'portrait' }],
+      blockPages: [{ blockId: 'p1_b1', startPageNumber: 1 }],
+      warnings: [],
+    },
     ...overrides,
   };
 }
@@ -215,6 +223,7 @@ test('validates structured extraction payloads exactly', () => {
   const parsed = parseOffscreenParserResult(result({ structure: structure() }), 'pdf');
   assert.equal(parsed.structure?.schemaVersion, 1);
   assert.equal(parsed.structure?.blocks[0]?.provenance, 'pdf_native');
+  assert.equal(parsed.structure?.pagination?.status, 'explicit_breaks');
   assert.throws(() => parseOffscreenParserResult(result({ structure: structure({ extra: true }) }), 'pdf'), /unexpected property/);
   assert.throws(() => parseOffscreenParserResult(result({ structure: structure({ metadata: { ...structure().metadata, blockCount: 2 } }) }), 'pdf'), /counts/);
   assert.throws(() => parseOffscreenParserResult(result({

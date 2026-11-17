@@ -152,6 +152,14 @@ await documentRepository.saveText(ocrDocument.id, 'OCR BACKUP TEXT', ['OCR BACKU
     readingOrder: ['p1_b1'],
     warnings: [],
     metadata: { pageCount: 1, blockCount: 1, sectionCount: 0, tableCount: 0, ocrPageCount: 1, truncated: false },
+    pagination: {
+      status: 'logical_fallback',
+      mechanism: 'none',
+      pageCount: 1,
+      pages: [],
+      blockPages: [],
+      warnings: [],
+    },
   },
 });
 await vaultRepository.addField({
@@ -228,6 +236,7 @@ test('rejects a wrong backup passphrase and imports into an empty vault', async 
   assert.equal(ocrText.extraction?.structure?.blocks[0]?.text, 'OCR BACKUP TEXT');
   assert.equal(ocrText.extraction?.structure?.pages[0]?.conversion?.to, 'pdf_page_points');
   assert.equal(ocrText.extraction?.structure?.metadata.ocrPageCount, 1);
+  assert.equal(ocrText.extraction?.structure?.pagination?.status, 'logical_fallback');
   const fields = await vaultRepository.listFields();
   assert.equal(fields[0]!.value, 'backup@example.com');
 });

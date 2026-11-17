@@ -127,8 +127,9 @@ function validateParseResult(result: DocumentParseResult, descriptor: DocumentDe
       throw new FormFlowError('EXTRACTION_FAILED', 'Incomplete OCR must report pages requiring OCR.');
     }
   }
-  if (!result.ocrRequired && !result.text.trim()) {
-    throw new FormFlowError('EMPTY_DOCUMENT', 'No extractable text was found in this document.');
+  const hasImageStructure = result.structure?.blocks.some((block) => block.type === 'image') ?? false;
+  if (!result.ocrRequired && !result.text.trim() && !hasImageStructure) {
+    throw new FormFlowError('EMPTY_DOCUMENT', 'No extractable text or image structure was found in this document.');
   }
   const warnings = sanitizeWarnings(Array.isArray(result.warnings) ? result.warnings : []);
   const pagesNeedingOcr = Array.from(new Set(result.pagesNeedingOcr ?? []))

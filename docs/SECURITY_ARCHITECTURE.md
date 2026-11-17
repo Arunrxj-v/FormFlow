@@ -1,6 +1,6 @@
 # FormFlow Security Architecture
 
-Status: Phase 4.1.3 structured document extraction. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
+Status: Phase 4.1.4.2 automatic browser-local DOCX pagination with renderer-derived physical pages, normalized table widths and font vertical metrics, structured body/table/header/footer images, font-resolution evidence, line/cell/column geometry, and legacy fallbacks. This document describes the implemented security design, what has been tested, and what remains a residual risk. FormFlow has **not** undergone a professional penetration test or third-party security audit.
 
 ## 1. Threat model
 
@@ -43,6 +43,8 @@ Trusted extension origin  chrome-extension://<id>
   │      │ narrow parser port
   │      └──► offscreen parser document (no vault/DB/crypto imports)
   │              └──► request-scoped parser Web Worker (bytes only)
+  │                      └──► local font-backed DOCX layout + HarfBuzz
+  │                           with packaged local fonts only
   │
 Local browser storage
   ├── IndexedDB formflow-local (ciphertext + structural metadata)
@@ -70,8 +72,9 @@ A DEK persisted in `chrome.storage.session` would be readable by extension pages
 
 ### Extension-origin hardening
 
-- CSP: `script-src 'self'; object-src 'none'; worker-src 'self'`.
+- CSP: `script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; worker-src 'self'`.
 - Dashboard/popup HTML adds `base-uri 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self'; media-src 'self' blob:`.
+- The offscreen parser HTML adds `connect-src 'self'`, `font-src 'self'`, and `wasm-unsafe-eval` so the parser worker can load its packaged WASM/font bytes from the extension origin only.
 - No `unsafe-eval`, remote scripts, inline scripts, dynamic code evaluation, or remote executable JavaScript.
 - The content-script page-world ping/pong bridge was removed; the host page has no extension bridge.
 - React renders user-controlled values as text. A repository sweep found no `dangerouslySetInnerHTML`, `innerHTML`, `eval`, or `new Function` in the application.
@@ -252,7 +255,7 @@ Dashboard file picker
               └── one strict IndexedDB transaction for document + file + text
 ```
 
-The offscreen document is created with Chrome's Offscreen API using the narrow **`WORKERS`** reason. It runs a hidden extension page (`offscreen-parser.html`) with no user-facing UI or navigation controls. The page creates one parser Web Worker per request. The worker receives only the selected document bytes (base64 decoded by the offscreen page), format, filename, parser version, OCR language identifier, and a request ID. It has no vault session, DEK, KEK, AAD, database handle, repository import, generic RPC bridge, or network access.
+The offscreen document is created with Chrome's Offscreen API using the narrow **`WORKERS`** reason. It runs a hidden extension page (`offscreen-parser.html`) with no user-facing UI or navigation controls. The page creates one parser Web Worker per request. The worker receives only the selected document bytes (base64 decoded by the offscreen page), format, filename, parser version, OCR language identifier, and a request ID. It has no vault session, DEK, KEK, AAD, database handle, repository import, generic RPC bridge, or network access. For DOCX, the same worker imports the local layout engine and fetches only extension-packaged HarfBuzz WASM and font files by a relative extension URL; no remote URL or user-controlled asset path is accepted.
 
 OCR does not pass PDF bytes to the Tesseract worker. Only a rendered canvas, language identifier, request ID, and bounded Tesseract parameters cross that worker boundary. The OCR result is validated as untrusted input before the background persists it.
 
@@ -289,16 +292,22 @@ Every message uses a unique request ID and strict exact-key validation. Unknown 
 - 1,000 PDF pages.
 - 10,000,000 extracted characters; the offscreen result cap allows the duplicated `text` + `pageTexts` representation with a fixed headroom.
 - 24 MB per DOCX XML part and 96 MB total uncompressed DOCX content.
+- DOCX images: maximum 200, 12 MB per image, 64 MB total image bytes, 12,000 px per dimension, 40 million pixels. Images are header-validated but not decoded into canvases in the structural parser.
+- DOCX embedded fonts: renderer-bounded to 16 MiB per face and at most 64 declared faces; malformed/over-limit faces are reported and substituted.
+- DOCX geometry: 60,000 entries, 2,000 lines per block, 16 columns per page, and a 300,000-character geometry budget. Top-level page mappings remain when geometry is truncated.
+- DOCX structured images: maximum 500 image blocks and 1,000 page appearances per placement; image metadata is bounded by the structure response limit.
+- DOCX table layout normalization: maximum 1,000 tables, 10,000 zip entries, and 100 MB uncompressed input; normalization is layout-only and never persisted back to the source file.
 - 100 extraction warnings per document.
 - Maximum 2 concurrent parser workers (and therefore at most 2 concurrent OCR attempts).
-- 300-second ingestion timeout; 30-second per-OCR-page timeout; request-scoped cancellation; 15-second offscreen idle shutdown.
+- 300-second ingestion timeout; 30-second per-OCR-page timeout; 20-second DOCX layout timeout; request-scoped cancellation; 15-second offscreen idle shutdown.
+- DOCX layout output is capped at 1,000 physical pages and 20,000 block/page mappings; beyond that the renderer falls back or marks mapping approximate.
 - OCR rendering: 200 DPI, maximum 12 megapixels per page, maximum scale 3, maximum 100 OCR pages per attempt.
 - OCR output caps: 500 words per page, 5,000 words per result, 200 lines per page, 1,000,000 serialized OCR detail characters.
 
 ### Format validation and extraction behavior
 
 - PDF: `%PDF-` signature, PDF.js parse, page limit, password/corruption classification, per-page text, page count, best-effort metadata, image-operator detection, and warnings. Image-only pages are marked OCR-required. Phase 4.1.2 renders only those pages and runs local OCR; successfully recognized pages no longer remain OCR-required.
-- DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, and structural WordprocessingML parsing without HTML rendering. Tables are tab-separated; headings and line breaks are preserved. DOCX is stored as one logical page with a warning.
+- DOCX: ZIP signature, required `word/document.xml`, bounded uncompressed XML/media size, Mammoth validation, structural WordprocessingML parsing without HTML rendering, and a bounded local font-backed layout pass. Tables are tab-separated; headings, line breaks, section metadata and pagination fragments are preserved. `DocumentStructure.pages` remains one logical page; physical pages are separate encrypted metadata.
 - TXT: strict UTF-8 decode, BOM detection, CRLF/CR/LF normalization, NUL/control rejection, and empty-content rejection.
 - Browser MIME and extension are cross-checked but are not trusted as the format authority.
 
@@ -336,17 +345,49 @@ Every message uses a unique request ID and strict exact-key validation. Unknown 
 - Structural limits: 20,000 blocks, 2,000 sections, 1,000 tables, 5,000 rows, 20,000 cells, depth 32, 2,000,000 text characters, 20,000 bounding boxes, 100 warnings. Truncation emits `STRUCTURE_TRUNCATED`; plain text remains complete.
 - Structure is included in the strict offscreen result allowlist, revalidated in the background, preserved by backup export/import, and covered by AAD/tamper and round-trip tests. No LLM, semantic entity extraction, ONNX, model download, or form filling is used.
 
+### DOCX pagination (Phase 4.1.4)
+
+- Pagination is an optional additive `DocumentStructure.pagination` object, still encrypted inside `extractionEnc`. Existing logical pages and block IDs are preserved; pagination block references are additive.
+- The runtime uses `@docx-editor.dev/core` 2.38.0 inside the request-scoped parser worker for automatic, font-backed layout. HarfBuzz WASM and metric-compatible Carlito/Liberation faces are packaged under `extension/dist/fonts/` and SHA-256 verified at build time. No remote conversion, CDN, cloud API, or server-side pagination is used.
+- The renderer receives only the already-validated DOCX bytes and the locally parsed block structure. It never receives a DEK, KEK, passphrase, AAD, vault session, IndexedDB handle, or repository. It cannot call privileged background operations.
+- Status values distinguish logical fallback, explicit-break segments, Word-reported breaks, renderer-derived physical pages and verified physical pages. Automatic results are `renderer_derived_physical`; `verified_physical` is never emitted.
+- `blockPages` adds `fragmentPages` (page number plus renderer fragment index) and end-page ranges for cross-page paragraphs/tables. Cells are associated through their table row page. Unmatched mappings are omitted or marked `approximate`; the validator rejects unknown blocks, inverted ranges, duplicate entries, and pages beyond the pagination page count.
+- `docxLayout` records section page setup, column count, page numbering, and header/footer references with resolved part names and inheritance. Inherited references reuse the defining section’s existing blocks instead of duplicating content.
+- The 20-second layout limit, 1,000-page cap, 20,000 mapping cap, cancellation, and worker termination all preserve the existing fallback and atomic ingestion transaction. The parser worker still denies IndexedDB and child-worker creation at runtime.
+- Reference validation and performance measurements are documented in `docs/PHASE_4_1_4_PAGINATION_VALIDATION.md` and `docs/PHASE_4_1_4_PERFORMANCE.md`. LibreOffice is used only as a test-time reference; it is not shipped or invoked by the extension.
+
+### Pagination fidelity hardening (Phase 4.1.4.1)
+
+- Embedded fonts are consumed in memory only by the local renderer; no embedded font bytes are exported, executed, or placed in `DocumentStructure`. Malformed/over-limit faces are dropped and reported. Packaged fonts remain OFL/Apache-2.0 assets only.
+- `docxLayout.fonts` records requested/resolved families, source (`embedded`, `exact_local`, `metric_substitute`, `generic_fallback`, `unavailable`), exact/substituted/embedded flags, face identity, coverage, and warnings. Theme fonts and `fontTable.xml` relationships are parsed; the font-table relationship part is parsed separately to avoid relationship-ID collisions.
+- Image extraction reads only package media. External/linked images are recorded as external metadata and are never fetched. MIME is signature-checked independently of the claimed extension; dimensions are bounded; image bytes never enter the structured payload. Image-only DOCX imports are allowed only when the validated structure contains image blocks.
+- Line and column geometry are renderer page-content coordinates. Exact renderer boxes are marked `exact`; derived column/page/section assignments and used-area heights are marked `renderer_approximate` or `source_approximate`. No geometry is fabricated by evenly partitioning a block.
+- Rows and cells preserve row/column indices, spans, continuation/header-repeat flags, and page/fragment boxes. Top-level page mappings remain bounded even when detailed geometry is truncated.
+- `react-router-dom`/`react-router` were upgraded to 7.18.5 and `esbuild` to 0.25.12. `npm audit` and `npm audit --omit=dev` report zero vulnerabilities. The client-only HashRouter regression suite passes.
+- Word compatibility is not claimed. The validation harness accepts Word-exported PDFs via `WORD_REFERENCE_DIR`; no Word installation was available, and no `verified_physical` output is emitted.
+
+### Rendering and image hardening (Phase 4.1.4.2)
+
+- Table normalization is applied only to the in-memory DOCX copy handed to the renderer. The stored original remains encrypted and unchanged. The pass parses only table structure, preserves non-width properties, skips explicit/percentage/floating tables, and is bounded by table count, entry count, and uncompressed-input size.
+- Packaged font assets are patched at build time only in their `hhea` vertical-metric fields, using the font's own OS/2 typo metrics when the total line height matches. Glyph outlines, advances, names, licensing, and hashes are otherwise unchanged. The extension ships a generated `font-metrics.json`; the runtime verifies each asset's byte length and the renderer verifies its SHA-256. No remote font or system-font enumeration is used.
+- Table-cell images are parsed from the same package media pipeline as body images. External/linked images are never fetched. Parent table/row/cell references are validated against existing blocks; nested depth is bounded to 32; captions are attached only as text.
+- Header/footer images are resolved through per-part relationships (`word/_rels/headerN.xml.rels`, `word/_rels/footerN.xml.rels`) rather than the main document relationships. Source placements are emitted once per part. `appearances` lists the physical pages on which the renderer painted that source, so inherited furniture cannot multiply source blocks or metadata.
+- Header/footer appearance boxes use page coordinates (`renderer_page_points`); body/table boxes use page-content coordinates (`renderer_page_content_points`). Both are exact renderer boxes, not evenly partitioned estimates.
+- Schema validation rejects incomplete or inconsistent image parents, duplicate placement IDs, unknown header/footer sections, invalid inheritance, duplicate appearance pages, unsupported MIME shapes, over-limit appearance counts, and image blocks that mix table and header/footer contexts.
+- The parser worker still receives no DEK, KEK, passphrase, AAD, vault session, IndexedDB handle, or repository; it still cannot create child workers. Image and font metadata remain inside encrypted `extractionEnc`.
+
 ### Build-time isolation proof
 
 The extension build uses esbuild metafiles and fails if:
 
-- `background.js` contains PDF.js, Mammoth, parser modules, or Tesseract.js.
-- `offscreen-parser.js` contains parser runtime or any `core/vault`, `core/database`, `core/encryption`, `core/storage`, `core/application`, or vault-client input.
+- `background.js` contains PDF.js, Mammoth, parser modules, Tesseract.js, or the DOCX layout engine.
+- `offscreen-parser.js` contains parser runtime, the DOCX layout engine, or any `core/vault`, `core/database`, `core/encryption`, `core/storage`, `core/application`, or vault-client input.
 - `document-parser.worker.js` contains any vault, database, encryption, storage, or application input.
 - The offscreen HTML contains inline scripts, remote scripts, or inline event handlers.
 - The manifest does not declare `offscreen`, Chrome < 109, or a CSP missing `worker-src 'self'`.
 - The dashboard bundle contains parser internals.
-- Any packaged OCR asset is missing or does not match its pinned SHA-256.
+- Any packaged OCR asset, HarfBuzz WASM file, font face, or license file is missing, or an OCR/font/WASM asset does not match its pinned SHA-256.
+- The offscreen HTML or manifest permits remote scripts, remote workers, or a non-local connect/font source.
 
 ### Chrome compatibility
 
@@ -527,6 +568,7 @@ The checker reports issues and never deletes or rewrites corrupted records. The 
 - Phase 4.1.1 real Chromium offscreen suite: PDF/DOCX/TXT parsed through the offscreen document; offscreen context presence, IndexedDB blocking, exact request/result field allowlists, denial of arbitrary background vault operations, malformed request/response rejection, oversized result rejection, parser timeout, offscreen failure recovery, concurrency, one-of-two cancellation, vault lock draining, duplicate detection, and encrypted persistence.
 - Phase 4.1.2 real Chromium OCR suite with genuine Tesseract recognition (no mocked output): image-only, multi-page scanned, mixed text/image, rotated, and low-quality pages; OCR language initialization and missing-language failure; confidence/line/word/bbox persistence; progress; cancellation; timeout; offscreen crash and recovery; extension restart during OCR; partial success; duplicate OCR prevention; encrypted OCR at rest; AAD tamper rejection; no key material in offscreen diagnostics; and zero external network requests with external DNS disabled.
 - Phase 4.1.3 structured extraction tests: PDF headings/paragraphs/lists/tables, single/two/three-column reading order, repeated headers/footers, page breaks, rotated pages, uncertain layout warnings, DOCX heading hierarchy/nested lists/tables/merged cells/hyperlinks/headers/footers, OCR geometry grouping, strict structure validation, encrypted backup round-trip, and real Chromium structure tab/provenance checks.
+- Phase 4.1.4/4.1.4.1/4.1.4.2 DOCX pagination tests: real font-backed automatic pagination, table-width normalization for automatic grids and nested cells, normalized typo vertical metrics for mixed-font lines, cross-page paragraph/table fragments, exact line/row/cell boxes, structured body/table-cell/nested-table/header/footer image placements, captions, inherited header/footer appearances, image failure/limit warnings, embedded/theme/corrupt font evidence, unequal and three-column geometry with explicit column breaks, page-to-section mapping, strict document-structure validation, encrypted backup round-trip, a 22-fixture LibreOffice reference corpus (22/22 exact page counts, 1,108/1,117 block ranges), cancellation during layout, 1,000/5,000-paragraph, 5,000-mixed-font, 500-nested-table-row, 200-image, and inherited-header benchmarks, missing-font/missing-HarfBuzz degradation, Word-PDF harness plumbing, React Router 7 navigation regressions, clean dependency audits, and real Chromium UI labels that never claim verified Word pagination.
 - Build-time bundle isolation checks prove the service worker contains no parser runtime or OCR dependencies, and the offscreen document/worker contain no vault, database, encryption, storage, or application modules.
 - An in-place extension disable/re-enable lifecycle using a test-only management helper: worker restart, no persisted DEK, dashboard/popup locked UI, unlock persistence, and interruption of a 20 MB document mutation without a partial document/file pair.
 - Runtime HTTP and HTTPS page isolation: content script absent, no extension APIs/session storage/vault IndexedDB/page-world bridge.
@@ -566,7 +608,7 @@ The migration fixture is generated by test-only files (`extension/src/background
 8. **JavaScript memory.** Decrypted values and keys may remain in engine memory until garbage collection. Lock clears references and session storage, not all possible copies.
 9. **Service-worker termination locks the vault.** This is the deliberate consequence of keeping the DEK out of extension-readable storage. Frequent MV3 worker termination can interrupt a long idle session; an active dashboard connection reduces this in practice.
 10. **OCR accuracy and language coverage.** Only English is bundled. OCR output depends on scan quality, resolution, skew, rotation, handwriting, tables, and column layout; Tesseract confidence is a heuristic, not a guarantee. Bounding boxes refer to the rendered OCR image. No external OCR service is used. Additional languages require new bundled, SHA-256-pinned assets before they can be claimed.
-11. **DOCX page boundaries are approximate.** DOCX is stored as one logical page because the format does not expose reliable page count/layout without a renderer.
+11. **DOCX page boundaries are renderer-derived, not Word-verified.** DOCX structure retains one logical page for compatibility, while physical page metadata comes from a local font-backed renderer. Metric-compatible font substitution, unsupported OOXML, and renderer-specific behavior can differ from Microsoft Word. The repository validates against LibreOffice, not Word, and never emits `verified_physical`.
 12. **Text extraction is not visual reconstruction.** PDF/DOCX layout, columns, complex tables, and styling are normalized to text and a deterministic structure; the original file remains available for fidelity. Structured layout is heuristic and can be uncertain or truncated at the explicit limits.
 13. **Offscreen documents share the extension origin.** The offscreen parser has no vault/DB/crypto imports, no privileged runtime sender acceptance, a narrow port protocol, and a non-configurable runtime `indexedDB` guard. It is not a separate browser origin; a compromised offscreen page could still attempt other extension-origin APIs. It cannot decrypt vault records without the DEK, which never leaves the service worker.
 14. **Parser workers share the offscreen page origin.** Each worker is request-scoped and receives only bytes/non-secret fields, but it is not a separate sandboxed origin. The worker blocks `indexedDB` and child-worker creation at runtime. The offscreen document is nonetheless outside the service-worker key boundary.
@@ -574,5 +616,5 @@ The migration fixture is generated by test-only files (`extension/src/background
 16. **Auto-lock precision.** The dashboard timer handles the interactive interval; the background alarm is a backstop with Chrome alarm granularity.
 17. **AAD schema source.** The schema version in the AAD comes from the active vault record. If that metadata is corrupted, records fail closed rather than decrypting under a different context.
 18. **Dashboard operation client availability.** The localhost development dashboard uses a separate direct client and web session storage. That client is not packaged in the extension build, but development data is less isolated than production.
-19. **CSP limitations.** The extension manifest hardens `script-src` (including `'wasm-unsafe-eval'` for the local OCR core), `object-src`, and `worker-src`; the offscreen HTML meta policy adds `base-uri`, `connect-src 'self'`, and image/font/media restrictions. `'wasm-unsafe-eval'` is the narrow WebAssembly permission and does not enable JavaScript `eval`. Network restriction also relies on the absence of network code in the offscreen bundles.
+19. **CSP limitations.** The extension manifest hardens `script-src` (including `'wasm-unsafe-eval'` for the local OCR core and HarfBuzz), `object-src`, and `worker-src`; the offscreen HTML meta policy adds `base-uri`, `connect-src 'self'`, `font-src 'self'`, and image/media restrictions. `'wasm-unsafe-eval'` is the narrow WebAssembly permission and does not enable JavaScript `eval`. Network restriction also relies on the absence of network code in the offscreen bundles; the layout engine’s only fetches are extension-relative font/WASM URLs.
 20. **No third-party audit.** The implementation has targeted tests, not a professional security certification.

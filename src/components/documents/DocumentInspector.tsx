@@ -98,6 +98,7 @@ export function DocumentInspector({
   const ocrPagesCompleted = ocr?.pagesCompleted ?? document.ocrPagesCompleted;
   const ocrPagesTotal = ocr?.pagesAttempted ?? document.ocrPagesTotal;
   const ocrIncomplete = ocrStatus === 'failed' || ocrStatus === 'partial';
+  const pagination = textResult?.structure?.pagination;
   const pageText = textResult?.pageTexts[currentPage - 1] ?? (currentPage === 1 ? extractedText : '');
   const extractionFailed = (document.status === 'failed' || document.extractedTextStatus === 'failed') && !ocrIncomplete;
 
@@ -321,7 +322,7 @@ export function DocumentInspector({
             <span className="ff-uppercase" style={{ fontSize: 9 }}>File metadata</span>
             <dl className="ff-meta-grid ff-mt-8">
               <div><dt>File size</dt><dd>{document.sizeLabel}</dd></div>
-              <div><dt>Pages</dt><dd>{totalPages}</dd></div>
+              <div><dt>Pages</dt><dd>{totalPages}{pagination && pagination.status !== 'logical_fallback' && pagination.status !== 'unavailable' ? ` · ${pagination.pageCount} ${pagination.status === 'renderer_derived_physical' ? 'renderer-derived physical' : pagination.status === 'verified_physical' ? 'verified physical' : 'break/reported'} page${pagination.pageCount === 1 ? '' : 's'}` : ''}</dd></div>
               <div><dt>MIME type</dt><dd className="ff-truncate">{document.mimeType}</dd></div>
               <div>
                 <dt>Extraction</dt>

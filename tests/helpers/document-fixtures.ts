@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { strToU8, zipSync } from 'fflate';
 
 function escapePdfText(value: string): string {
@@ -109,6 +111,10 @@ export interface DocxFixtureParagraph {
   list?: { level?: number; numId?: number; ordered?: boolean };
   hyperlink?: boolean;
   alignment?: 'left' | 'center' | 'right' | 'justify';
+  pageBreakBefore?: boolean;
+  explicitPageBreak?: boolean;
+  lastRenderedPageBreak?: boolean;
+  sectionBreak?: { widthTwips?: number; heightTwips?: number; orientation?: 'portrait' | 'landscape' };
 }
 
 export interface DocxFixtureCell {
@@ -126,6 +132,8 @@ export interface DocxFixtureOptions {
   includeNumbering?: boolean;
   headers?: string[];
   footers?: string[];
+  pageSize?: { widthTwips?: number; heightTwips?: number; orientation?: 'portrait' | 'landscape' };
+  margins?: { top?: number; right?: number; bottom?: number; left?: number; header?: number; footer?: number };
   core?: { title?: string; author?: string };
   empty?: boolean;
 }
@@ -143,6 +151,7 @@ function paragraphXml(paragraph: DocxFixtureParagraph): string {
   const properties: string[] = [];
   if (paragraph.heading) properties.push(`<w:pStyle w:val="Heading${paragraph.heading}"/>`);
   if (paragraph.alignment) properties.push(`<w:jc w:val="${paragraph.alignment}"/>`);
+  if (paragraph.pageBreakBefore) properties.push('<w:pageBreakBefore/>');
   if (paragraph.list) {
     properties.push(
       `<w:numPr><w:ilvl w:val="${paragraph.list.level ?? 0}"/><w:numId w:val="${paragraph.list.numId ?? 1}"/></w:numPr>`,
@@ -152,10 +161,15 @@ function paragraphXml(paragraph: DocxFixtureParagraph): string {
   const runs = paragraph.text.split('\n').map((part, index) => (
     `${index > 0 || paragraph.lineBreak ? '<w:br/>' : ''}<w:t xml:space="preserve">${escapeXml(part)}</w:t>`
   )).join('');
+  const pageBreak = paragraph.explicitPageBreak ? '<w:br w:type="page"/>' : '';
+  const renderedBreak = paragraph.lastRenderedPageBreak ? '<w:lastRenderedPageBreak/>' : '';
+  const sectionBreak = paragraph.sectionBreak
+    ? `<w:sectPr><w:pgSz w:w="${paragraph.sectionBreak.widthTwips ?? 12240}" w:h="${paragraph.sectionBreak.heightTwips ?? 15840}"${paragraph.sectionBreak.orientation ? ` w:orient="${paragraph.sectionBreak.orientation}"` : ''}/></w:sectPr>`
+    : '';
   const runWrapper = paragraph.hyperlink
-    ? `<w:hyperlink r:id="rIdLink"><w:r>${runs}</w:r></w:hyperlink>`
-    : `<w:r>${runs}</w:r>`;
-  return `<w:p>${style}${runWrapper}</w:p>`;
+    ? `<w:hyperlink r:id="rIdLink"><w:r>${runs}${pageBreak}${renderedBreak}</w:r></w:hyperlink>`
+    : `<w:r>${runs}${pageBreak}${renderedBreak}</w:r>`;
+  return `<w:p>${style ? style.replace('</w:pPr>', `${sectionBreak}</w:pPr>`) : sectionBreak ? `<w:pPr>${sectionBreak}</w:pPr>` : ''}${runWrapper}</w:p>`;
 }
 
 function tableXml(rows: DocxFixtureTable): string {
@@ -179,8 +193,11 @@ export function buildDocx(options: DocxFixtureOptions = {}): Uint8Array {
   if (!options.empty && bodyParts.length === 0) {
     bodyParts.push(paragraphXml({ text: 'Default fixture paragraph' }));
   }
+  const pageSize = options.pageSize ?? {};
+  const margins = options.margins ?? {};
+  const sectPr = `<w:sectPr><w:pgSz w:w="${pageSize.widthTwips ?? 12240}" w:h="${pageSize.heightTwips ?? 15840}"${pageSize.orientation ? ` w:orient="${pageSize.orientation}"` : ''}/><w:pgMar w:top="${margins.top ?? 1440}" w:right="${margins.right ?? 1440}" w:bottom="${margins.bottom ?? 1440}" w:left="${margins.left ?? 1440}" w:header="${margins.header ?? 720}" w:footer="${margins.footer ?? 720}"/></w:sectPr>`;
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr/></w:body></w:document>`;
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}${sectPr}</w:body></w:document>`;
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
@@ -233,6 +250,397 @@ export function buildDocx(options: DocxFixtureOptions = {}): Uint8Array {
     files['word/footer1.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${footerParagraphs}</w:ftr>`);
   }
+  return zipSync(files);
+}
+
+export interface DocxHeaderFooterSet {
+  default?: string[];
+  first?: string[];
+  even?: string[];
+}
+
+export interface DocxSectionFixture {
+  paragraphs: DocxFixtureParagraph[];
+  pageSize?: DocxFixtureOptions['pageSize'];
+  margins?: DocxFixtureOptions['margins'];
+  breakType?: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage';
+  titlePage?: boolean;
+  pageNumberStart?: number;
+  pageNumberFormat?: string;
+  columns?: number;
+  headers?: DocxHeaderFooterSet;
+  footers?: DocxHeaderFooterSet;
+}
+
+export interface DocxSectionedFixtureOptions {
+  sections: DocxSectionFixture[];
+  evenAndOddHeaders?: boolean;
+  includeStyles?: boolean;
+  includeNumbering?: boolean;
+  core?: DocxFixtureOptions['core'];
+}
+
+/**
+ * Builds real WordprocessingML sections with header/footer references,
+ * relationship targets, first/even variants, page numbering, and inherited
+ * section furniture. Used to validate section metadata against actual OOXML.
+ */
+export function buildDocxWithSections(options: DocxSectionedFixtureOptions): Uint8Array {
+  const files: Record<string, Uint8Array> = {};
+  const relationships: string[] = [];
+  let headerCounter = 0;
+  let footerCounter = 0;
+  let relationshipCounter = 0;
+  const contentOverrides: string[] = [];
+  const bodyParts: string[] = [];
+
+  const auxXml = (kind: 'header' | 'footer', texts: string[]): string => {
+    const tag = kind === 'header' ? 'hdr' : 'ftr';
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:${tag} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${texts.map((text) => paragraphXml({ text })).join('')}</w:${tag}>`;
+  };
+
+  for (let sectionIndex = 0; sectionIndex < options.sections.length; sectionIndex += 1) {
+    const section = options.sections[sectionIndex]!;
+    const references: string[] = [];
+    const registerFurniture = (kind: 'header' | 'footer', variants: DocxHeaderFooterSet | undefined) => {
+      if (!variants) return;
+      for (const variant of ['default', 'first', 'even'] as const) {
+        const texts = variants[variant];
+        if (!texts?.length) continue;
+        headerCounter += kind === 'header' ? 1 : 0;
+        footerCounter += kind === 'footer' ? 1 : 0;
+        const suffix = kind === 'header' ? headerCounter : footerCounter;
+        const partName = `${kind}${suffix}.xml`;
+        const relationshipId = `rIdSection${relationshipCounter += 1}`;
+        files[`word/${partName}`] = strToU8(auxXml(kind, texts));
+        relationships.push(`<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${kind}" Target="${partName}"/>`);
+        contentOverrides.push(`<Override PartName="/word/${partName}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml"/>`);
+        references.push(`<w:${kind}Reference w:type="${variant}" r:id="${relationshipId}"/>`);
+      }
+    };
+    registerFurniture('header', section.headers);
+    registerFurniture('footer', section.footers);
+
+    const pageSize = section.pageSize ?? {};
+    const margins = section.margins ?? {};
+    const sectionProperties = [
+      `<w:type w:val="${section.breakType ?? 'nextPage'}"/>`,
+      `<w:pgSz w:w="${pageSize.widthTwips ?? 12240}" w:h="${pageSize.heightTwips ?? 15840}"${pageSize.orientation ? ` w:orient="${pageSize.orientation}"` : ''}/>`,
+      `<w:pgMar w:top="${margins.top ?? 1440}" w:right="${margins.right ?? 1440}" w:bottom="${margins.bottom ?? 1440}" w:left="${margins.left ?? 1440}" w:header="${margins.header ?? 720}" w:footer="${margins.footer ?? 720}"/>`,
+      section.titlePage ? '<w:titlePg/>' : '',
+      section.pageNumberStart !== undefined || section.pageNumberFormat
+        ? `<w:pgNumType${section.pageNumberStart !== undefined ? ` w:start="${section.pageNumberStart}"` : ''}${section.pageNumberFormat ? ` w:fmt="${section.pageNumberFormat}"` : ''}/>`
+        : '',
+      section.columns && section.columns > 1 ? `<w:cols w:num="${section.columns}"/>` : '',
+      ...references,
+    ].filter(Boolean).join('');
+    const paragraphs = section.paragraphs.map((paragraph) => paragraphXml(paragraph));
+    if (sectionIndex === options.sections.length - 1) {
+      bodyParts.push(...paragraphs, `<w:sectPr>${sectionProperties}</w:sectPr>`);
+    } else {
+      if (paragraphs.length === 0) paragraphs.push('<w:p></w:p>');
+      const last = paragraphs.pop()!;
+      const wrappedSectionProperties = `<w:sectPr>${sectionProperties}</w:sectPr>`;
+      paragraphs.push(last.includes('<w:pPr>')
+        ? last.replace('</w:pPr>', `${wrappedSectionProperties}</w:pPr>`)
+        : last.replace('<w:p>', `<w:p><w:pPr>${wrappedSectionProperties}</w:pPr>`));
+      bodyParts.push(...paragraphs);
+    }
+  }
+
+  const coreXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">
+  <dc:title>${escapeXml(options.core?.title ?? 'Sectioned fixture document')}</dc:title>
+  <dc:creator>${escapeXml(options.core?.author ?? 'Fixture Author')}</dc:creator>
+  <dcterms:created>2026-01-02T03:04:05Z</dcterms:created>
+</cp:coreProperties>`;
+  files['[Content_Types].xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  ${contentOverrides.join('\n  ')}
+</Types>`);
+  files['_rels/.rels'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+</Relationships>`);
+  files['word/_rels/document.xml.rels'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+  ${relationships.join('\n  ')}
+</Relationships>`);
+  files['word/document.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}</w:body></w:document>`);
+  files['word/settings.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${options.evenAndOddHeaders ? '<w:evenAndOddHeaders/>' : ''}</w:settings>`);
+  files['docProps/core.xml'] = strToU8(coreXml);
+  if (options.includeStyles !== false) {
+    files['word/styles.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
+</w:styles>`);
+  }
+  if (options.includeNumbering !== false) {
+    files['word/numbering.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>`);
+  }
+  return zipSync(files);
+}
+
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+  'base64',
+);
+
+export interface DocxImageFixtureOptions {
+  alt?: string;
+  title?: string;
+  anchored?: boolean;
+  wrap?: 'square' | 'tight' | 'through' | 'topAndBottom' | 'none';
+  external?: boolean;
+  missingRelationship?: boolean;
+  missingMedia?: boolean;
+  invalidSignature?: boolean;
+  oversizedDimensions?: boolean;
+  caption?: string;
+  images?: number;
+}
+
+export function buildDocxWithImage(options: DocxImageFixtureOptions = {}): Uint8Array {
+  const imageCount = Math.max(1, options.images ?? 1);
+  const files: Record<string, Uint8Array> = {};
+  const relationships: string[] = [];
+  const body: string[] = [];
+  for (let index = 1; index <= imageCount; index += 1) {
+    const relationshipId = `rIdImg${index}`;
+    if (!options.missingRelationship) {
+      relationships.push(options.external
+        ? `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/image${index}.png" TargetMode="External"/>`
+        : `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${index}.png"/>`);
+    }
+    if (!options.external && !options.missingMedia) {
+      if (options.oversizedDimensions) {
+        const oversized = new Uint8Array(24);
+        oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20]);
+        files[`word/media/image${index}.png`] = oversized;
+      } else {
+        files[`word/media/image${index}.png`] = options.invalidSignature
+          ? strToU8('not a real image')
+          : PNG_1X1;
+      }
+    }
+    const wrapTag = options.wrap === 'none'
+      ? '<wp:wrapNone/>'
+      : options.wrap
+        ? `<wp:wrap${options.wrap[0]!.toUpperCase() + options.wrap.slice(1)}${['square', 'tight', 'through'].includes(options.wrap) ? ' wrapText="bothSides"' : ''}/>`
+        : '';
+    const drawing = options.anchored
+      ? `<w:drawing><wp:anchor behindDoc="0" layoutInCell="1" allowOverlap="1" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="1828800" cy="1371600"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${index}" name="image${index}" title="${escapeXml(options.title ?? '')}" descr="${escapeXml(options.alt ?? '')}"/>${wrapTag}<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${index}" name="image${index}.png" descr="${escapeXml(options.alt ?? '')}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing>`
+      : `<w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="1828800" cy="1371600"/><wp:docPr id="${index}" name="image${index}" title="${escapeXml(options.title ?? '')}" descr="${escapeXml(options.alt ?? '')}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${index}" name="image${index}.png" descr="${escapeXml(options.alt ?? '')}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+    body.push(`<w:p><w:r>${drawing}</w:r></w:p>`);
+    if (options.caption) {
+      body.push(`<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>${escapeXml(options.caption)}</w:t></w:r></w:p>`);
+    }
+  }
+  files['[Content_Types].xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`);
+  files['_rels/.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  files['word/_rels/document.xml.rels'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${relationships.join('')}</Relationships>`);
+  files['word/styles.xml'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="Caption"/></w:style></w:styles>');
+  files['word/document.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body.join('')}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`);
+  return zipSync(files);
+}
+
+export interface DocxTableImageFixtureOptions {
+  alt?: string;
+  title?: string;
+  caption?: string;
+  imagesPerCell?: number;
+  nested?: boolean;
+  missingRelationship?: boolean;
+  external?: boolean;
+  invalidSignature?: boolean;
+}
+
+function inlineImageXml(relationshipId: string, index: number, alt = '', title = ''): string {
+  return `<w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="1828800" cy="1371600"/><wp:docPr id="${index}" name="image${index}" title="${escapeXml(title)}" descr="${escapeXml(alt)}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${index}" name="image${index}.png" descr="${escapeXml(alt)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+}
+
+export function buildDocxWithTableImage(options: DocxTableImageFixtureOptions = {}): Uint8Array {
+  const imagesPerCell = Math.max(1, options.imagesPerCell ?? 1);
+  const files: Record<string, Uint8Array> = {};
+  const relationships: string[] = [];
+  let imageCounter = 0;
+  const imageParagraph = (cellIndex: number): string => {
+    const paragraphs: string[] = [];
+    for (let index = 0; index < imagesPerCell; index += 1) {
+      imageCounter += 1;
+      const relationshipId = `rIdCellImg${imageCounter}`;
+      if (!options.missingRelationship) {
+        relationships.push(options.external
+          ? `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/cell-${imageCounter}.png" TargetMode="External"/>`
+          : `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/cell-${imageCounter}.png"/>`);
+      }
+      if (!options.external && !options.missingRelationship) {
+        files[`word/media/cell-${imageCounter}.png`] = options.invalidSignature ? strToU8('not an image') : PNG_1X1;
+      }
+      paragraphs.push(`<w:p><w:r>${inlineImageXml(relationshipId, imageCounter, options.alt ?? `Cell ${cellIndex} image`, options.title ?? '')}</w:r></w:p>`);
+    }
+    if (options.caption) {
+      paragraphs.push(`<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>${escapeXml(options.caption)}</w:t></w:r></w:p>`);
+    }
+    return paragraphs.join('');
+  };
+  const nested = options.nested
+    ? `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc>${imageParagraph(3)}</w:tc><w:tc><w:p><w:r><w:t>Nested text</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/>`
+    : '';
+  const table = `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders><w:top w:val="single" w:sz="4"/><w:left w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/><w:right w:val="single" w:sz="4"/><w:insideH w:val="single" w:sz="4"/><w:insideV w:val="single" w:sz="4"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="4320"/><w:gridCol w:w="4320"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:gridSpan w:val="1"/></w:tcPr><w:p><w:r><w:t>Cell one</w:t></w:r></w:p>${imageParagraph(1)}${nested}</w:tc><w:tc><w:p><w:r><w:t>Cell two</w:t></w:r></w:p>${imageParagraph(2)}</w:tc></w:tr></w:tbl>`;
+  files['[Content_Types].xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`);
+  files['_rels/.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  files['word/_rels/document.xml.rels'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${relationships.join('')}</Relationships>`);
+  files['word/styles.xml'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="Caption"/></w:style></w:styles>');
+  files['word/document.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Table image introduction</w:t></w:r></w:p>${table}<w:p><w:r><w:t>Table image conclusion</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`);
+  return zipSync(files);
+}
+
+export interface DocxHeaderFooterImageFixtureOptions {
+  header?: boolean;
+  footer?: boolean;
+  variant?: 'default' | 'first' | 'even';
+  images?: number;
+  inheritedSections?: boolean;
+  secondSectionHeader?: boolean;
+  alt?: string;
+  caption?: string;
+  bodyParagraphs?: number;
+  missingRelationship?: boolean;
+  external?: boolean;
+  invalidSignature?: boolean;
+}
+
+export function buildDocxWithHeaderFooterImage(options: DocxHeaderFooterImageFixtureOptions = {}): Uint8Array {
+  const header = options.header !== false;
+  const footer = options.footer === true;
+  const variant = options.variant ?? 'default';
+  const images = Math.max(1, options.images ?? 1);
+  const files: Record<string, Uint8Array> = {};
+  const relationships: string[] = [];
+  const contentOverrides: string[] = [];
+  let imageCounter = 0;
+  const createPart = (kind: 'header' | 'footer', partIndex: number): { partName: string; relationshipId: string; xml: string } => {
+    const paragraphImages: string[] = [];
+    for (let index = 0; index < images; index += 1) {
+      imageCounter += 1;
+      const relationshipId = `rIdFurnitureImg${imageCounter}`;
+      if (!options.missingRelationship) {
+        relationships.push(options.external
+          ? `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/${kind}-${imageCounter}.png" TargetMode="External"/>`
+          : `<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${kind}-${imageCounter}.png"/>`);
+      }
+      if (!options.external && !options.missingRelationship) {
+        files[`word/media/${kind}-${imageCounter}.png`] = options.invalidSignature ? strToU8('not an image') : PNG_1X1;
+      }
+      paragraphImages.push(`<w:p><w:r>${inlineImageXml(relationshipId, imageCounter, options.alt ?? `${kind} logo`, '')}</w:r></w:p>`);
+    }
+    if (options.caption) {
+      paragraphImages.push(`<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>${escapeXml(options.caption)}</w:t></w:r></w:p>`);
+    }
+    const partName = `${kind}${partIndex}.xml`;
+    const relationshipId = `rId${kind}${partIndex}`;
+    files[`word/${partName}`] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:${kind === 'header' ? 'hdr' : 'ftr'} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:p><w:r><w:t>${kind} text</w:t></w:r></w:p>${paragraphImages.join('')}</w:${kind === 'header' ? 'hdr' : 'ftr'}>`);
+    files[`word/_rels/${partName}.rels`] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.filter((entry) => entry.includes(`rIdFurnitureImg`) && entry.includes(kind)).join('')}</Relationships>`);
+    contentOverrides.push(`<Override PartName="/word/${partName}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${kind}+xml"/>`);
+    return { partName, relationshipId, xml: '' };
+  };
+  const sections: string[] = [];
+  const firstHeader = header ? createPart('header', 1) : undefined;
+  const firstFooter = footer ? createPart('footer', 1) : undefined;
+  const secondHeader = options.secondSectionHeader ? createPart('header', 2) : undefined;
+  const headerReference = (part: { relationshipId: string } | undefined): string => (
+    part ? `<w:headerReference w:type="${variant}" r:id="${part.relationshipId}"/>` : ''
+  );
+  const footerReference = (part: { relationshipId: string } | undefined): string => (
+    part ? `<w:footerReference w:type="${variant}" r:id="${part.relationshipId}"/>` : ''
+  );
+  const bodyParagraphs = Array.from({ length: Math.max(1, options.bodyParagraphs ?? 2) }, (_, index) => (
+    `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:t>Header/footer fixture body paragraph ${index + 1} with deterministic text.</w:t></w:r></w:p>`
+  )).join('');
+  sections.push(`${bodyParagraphs}<w:sectPr>${variant === 'first' ? '<w:titlePg/>' : ''}${headerReference(firstHeader)}${footerReference(firstFooter)}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>`);
+  sections.push(`<w:p><w:r><w:t>${options.inheritedSections ? 'Inherited section body' : 'Second section body'}</w:t></w:r></w:p><w:sectPr>${options.secondSectionHeader && secondHeader ? headerReference(secondHeader) : ''}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>`);
+  files['[Content_Types].xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>${contentOverrides.join('')}</Types>`);
+  files['_rels/.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  const documentRelationships = [
+    '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
+    firstHeader ? `<Relationship Id="${firstHeader.relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="${firstHeader.partName}"/>` : '',
+    firstFooter ? `<Relationship Id="${firstFooter.relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="${firstFooter.partName}"/>` : '',
+    secondHeader ? `<Relationship Id="${secondHeader.relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="${secondHeader.partName}"/>` : '',
+  ].filter(Boolean).join('');
+  files['word/_rels/document.xml.rels'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${documentRelationships}</Relationships>`);
+  files['word/styles.xml'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="Caption"/></w:style></w:styles>');
+  files['word/document.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${sections.join('')}</w:body></w:document>`);
+  return zipSync(files);
+}
+
+export interface DocxFontFixtureOptions {
+  family?: string;
+  embedded?: boolean;
+  missingFontPart?: boolean;
+  corruptFont?: boolean;
+  themeMajor?: string;
+  themeMinor?: string;
+  useTheme?: boolean;
+  paragraphCount?: number;
+}
+
+function obfuscateEmbeddedFont(bytes: Uint8Array, key: string): Uint8Array {
+  const hex = key.replace(/[{}-]/g, '');
+  const keyBytes = new Uint8Array(16);
+  for (let index = 0; index < 16; index += 1) {
+    keyBytes[index] = Number.parseInt(hex.slice((15 - index) * 2, (15 - index) * 2 + 2), 16);
+  }
+  const output = new Uint8Array(bytes);
+  for (let index = 0; index < Math.min(32, output.length); index += 1) {
+    output[index] ^= keyBytes[index % 16]!;
+  }
+  return output;
+}
+
+export function buildDocxWithEmbeddedFont(options: DocxFontFixtureOptions = {}): Uint8Array {
+  const family = options.family ?? 'FormFlow Embedded Test';
+  const themeMajor = options.themeMajor ?? 'Calibri Light';
+  const themeMinor = options.themeMinor ?? family;
+  const key = '{00112233-4455-6677-8899-AABBCCDDEEFF}';
+  const fontPath = path.join(process.cwd(), 'node_modules', '@docx-editor.dev', 'fonts', 'assets', 'Carlito-Regular.ttf');
+  const fontBytes = options.embedded === false
+    ? new Uint8Array(0)
+    : options.corruptFont
+      ? strToU8('corrupted embedded font content')
+      : obfuscateEmbeddedFont(new Uint8Array(readFileSync(fontPath)), key);
+  const fontRuns = options.useTheme
+    ? '<w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/>'
+    : `<w:rFonts w:ascii="${escapeXml(family)}" w:hAnsi="${escapeXml(family)}"/>`;
+  const paragraphs = Array.from({ length: options.paragraphCount ?? 12 }, (_, index) => (
+    `<w:p><w:r><w:rPr>${fontRuns}<w:sz w:val="24"/></w:rPr><w:t>Font fixture paragraph ${index + 1} with deterministic text.</w:t></w:r></w:p>`
+  )).join('');
+  const files: Record<string, Uint8Array> = {};
+  files['[Content_Types].xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>`);
+  files['_rels/.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  files['word/_rels/document.xml.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdFontTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>');
+  files['word/fontTable.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="${escapeXml(family)}">${options.embedded === false ? '' : `<w:embedRegular r:id="rIdFont1" w:fontKey="${key}"/>`}</w:font></w:fonts>`);
+  files['word/_rels/fontTable.xml.rels'] = strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdFont1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.odttf"/></Relationships>');
+  if (!options.missingFontPart && options.embedded !== false) files['word/fonts/font1.odttf'] = fontBytes;
+  files['word/theme/theme1.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Fixture"><a:themeElements><a:fontScheme name="Fixture"><a:majorFont><a:latin typeface="${escapeXml(themeMajor)}"/><a:ea typeface=""/></a:majorFont><a:minorFont><a:latin typeface="${escapeXml(themeMinor)}"/><a:ea typeface=""/></a:minorFont></a:fontScheme></a:themeElements></a:theme>`);
+  files['word/document.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${paragraphs}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`);
   return zipSync(files);
 }
 

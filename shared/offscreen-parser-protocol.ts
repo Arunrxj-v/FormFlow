@@ -528,7 +528,13 @@ export function parseOffscreenParserResult(value: unknown, expectedFormat?: Offs
   const pagesNeedingOcr = value.pagesNeedingOcr.map((page, index) => assertInteger(page, `pagesNeedingOcr[${index}]`, 1, pageCount));
   if (new Set(pagesNeedingOcr).size !== pagesNeedingOcr.length) throw protocolError('Parser OCR page list contains duplicates.');
   if (ocrRequired && pagesNeedingOcr.length === 0) throw protocolError('Parser marked OCR required without pages.');
-  if (!ocrRequired && text.length === 0) throw protocolError('Parser returned empty text without OCR-required state.');
+  const rawStructure = value.structure;
+  const hasImageStructure = isObject(rawStructure)
+    && Array.isArray(rawStructure.blocks)
+    && rawStructure.blocks.some((block) => isObject(block) && block.type === 'image');
+  if (!ocrRequired && text.length === 0 && !hasImageStructure) {
+    throw protocolError('Parser returned empty text without OCR-required state or image structure.');
+  }
   if (!Array.isArray(value.warnings) || value.warnings.length > MAX_EXTRACTION_WARNINGS) {
     throw protocolError('Parser warnings are oversized.');
   }

@@ -1,5 +1,6 @@
 import type { DocumentParseInput } from '../../../core/documents/parsers/types';
 import { parseDocument } from '../../../core/documents/parsers';
+import { paginateDocxWithLocalRenderer } from './docx-layout';
 import {
   OFFSCREEN_PARSER_PROTOCOL_VERSION,
   parserErrorFromUnknown,
@@ -127,6 +128,53 @@ scope.onmessage = (event: MessageEvent<unknown>) => {
   void (async () => {
     try {
       const parsed = await parseDocument(input);
+      if (request.format === 'docx' && parsed.structure) {
+        const rendered = await paginateDocxWithLocalRenderer(request.bytes, parsed.structure, controller.signal);
+        if (rendered) {
+          const superseded = new Set([
+            'DOCX_PAGE_COUNT_UNAVAILABLE',
+            'DOCX_PAGINATION_UNAVAILABLE',
+            'DOCX_EXPLICIT_BREAK_PAGINATION',
+            'DOCX_RENDERER_REPORTED_BREAKS',
+            'DOCX_RENDERER_DERIVED_PAGINATION',
+            'DOCX_PAGINATION_MAPPING_APPROXIMATE',
+            'DOCX_PAGINATION_FONT_SUBSTITUTION',
+            'DOCX_RENDERER_CONTENT_WARNING',
+            'DOCX_PAGINATION_RENDERER_UNAVAILABLE',
+          ]);
+          parsed.structure = {
+            ...parsed.structure,
+            pagination: rendered.pagination,
+            ...(parsed.structure.docxLayout && (rendered.fonts || rendered.embeddedFonts) ? {
+              docxLayout: {
+                ...parsed.structure.docxLayout,
+                ...(rendered.fonts ? { fonts: rendered.fonts } : {}),
+                ...(rendered.embeddedFonts ? { embeddedFonts: rendered.embeddedFonts } : {}),
+              },
+            } : {}),
+            warnings: [
+              ...parsed.structure.warnings.filter((item) => !superseded.has(item.code) && !rendered.warnings.some((next) => next.code === item.code)),
+              ...rendered.warnings,
+            ],
+          };
+          parsed.warnings = parsed.structure.warnings;
+        } else if (parsed.structure.pagination) {
+          const fallbackWarning = {
+            code: 'DOCX_PAGINATION_RENDERER_UNAVAILABLE',
+            message: 'Automatic local DOCX layout did not complete. Page boundaries fall back to WordprocessingML break evidence and are not a physical page count.',
+          };
+          const fallbackWarnings = [...parsed.structure.warnings, fallbackWarning].slice(0, 100);
+          parsed.structure = {
+            ...parsed.structure,
+            pagination: {
+              ...parsed.structure.pagination,
+              warnings: [...parsed.structure.pagination.warnings, fallbackWarning].slice(0, 100),
+            },
+            warnings: fallbackWarnings,
+          };
+          parsed.warnings = parsed.structure.warnings;
+        }
+      }
       const result = parseOffscreenParserResult(parsed, request.format);
       post({
         type: 'PARSE_RESULT',

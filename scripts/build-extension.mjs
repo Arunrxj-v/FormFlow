@@ -15,6 +15,22 @@ const backupOut = path.join(buildRoot, `dist-backup-${process.pid}`);
 
 const TARGET = ['chrome109'];
 const testHooks = process.env.FORMFLOW_TEST_HOOKS === '1';
+const DOCX_LAYOUT_FONTS = [
+  ['Carlito-Regular.ttf', 'f6418f708baede9789daef5d458c0f53d2a888af9820e8062934e504fedc6595', 'Carlito', 400, 'normal'],
+  ['Carlito-Bold.ttf', 'bb5d20f79b82599ec72983597437373a80f2d2085fa91fc144fd74e876a594db', 'Carlito', 700, 'normal'],
+  ['Carlito-Italic.ttf', '0b019225e58d702bfedcbd35c21696769f8ee115cb6343f84c2f240312450d1c', 'Carlito', 400, 'italic'],
+  ['Carlito-BoldItalic.ttf', 'b32928186c119599e03ca6a1ffc680fdcb7fac95772f4b95d989cf6cd3861517', 'Carlito', 700, 'italic'],
+  ['LiberationSans-Regular.ttf', '76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8', 'Liberation Sans', 400, 'normal'],
+  ['LiberationSans-Bold.ttf', '788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173', 'Liberation Sans', 700, 'normal'],
+  ['LiberationSans-Italic.ttf', 'e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0', 'Liberation Sans', 400, 'italic'],
+  ['LiberationSans-BoldItalic.ttf', '698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee', 'Liberation Sans', 700, 'italic'],
+  ['LiberationSerif-Regular.ttf', '058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74', 'Liberation Serif', 400, 'normal'],
+  ['LiberationSerif-Bold.ttf', 'd754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce', 'Liberation Serif', 700, 'normal'],
+  ['LiberationSerif-Italic.ttf', '0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e', 'Liberation Serif', 400, 'italic'],
+  ['LiberationSerif-BoldItalic.ttf', 'f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7', 'Liberation Serif', 700, 'italic'],
+];
+const HARFBUZZ_WASM_SHA256 = '6eeed8e1bc9ad7773038e48ff8f9e07e0ad228572c594b45e5357e9c2f7a0b2e';
+const NODE_ONLY_LAYOUT_IMPORTS = ['fs', 'url', 'path', 'fs/promises', 'node:fs', 'node:url', 'node:path', 'node:fs/promises'];
 
 async function exists(target) {
   try {
@@ -37,6 +53,64 @@ async function requireFile(target, label = path.relative(tempOut, target)) {
 async function sha256File(target) {
   const data = await readFile(target);
   return createHash('sha256').update(data).digest('hex');
+}
+
+function sha256Bytes(data) {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * Normalize the vertical metrics the renderer reads for line boxes.
+ *
+ * The renderer combines each face's ascent with another face's descent on a
+ * mixed-font line. Its packaged Carlito face stores the same total line height as
+ * Word's own Carlito, but splits it as win-ascent/win-descent/zero-leading rather
+ * than the typo metrics LibreOffice and Word use. Moving the leading below the
+ * baseline keeps every single-face line height unchanged while making mixed runs
+ * use the same maximum ascent + maximum descent rule as the reference renderer.
+ */
+function normalizeFontVerticalMetrics(input) {
+  const bytes = new Uint8Array(input);
+  if (bytes.byteLength < 12) return bytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0) === 0x74746366) return bytes; // TTC: leave collections untouched.
+  const numTables = view.getUint16(4);
+  if (numTables < 3 || numTables > 256 || bytes.byteLength < 12 + numTables * 16) return bytes;
+  const tables = new Map();
+  for (let index = 0; index < numTables; index += 1) {
+    const record = 12 + index * 16;
+    const tag = String.fromCharCode(...bytes.slice(record, record + 4));
+    const offset = view.getUint32(record + 8);
+    const length = view.getUint32(record + 12);
+    if (offset + length > bytes.byteLength) return bytes;
+    tables.set(tag, { offset, length });
+  }
+  const head = tables.get('head');
+  const hhea = tables.get('hhea');
+  const os2 = tables.get('OS/2');
+  if (!head || !hhea || !os2 || head.length < 54 || hhea.length < 36 || os2.length < 78) return bytes;
+  const unitsPerEm = view.getUint16(head.offset + 18);
+  const hheaAscender = view.getInt16(hhea.offset + 4);
+  const hheaDescender = view.getInt16(hhea.offset + 6);
+  const hheaLineGap = view.getInt16(hhea.offset + 8);
+  const typoAscender = view.getInt16(os2.offset + 68);
+  const typoDescender = view.getInt16(os2.offset + 70);
+  const typoLineGap = view.getInt16(os2.offset + 72);
+  if (unitsPerEm <= 0 || unitsPerEm > 16_384) return bytes;
+  if (hheaAscender <= 0 || hheaDescender >= 0 || hheaLineGap < 0) return bytes;
+  const hheaTotal = hheaAscender - hheaDescender + hheaLineGap;
+  const typoValid = typoAscender > 0 && typoDescender < 0 && typoLineGap >= 0;
+  const typoTotal = typoAscender - typoDescender + typoLineGap;
+  const useTypo = typoValid && Math.abs(typoTotal - hheaTotal) <= 1;
+  const ascender = useTypo ? typoAscender : hheaAscender;
+  const descender = useTypo ? typoDescender : hheaDescender;
+  const lineGap = useTypo ? typoLineGap : hheaLineGap;
+  const total = ascender - descender + lineGap;
+  if (total <= 0 || total > unitsPerEm * 2) return bytes;
+  view.setInt16(hhea.offset + 4, ascender);
+  view.setInt16(hhea.offset + 6, descender - lineGap);
+  view.setInt16(hhea.offset + 8, 0);
+  return bytes;
 }
 
 async function copyVerified(source, target, expectedSha256) {
@@ -115,6 +189,9 @@ async function validateManifest(distDir) {
   if (!/script-src\s+'self'/.test(extensionCsp) || !/worker-src\s+'self'/.test(extensionCsp)) {
     throw new Error('The extension CSP must allow only local scripts and workers.');
   }
+  if (!/script-src\s+[^;]*'wasm-unsafe-eval'/.test(extensionCsp)) {
+    throw new Error('The extension CSP must allow packaged WebAssembly without enabling JavaScript eval.');
+  }
 
   const referenced = new Set();
   if (manifest.background?.service_worker) referenced.add(manifest.background.service_worker);
@@ -153,6 +230,12 @@ async function verifyBuild(distDir) {
   await requireFile(path.join(distDir, 'popup.css'), 'popup.css');
   await requireFile(path.join(distDir, 'dashboard.html'), 'dashboard.html');
   await requireFile(path.join(distDir, 'BUILD.txt'), 'BUILD.txt');
+  await requireFile(path.join(distDir, 'fonts', 'harfbuzz.wasm'), 'fonts/harfbuzz.wasm');
+  await requireFile(path.join(distDir, 'fonts', 'Carlito-Regular.ttf'), 'fonts/Carlito-Regular.ttf');
+  await requireFile(path.join(distDir, 'fonts', 'LiberationSans-Regular.ttf'), 'fonts/LiberationSans-Regular.ttf');
+  await requireFile(path.join(distDir, 'fonts', 'LiberationSerif-Regular.ttf'), 'fonts/LiberationSerif-Regular.ttf');
+  await requireFile(path.join(distDir, 'fonts', 'font-metrics.json'), 'fonts/font-metrics.json');
+  await requireFile(path.join(distDir, 'fonts', 'THIRD_PARTY_NOTICES.txt'), 'fonts/THIRD_PARTY_NOTICES.txt');
 
   const offscreenHtml = await readFile(path.join(distDir, 'offscreen-parser.html'), 'utf8');
   if (/<script\b(?![^>]*\bsrc=)[^>]*>/i.test(offscreenHtml)) {
@@ -163,6 +246,9 @@ async function verifyBuild(distDir) {
   }
   if (/\bon[a-z]+\s*=/i.test(offscreenHtml)) {
     throw new Error('Offscreen parser HTML must not contain inline event handlers.');
+  }
+  if (!/connect-src\s+'self'/.test(offscreenHtml) || !/font-src\s+'self'/.test(offscreenHtml)) {
+    throw new Error('Offscreen parser HTML must restrict network and font sources to the extension origin.');
   }
 
   const dashboardHtml = await readFile(path.join(distDir, 'dashboard.html'), 'utf8');
@@ -233,6 +319,9 @@ async function main() {
     const parserWorkerResult = await bundle(path.join(src, 'offscreen', 'parser-worker.ts'), path.join(tempOut, 'document-parser.worker.js'), {
       format: 'esm',
       metafile: true,
+      // The layout engine contains a dormant Node file-reader branch. It is never
+      // invoked in the extension, but esbuild still has to leave the imports intact.
+      external: NODE_ONLY_LAYOUT_IMPORTS,
       define: { __FORMFLOW_TEST_HOOKS__: testHooks ? 'true' : 'false' },
     });
     await cp(path.join(src, 'offscreen', 'parser.html'), path.join(tempOut, 'offscreen-parser.html'));
@@ -258,6 +347,8 @@ async function main() {
       /core[\\/]documents[\\/]parsers[\\/]/,
       /node_modules[\\/]mammoth/,
       /node_modules[\\/]fflate/,
+      /node_modules[\\/]@docx-editor\.dev[\\/]core/,
+      /node_modules[\\/]@docx-editor\.dev[\\/]fonts/,
     ];
     const backgroundInputs = bundledInputs(backgroundResult);
     const offscreenInputs = bundledInputs(offscreenResult);
@@ -270,6 +361,8 @@ async function main() {
     assertHasInput('Offscreen parser worker', parserInputs, /core[\\/]documents[\\/]parsers[\\/]index\.ts$/);
     assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]pdfjs-dist/);
     assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]mammoth/);
+    assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]@docx-editor\.dev[\\/]core[\\/]dist[\\/]export\.js$/);
+    assertHasInput('Offscreen parser worker', parserInputs, /node_modules[\\/]@docx-editor\.dev[\\/]fonts[\\/]dist[\\/]index\.js$/);
 
     const dashboardOut = path.join(buildRoot, `dashboard-${process.pid}-${Date.now()}`);
     await viteBuild({
@@ -337,6 +430,57 @@ async function main() {
     await writeFile(
       path.join(tempOut, 'tesseract', 'THIRD_PARTY_NOTICES.txt'),
       'Tesseract.js 7.0.0 — Apache-2.0\ntesseract.js-core 7.0.0 — Apache-2.0\neng traineddata (@tesseract.js-data/eng 1.0.0) — MIT\nAll OCR assets are bundled locally; no runtime download is used.\n',
+      'utf8',
+    );
+
+    const fontOut = path.join(tempOut, 'fonts');
+    await mkdir(fontOut, { recursive: true });
+    const fontManifest = [];
+    for (const [font, expectedSha256, family, weight, style] of DOCX_LAYOUT_FONTS) {
+      const sourcePath = path.join(root, 'node_modules', '@docx-editor.dev', 'fonts', 'assets', font);
+      const sourceBytes = await readFile(sourcePath);
+      const originalHash = sha256Bytes(sourceBytes);
+      if (originalHash !== expectedSha256) {
+        throw new Error(`Font asset integrity mismatch for ${font}: ${originalHash}`);
+      }
+      const patched = normalizeFontVerticalMetrics(sourceBytes);
+      await writeFile(path.join(fontOut, font), patched);
+      fontManifest.push({
+        file: font,
+        family,
+        weight,
+        style,
+        byteLength: patched.byteLength,
+        hash: `sha256:${sha256Bytes(patched)}`,
+      });
+    }
+    await writeFile(
+      path.join(fontOut, 'font-metrics.json'),
+      `${JSON.stringify({ version: 1, fonts: fontManifest }, null, 2)}\n`,
+      'utf8',
+    );
+    await copyVerified(
+      path.join(root, 'node_modules', '@docx-editor.dev', 'core', 'dist', 'harfbuzz.wasm'),
+      path.join(fontOut, 'harfbuzz.wasm'),
+      HARFBUZZ_WASM_SHA256,
+    );
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'core', 'licenses'), path.join(fontOut, 'licenses', 'core'), { recursive: true });
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'fonts', 'licenses'), path.join(fontOut, 'licenses', 'fonts'), { recursive: true });
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'core', 'LICENSE'), path.join(fontOut, 'licenses', 'core', 'LICENSE.txt'));
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'fonts', 'LICENSE'), path.join(fontOut, 'licenses', 'fonts', 'LICENSE.txt'));
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'core', 'THIRD_PARTY_NOTICES.md'), path.join(fontOut, 'licenses', 'core', 'THIRD_PARTY_NOTICES.md'));
+    await cp(path.join(root, 'node_modules', '@docx-editor.dev', 'fonts', 'THIRD_PARTY_NOTICES.md'), path.join(fontOut, 'licenses', 'fonts', 'THIRD_PARTY_NOTICES.md'));
+    await writeFile(
+      path.join(fontOut, 'THIRD_PARTY_NOTICES.txt'),
+      [
+        '@docx-editor.dev/core 2.38.0 — Apache-2.0',
+        '@docx-editor.dev/fonts 2.38.0 — Apache-2.0 AND OFL-1.1 AND LicenseRef-GUST-Font-License',
+        'HarfBuzz (harfbuzz.wasm) — MIT',
+        'Carlito — OFL-1.1',
+        'Liberation Sans/Serif — SIL Open Font License 1.1',
+        'All layout, WASM, and font assets are bundled locally; no runtime download is used.',
+        '',
+      ].join('\n'),
       'utf8',
     );
 

@@ -1,11 +1,16 @@
 import {
   DOCUMENT_STRUCTURE_SCHEMA_VERSION,
   MAX_EXTRACTION_WARNINGS,
+  MAX_IMAGE_APPEARANCES,
+  MAX_IMAGE_NESTED_TABLE_DEPTH,
+  MAX_PAGINATION_GEOMETRY_ENTRIES,
+  MAX_PAGINATION_LINES_PER_BLOCK,
   MAX_PDF_PAGES,
   MAX_STRUCTURE_BLOCKS,
   MAX_STRUCTURE_BLOCK_TEXT_CHARS,
   MAX_STRUCTURE_BOUNDING_BOXES,
   MAX_STRUCTURE_DEPTH,
+  MAX_STRUCTURE_IMAGES,
   MAX_STRUCTURE_READING_ORDER,
   MAX_STRUCTURE_SECTIONS,
   MAX_STRUCTURE_TABLES,
@@ -16,17 +21,41 @@ import {
 import type {
   DocumentBlockType,
   DocumentCoordinateSpace,
+  DocumentEmbeddedFont,
   DocumentExtractionProvenance,
+  DocumentFontFaceResolution,
+  DocumentFontResolution,
+  DocumentFontResolutionSource,
+  DocumentGeometryBox,
+  DocumentGeometryConfidence,
   DocumentPageExtractionMethod,
   DocumentPageSemantics,
   DocumentPageType,
+  DocumentPaginationBlockPage,
+  DocumentPaginationBreakReason,
+  DocumentPaginationCellGeometry,
+  DocumentPaginationColumnGeometry,
+  DocumentPaginationInfo,
+  DocumentPaginationLineGeometry,
+  DocumentPaginationMechanism,
+  DocumentPaginationPageKind,
+  DocumentPaginationRowGeometry,
+  DocumentPaginationStatus,
   DocumentStructure,
   DocumentStructureBlock,
   DocumentStructureBoundingBox,
+  DocumentStructureDocxColumns,
+  DocumentStructureDocxLayout,
+  DocumentStructureDocxSection,
+  DocumentStructureHeaderFooterReference,
+  DocumentStructureImage,
   DocumentStructurePage,
   DocumentStructureSection,
   DocumentStructureTable,
   DocumentStructureTextStyle,
+  DocumentImageAppearance,
+  DocumentStructureImageHeaderFooter,
+  DocumentThemeFonts,
   ExtractionWarning,
 } from './types';
 
@@ -69,7 +98,7 @@ export const STRUCTURE_LIMITS: StructureLimits = {
 
 const BLOCK_TYPES = new Set<DocumentBlockType>([
   'heading', 'paragraph', 'list', 'list_item', 'table', 'table_row',
-  'table_cell', 'header', 'footer', 'caption', 'unknown',
+  'table_cell', 'header', 'footer', 'caption', 'image', 'unknown',
 ]);
 const PROVENANCES = new Set<DocumentExtractionProvenance>([
   'pdf_native', 'docx_xml', 'ocr', 'mixed', 'inferred_from_layout', 'txt_native',
@@ -79,9 +108,38 @@ const PAGE_METHODS = new Set<DocumentPageExtractionMethod>([
   'pdf_native', 'docx_xml', 'ocr', 'mixed', 'txt_native',
 ]);
 const PAGE_SEMANTICS = new Set<DocumentPageSemantics>(['physical', 'logical']);
-const COORDINATE_SPACES = new Set<DocumentCoordinateSpace>(['pdf_page_points', 'ocr_render_pixels']);
+const COORDINATE_SPACES = new Set<DocumentCoordinateSpace>(['pdf_page_points', 'ocr_render_pixels', 'renderer_page_content_points', 'renderer_page_points']);
+const GEOMETRY_CONFIDENCES = new Set<DocumentGeometryConfidence>([
+  'exact', 'renderer_approximate', 'source_approximate', 'text_order', 'unavailable',
+]);
+const FONT_SOURCES = new Set<DocumentFontResolutionSource>([
+  'embedded', 'exact_local', 'metric_substitute', 'generic_fallback', 'unavailable',
+]);
+const IMAGE_POSITIONINGS = new Set(['inline', 'anchored']);
+const IMAGE_WRAPS = new Set([
+  'inline', 'square', 'squareLeft', 'squareRight', 'tight', 'through',
+  'topAndBottom', 'behind', 'inFront', 'unknown',
+]);
 const STRUCTURE_FORMATS = new Set(['pdf', 'docx', 'txt']);
 const ALIGNMENTS = new Set(['left', 'center', 'right', 'justified', 'unknown']);
+const PAGINATION_STATUSES = new Set<DocumentPaginationStatus>([
+  'logical_fallback', 'unavailable', 'explicit_breaks', 'renderer_reported_breaks',
+  'renderer_derived_physical', 'verified_physical',
+]);
+const PAGINATION_MECHANISMS = new Set<DocumentPaginationMechanism>([
+  'none', 'wordprocessingml_breaks', 'wordprocessingml_last_rendered_breaks',
+  'wordprocessingml_sections', 'local_renderer',
+]);
+const PAGINATION_PAGE_KINDS = new Set<DocumentPaginationPageKind>([
+  'logical', 'explicit_break_segment', 'renderer_reported', 'renderer_derived_physical', 'verified_physical',
+]);
+const PAGINATION_BREAK_REASONS = new Set<DocumentPaginationBreakReason>([
+  'document_start', 'explicit_page_break', 'last_rendered_page_break',
+  'section_break', 'renderer_generated', 'unknown',
+]);
+const HEADER_FOOTER_KINDS = new Set(['header', 'footer']);
+const HEADER_FOOTER_VARIANTS = new Set(['default', 'first', 'even']);
+const SECTION_BREAK_TYPES = new Set(['nextPage', 'continuous', 'evenPage', 'oddPage']);
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 
 function fail(message: string): never {
@@ -215,20 +273,133 @@ function style(value: unknown, label: string): DocumentStructureTextStyle {
   };
 }
 
+function imageHeaderFooter(value: unknown, label: string): DocumentStructureImageHeaderFooter {
+  const item = object(value, label);
+  exactKeys(item, ['kind', 'variant', 'partName', 'definingSectionIndex', 'inheritedSectionIndexes'], label);
+  const kind = enumeration(item.kind, `${label} kind`, new Set(['header', 'footer'])) as 'header' | 'footer';
+  const variant = enumeration(item.variant, `${label} variant`, HEADER_FOOTER_VARIANTS) as 'default' | 'first' | 'even';
+  const definingSectionIndex = integer(item.definingSectionIndex, `${label} defining section`, 0, 10_000);
+  const inherited = item.inheritedSectionIndexes === undefined
+    ? undefined
+    : array(item.inheritedSectionIndexes, `${label} inherited sections`, 1_000)
+      .map((entry, index) => integer(entry, `${label} inherited section ${index}`, 0, 10_000));
+  if (inherited) {
+    if (new Set(inherited).size !== inherited.length) fail(`${label} inherited sections contain duplicates.`);
+    if (inherited.includes(definingSectionIndex)) fail(`${label} inherited sections include its defining section.`);
+  }
+  return {
+    kind,
+    variant,
+    partName: text(item.partName, `${label} part`, 1, 200),
+    definingSectionIndex,
+    ...(inherited ? { inheritedSectionIndexes: inherited } : {}),
+  };
+}
+
+function imageAppearance(value: unknown, index: number, label: string, maxPage: number): DocumentImageAppearance {
+  const item = object(value, `${label} appearance ${index}`);
+  exactKeys(item, ['pageNumber', 'box', 'confidence'], `${label} appearance ${index}`);
+  return {
+    pageNumber: integer(item.pageNumber, `${label} appearance page`, 1, maxPage),
+    ...(item.box === undefined ? {} : { box: geometryBox(item.box, `${label} appearance box`, IMAGE_GEOMETRY_SPACES) }),
+    confidence: geometryConfidence(item.confidence, `${label} appearance confidence`),
+  };
+}
+
+function imageMetadata(value: unknown, label: string, maxPage: number, limits: StructureLimits): DocumentStructureImage {
+  const item = object(value, label);
+  exactKeys(
+    item,
+    [
+      'relationshipId', 'sourcePart', 'mediaPart', 'mimeType', 'external', 'originalWidthPx', 'originalHeightPx',
+      'displayWidthPt', 'displayHeightPt', 'positioning', 'wrap', 'alternativeText', 'title', 'placementId',
+      'sourceParagraphBlockId', 'sourceParagraphIndex', 'placementIndex', 'parentTableBlockId', 'parentRowBlockId',
+      'parentCellBlockId', 'tableId', 'rowIndex', 'columnIndex', 'nestedTableDepth', 'headerFooter', 'appearances',
+      'captionBlockId', 'captionText', 'warnings',
+    ],
+    label,
+  );
+  const external = boolean(item.external, `${label} external`);
+  const mimeType = item.mimeType === undefined ? undefined : text(item.mimeType, `${label} MIME type`, 1, 100);
+  if (mimeType && !/^image\/[A-Za-z0-9.+-]+$/.test(mimeType)) fail(`${label} MIME type is unsupported.`);
+  const appearances = item.appearances === undefined
+    ? undefined
+    : array(item.appearances, `${label} appearances`, MAX_IMAGE_APPEARANCES)
+      .map((entry, index) => imageAppearance(entry, index, label, maxPage));
+  if (appearances) {
+    if (new Set(appearances.map((entry) => entry.pageNumber)).size !== appearances.length) {
+      fail(`${label} appearances contain duplicate pages.`);
+    }
+  }
+  const parentTableBlockId = item.parentTableBlockId === undefined
+    ? undefined
+    : id(item.parentTableBlockId, `${label} parent table block`);
+  const parentRowBlockId = item.parentRowBlockId === undefined
+    ? undefined
+    : id(item.parentRowBlockId, `${label} parent row block`);
+  const parentCellBlockId = item.parentCellBlockId === undefined
+    ? undefined
+    : id(item.parentCellBlockId, `${label} parent cell block`);
+  if ((parentTableBlockId || parentRowBlockId || parentCellBlockId)
+    && !(parentTableBlockId && parentRowBlockId && parentCellBlockId)) {
+    fail(`${label} table image parents must include table, row, and cell references.`);
+  }
+  if ((parentTableBlockId || parentRowBlockId || parentCellBlockId) && item.headerFooter !== undefined) {
+    fail(`${label} cannot be both a table image and a header/footer image.`);
+  }
+  const nestedTableDepth = item.nestedTableDepth === undefined
+    ? undefined
+    : integer(item.nestedTableDepth, `${label} nested table depth`, 0, MAX_IMAGE_NESTED_TABLE_DEPTH);
+  return {
+    ...(item.relationshipId === undefined ? {} : { relationshipId: text(item.relationshipId, `${label} relationship`, 1, 80) }),
+    sourcePart: text(item.sourcePart, `${label} source part`, 1, 200),
+    ...(item.mediaPart === undefined ? {} : { mediaPart: text(item.mediaPart, `${label} media part`, 1, 200) }),
+    ...(mimeType === undefined ? {} : { mimeType }),
+    external,
+    ...(item.originalWidthPx === undefined ? {} : { originalWidthPx: integer(item.originalWidthPx, `${label} original width`, 0, 1_000_000) }),
+    ...(item.originalHeightPx === undefined ? {} : { originalHeightPx: integer(item.originalHeightPx, `${label} original height`, 0, 1_000_000) }),
+    displayWidthPt: number(item.displayWidthPt, `${label} display width`, 0, 1_000_000),
+    displayHeightPt: number(item.displayHeightPt, `${label} display height`, 0, 1_000_000),
+    positioning: enumeration(item.positioning, `${label} positioning`, IMAGE_POSITIONINGS) as DocumentStructureImage['positioning'],
+    wrap: enumeration(item.wrap, `${label} wrap`, IMAGE_WRAPS) as DocumentStructureImage['wrap'],
+    ...(item.alternativeText === undefined ? {} : { alternativeText: text(item.alternativeText, `${label} alternative text`, 0, 2_000) }),
+    ...(item.title === undefined ? {} : { title: text(item.title, `${label} title`, 0, 500) }),
+    ...(item.placementId === undefined ? {} : { placementId: text(item.placementId, `${label} placement id`, 1, 300) }),
+    ...(item.sourceParagraphBlockId === undefined ? {} : { sourceParagraphBlockId: id(item.sourceParagraphBlockId, `${label} source paragraph block`) }),
+    ...(item.sourceParagraphIndex === undefined ? {} : { sourceParagraphIndex: integer(item.sourceParagraphIndex, `${label} source paragraph index`, 0, 1_000_000) }),
+    ...(item.placementIndex === undefined ? {} : { placementIndex: integer(item.placementIndex, `${label} placement index`, 0, 1_000_000) }),
+    ...(parentTableBlockId === undefined ? {} : { parentTableBlockId }),
+    ...(parentRowBlockId === undefined ? {} : { parentRowBlockId }),
+    ...(parentCellBlockId === undefined ? {} : { parentCellBlockId }),
+    ...(item.tableId === undefined ? {} : { tableId: text(item.tableId, `${label} table id`, 1, 100) }),
+    ...(item.rowIndex === undefined ? {} : { rowIndex: integer(item.rowIndex, `${label} row index`, 0, limits.maxTableRows) }),
+    ...(item.columnIndex === undefined ? {} : { columnIndex: integer(item.columnIndex, `${label} column index`, 0, limits.maxTableCells) }),
+    ...(nestedTableDepth === undefined ? {} : { nestedTableDepth }),
+    ...(item.headerFooter === undefined ? {} : { headerFooter: imageHeaderFooter(item.headerFooter, `${label} header/footer`) }),
+    ...(appearances ? { appearances } : {}),
+    ...(item.captionBlockId === undefined ? {} : { captionBlockId: id(item.captionBlockId, `${label} caption block`) }),
+    ...(item.captionText === undefined ? {} : { captionText: text(item.captionText, `${label} caption text`, 0, 1_000) }),
+    warnings: warningList(item.warnings, `${label} warnings`, maxPage, limits.maxWarnings),
+  };
+}
+
 function block(value: unknown, index: number, limits: StructureLimits, maxPage: number): DocumentStructureBlock {
   const label = `Structured block ${index}`;
   const item = object(value, label);
   exactKeys(
     item,
-    ['blockId', 'type', 'text', 'pageId', 'pageNumber', 'order', 'parentId', 'children', 'boundingBox', 'confidence', 'provenance', 'layoutInferred', 'sourceRef', 'level', 'style', 'listMarker', 'tableId', 'rowIndex', 'columnIndex', 'rowSpan', 'columnSpan', 'warnings'],
+    ['blockId', 'type', 'text', 'pageId', 'pageNumber', 'order', 'parentId', 'children', 'boundingBox', 'confidence', 'provenance', 'layoutInferred', 'sourceRef', 'level', 'style', 'listMarker', 'tableId', 'rowIndex', 'columnIndex', 'rowSpan', 'columnSpan', 'columnBreakAfter', 'image', 'warnings'],
     label,
   );
+  const type = enumeration(item.type, `${label} type`, BLOCK_TYPES);
+  if (type === 'image' && item.image === undefined) fail(`${label} image block is missing image metadata.`);
+  if (type !== 'image' && item.image !== undefined) fail(`${label} only image blocks may carry image metadata.`);
   const children = item.children === undefined
     ? undefined
     : array(item.children, `${label} children`, limits.maxBlocks).map((child, childIndex) => id(child, `${label} child ${childIndex}`));
   return {
     blockId: id(item.blockId, `${label} id`),
-    type: enumeration(item.type, `${label} type`, BLOCK_TYPES),
+    type,
     text: text(item.text, `${label} text`, 0, limits.maxBlockTextChars),
     pageId: id(item.pageId, `${label} page id`),
     pageNumber: integer(item.pageNumber, `${label} page number`, 1, maxPage),
@@ -250,6 +421,10 @@ function block(value: unknown, index: number, limits: StructureLimits, maxPage: 
     ...(item.columnIndex === undefined ? {} : { columnIndex: integer(item.columnIndex, `${label} column index`, 0, limits.maxTableCells) }),
     ...(item.rowSpan === undefined ? {} : { rowSpan: integer(item.rowSpan, `${label} row span`, 1, limits.maxTableRows) }),
     ...(item.columnSpan === undefined ? {} : { columnSpan: integer(item.columnSpan, `${label} column span`, 1, limits.maxTableCells) }),
+    ...(optionalBoolean(item.columnBreakAfter, `${label} column break after`) !== undefined
+      ? { columnBreakAfter: optionalBoolean(item.columnBreakAfter, `${label} column break after`) }
+      : {}),
+    ...(item.image === undefined ? {} : { image: imageMetadata(item.image, `${label} image`, maxPage, limits) }),
     ...(item.warnings === undefined
       ? {}
       : { warnings: warningList(item.warnings, `${label} warnings`, maxPage, limits.maxWarnings) }),
@@ -337,6 +512,482 @@ function table(value: unknown, index: number, limits: StructureLimits, maxPage: 
   };
 }
 
+function paginationMargins(value: unknown, label: string): DocumentPaginationInfo['pages'][number]['margins'] {
+  const item = object(value, label);
+  exactKeys(item, ['topPt', 'rightPt', 'bottomPt', 'leftPt', 'headerPt', 'footerPt'], label);
+  return {
+    topPt: number(item.topPt, `${label} top`, 0, 10_000),
+    rightPt: number(item.rightPt, `${label} right`, 0, 10_000),
+    bottomPt: number(item.bottomPt, `${label} bottom`, 0, 10_000),
+    leftPt: number(item.leftPt, `${label} left`, 0, 10_000),
+    ...(item.headerPt === undefined ? {} : { headerPt: number(item.headerPt, `${label} header`, 0, 10_000) }),
+    ...(item.footerPt === undefined ? {} : { footerPt: number(item.footerPt, `${label} footer`, 0, 10_000) }),
+  };
+}
+
+function geometryBox(
+  value: unknown,
+  label: string,
+  spaces: ReadonlySet<string> = new Set(['renderer_page_content_points']),
+): DocumentGeometryBox {
+  const item = object(value, label);
+  exactKeys(item, ['x', 'y', 'width', 'height', 'coordinateSpace'], label);
+  if (typeof item.coordinateSpace !== 'string' || !spaces.has(item.coordinateSpace)) {
+    fail(`${label} coordinate space is unsupported.`);
+  }
+  return {
+    x: number(item.x, `${label} x`, 0, 1_000_000),
+    y: number(item.y, `${label} y`, 0, 1_000_000),
+    width: number(item.width, `${label} width`, 0, 1_000_000),
+    height: number(item.height, `${label} height`, 0, 1_000_000),
+    coordinateSpace: item.coordinateSpace as DocumentGeometryBox['coordinateSpace'],
+  };
+}
+const IMAGE_GEOMETRY_SPACES = new Set(['renderer_page_content_points', 'renderer_page_points']);
+
+function geometryConfidence(value: unknown, label: string): DocumentGeometryConfidence {
+  return enumeration(value, label, GEOMETRY_CONFIDENCES);
+}
+
+function lineGeometry(value: unknown, index: number, label: string, maxPage: number): DocumentPaginationLineGeometry {
+  const item = object(value, `${label} line ${index}`);
+  exactKeys(item, ['lineIndex', 'pageNumber', 'fragmentIndex', 'box', 'columnIndex', 'confidence'], `${label} line ${index}`);
+  return {
+    lineIndex: integer(item.lineIndex, `${label} line index`, 0, 1_000_000),
+    pageNumber: integer(item.pageNumber, `${label} line page`, 1, maxPage),
+    fragmentIndex: integer(item.fragmentIndex, `${label} line fragment`, 0, 1_000_000),
+    box: geometryBox(item.box, `${label} line box`),
+    ...(item.columnIndex === undefined ? {} : { columnIndex: integer(item.columnIndex, `${label} line column`, 0, 64) }),
+    confidence: geometryConfidence(item.confidence, `${label} line confidence`),
+  };
+}
+
+function cellGeometry(value: unknown, index: number, label: string, maxPage: number, limits: StructureLimits): DocumentPaginationCellGeometry {
+  const item = object(value, `${label} cell ${index}`);
+  exactKeys(
+    item,
+    ['rowIndex', 'columnIndex', 'rowSpan', 'columnSpan', 'pageNumber', 'fragmentIndex', 'box', 'confidence', 'repeatedHeader'],
+    `${label} cell ${index}`,
+  );
+  return {
+    rowIndex: integer(item.rowIndex, `${label} cell row`, 0, limits.maxTableRows),
+    columnIndex: integer(item.columnIndex, `${label} cell column`, 0, limits.maxTableCells),
+    ...(item.rowSpan === undefined ? {} : { rowSpan: integer(item.rowSpan, `${label} cell row span`, 1, limits.maxTableRows) }),
+    ...(item.columnSpan === undefined ? {} : { columnSpan: integer(item.columnSpan, `${label} cell column span`, 1, limits.maxTableCells) }),
+    pageNumber: integer(item.pageNumber, `${label} cell page`, 1, maxPage),
+    fragmentIndex: integer(item.fragmentIndex, `${label} cell fragment`, 0, 1_000_000),
+    box: geometryBox(item.box, `${label} cell box`),
+    confidence: geometryConfidence(item.confidence, `${label} cell confidence`),
+    ...(optionalBoolean(item.repeatedHeader, `${label} cell repeated header`) !== undefined
+      ? { repeatedHeader: optionalBoolean(item.repeatedHeader, `${label} cell repeated header`) }
+      : {}),
+  };
+}
+
+function rowGeometry(value: unknown, index: number, label: string, maxPage: number, limits: StructureLimits): DocumentPaginationRowGeometry {
+  const item = object(value, `${label} row ${index}`);
+  exactKeys(
+    item,
+    ['rowIndex', 'pageNumber', 'fragmentIndex', 'box', 'isHeaderRow', 'isHeaderRepeat', 'isContinuation', 'hasContinuation', 'confidence', 'cells'],
+    `${label} row ${index}`,
+  );
+  const cells = item.cells === undefined
+    ? undefined
+    : array(item.cells, `${label} row cells`, limits.maxTableCells)
+      .map((cell, cellIndex) => cellGeometry(cell, cellIndex, `${label} row ${index}`, maxPage, limits));
+  return {
+    rowIndex: integer(item.rowIndex, `${label} row index`, 0, limits.maxTableRows),
+    pageNumber: integer(item.pageNumber, `${label} row page`, 1, maxPage),
+    fragmentIndex: integer(item.fragmentIndex, `${label} row fragment`, 0, 1_000_000),
+    box: geometryBox(item.box, `${label} row box`),
+    ...(optionalBoolean(item.isHeaderRow, `${label} row header`) !== undefined ? { isHeaderRow: optionalBoolean(item.isHeaderRow, `${label} row header`) } : {}),
+    ...(optionalBoolean(item.isHeaderRepeat, `${label} row repeated header`) !== undefined ? { isHeaderRepeat: optionalBoolean(item.isHeaderRepeat, `${label} row repeated header`) } : {}),
+    ...(optionalBoolean(item.isContinuation, `${label} row continuation`) !== undefined ? { isContinuation: optionalBoolean(item.isContinuation, `${label} row continuation`) } : {}),
+    ...(optionalBoolean(item.hasContinuation, `${label} row has continuation`) !== undefined ? { hasContinuation: optionalBoolean(item.hasContinuation, `${label} row has continuation`) } : {}),
+    confidence: geometryConfidence(item.confidence, `${label} row confidence`),
+    ...(cells ? { cells } : {}),
+  };
+}
+
+function columnGeometry(value: unknown, index: number, label: string, maxPage: number): DocumentPaginationColumnGeometry {
+  const item = object(value, `${label} column ${index}`);
+  exactKeys(
+    item,
+    ['pageNumber', 'columnIndex', 'sectionIndex', 'box', 'widthPt', 'heightPt', 'confidence', 'source'],
+    `${label} column ${index}`,
+  );
+  const source = enumeration(item.source, `${label} column source`, new Set(['section_properties', 'renderer_content', 'mixed']));
+  return {
+    pageNumber: integer(item.pageNumber, `${label} column page`, 1, maxPage),
+    columnIndex: integer(item.columnIndex, `${label} column index`, 0, 64),
+    ...(item.sectionIndex === undefined ? {} : { sectionIndex: integer(item.sectionIndex, `${label} column section`, 0, 10_000) }),
+    box: geometryBox(item.box, `${label} column box`),
+    widthPt: number(item.widthPt, `${label} column width`, 0, 1_000_000),
+    heightPt: number(item.heightPt, `${label} column height`, 0, 1_000_000),
+    confidence: geometryConfidence(item.confidence, `${label} column confidence`),
+    source: source as DocumentPaginationColumnGeometry['source'],
+  };
+}
+
+function fontFaceResolution(value: unknown, index: number, label: string): DocumentFontFaceResolution {
+  const item = object(value, `${label} face ${index}`);
+  exactKeys(
+    item,
+    ['weight', 'style', 'requestedFamily', 'resolvedFamily', 'source', 'exact', 'substituted', 'embedded', 'identity', 'warning'],
+    `${label} face ${index}`,
+  );
+  return {
+    weight: integer(item.weight, `${label} face weight`, 1, 1_000),
+    style: enumeration(item.style, `${label} face style`, new Set(['normal', 'italic'])) as 'normal' | 'italic',
+    requestedFamily: text(item.requestedFamily, `${label} face requested family`, 1, 200),
+    ...(item.resolvedFamily === undefined ? {} : { resolvedFamily: text(item.resolvedFamily, `${label} face resolved family`, 1, 200) }),
+    source: enumeration(item.source, `${label} face source`, FONT_SOURCES),
+    exact: boolean(item.exact, `${label} face exact`),
+    substituted: boolean(item.substituted, `${label} face substituted`),
+    embedded: boolean(item.embedded, `${label} face embedded`),
+    ...(item.identity === undefined ? {} : { identity: text(item.identity, `${label} face identity`, 1, 200) }),
+    ...(item.warning === undefined ? {} : { warning: text(item.warning, `${label} face warning`, 1, 500) }),
+  };
+}
+
+function fontResolution(value: unknown, index: number, label: string): DocumentFontResolution {
+  const item = object(value, `${label} font ${index}`);
+  exactKeys(item, ['requestedFamily', 'resolvedFamily', 'source', 'exact', 'substituted', 'embedded', 'coverage', 'faces', 'warnings'], `${label} font ${index}`);
+  return {
+    requestedFamily: text(item.requestedFamily, `${label} font requested family`, 1, 200),
+    ...(item.resolvedFamily === undefined ? {} : { resolvedFamily: text(item.resolvedFamily, `${label} font resolved family`, 1, 200) }),
+    source: enumeration(item.source, `${label} font source`, FONT_SOURCES),
+    exact: boolean(item.exact, `${label} font exact`),
+    substituted: boolean(item.substituted, `${label} font substituted`),
+    embedded: boolean(item.embedded, `${label} font embedded`),
+    coverage: enumeration(item.coverage, `${label} font coverage`, new Set(['complete', 'partial', 'none'])) as DocumentFontResolution['coverage'],
+    faces: array(item.faces, `${label} font faces`, 8).map((face, faceIndex) => fontFaceResolution(face, faceIndex, `${label} font ${index}`)),
+    warnings: array(item.warnings, `${label} font warnings`, 16).map((warning, warningIndex) => text(warning, `${label} font warning ${warningIndex}`, 1, 500)),
+  };
+}
+
+function embeddedFont(value: unknown, index: number, label: string): DocumentEmbeddedFont {
+  const item = object(value, `${label} embedded font ${index}`);
+  exactKeys(item, ['family', 'style', 'partName', 'relationshipId', 'fontKey', 'status', 'warning'], `${label} embedded font ${index}`);
+  return {
+    family: text(item.family, `${label} embedded font family`, 1, 200),
+    style: enumeration(item.style, `${label} embedded font style`, new Set(['regular', 'bold', 'italic', 'boldItalic'])) as DocumentEmbeddedFont['style'],
+    ...(item.partName === undefined ? {} : { partName: text(item.partName, `${label} embedded font part`, 1, 200) }),
+    ...(item.relationshipId === undefined ? {} : { relationshipId: text(item.relationshipId, `${label} embedded font relationship`, 1, 80) }),
+    ...(item.fontKey === undefined ? {} : { fontKey: text(item.fontKey, `${label} embedded font key`, 1, 80) }),
+    status: enumeration(item.status, `${label} embedded font status`, new Set(['declared', 'used', 'dropped', 'oversize', 'malformed'])) as DocumentEmbeddedFont['status'],
+    ...(item.warning === undefined ? {} : { warning: text(item.warning, `${label} embedded font warning`, 1, 500) }),
+  };
+}
+
+function themeFonts(value: unknown, label: string): DocumentThemeFonts {
+  const item = object(value, label);
+  exactKeys(item, ['major', 'minor', 'majorEastAsia', 'minorEastAsia'], label);
+  return {
+    ...(item.major === undefined ? {} : { major: text(item.major, `${label} major`, 1, 200) }),
+    ...(item.minor === undefined ? {} : { minor: text(item.minor, `${label} minor`, 1, 200) }),
+    ...(item.majorEastAsia === undefined ? {} : { majorEastAsia: text(item.majorEastAsia, `${label} major East Asia`, 1, 200) }),
+    ...(item.minorEastAsia === undefined ? {} : { minorEastAsia: text(item.minorEastAsia, `${label} minor East Asia`, 1, 200) }),
+  };
+}
+
+function docxColumns(value: unknown, label: string): DocumentStructureDocxColumns {
+  const item = object(value, label);
+  exactKeys(item, ['count', 'equalWidth', 'gapPt', 'separator', 'widthsPt', 'gapsPt', 'rightToLeft'], label);
+  const count = integer(item.count, `${label} count`, 1, 100);
+  const widths = item.widthsPt === undefined ? undefined : array(item.widthsPt, `${label} widths`, 100)
+    .map((width, index) => number(width, `${label} width ${index}`, 0, 1_000_000));
+  const gaps = item.gapsPt === undefined ? undefined : array(item.gapsPt, `${label} gaps`, 100)
+    .map((gap, index) => number(gap, `${label} gap ${index}`, 0, 1_000_000));
+  if (widths && widths.length !== count) fail(`${label} width count is inconsistent.`);
+  if (gaps && gaps.length !== count) fail(`${label} gap count is inconsistent.`);
+  return {
+    count,
+    equalWidth: boolean(item.equalWidth, `${label} equal width`),
+    gapPt: number(item.gapPt, `${label} gap`, 0, 1_000_000),
+    separator: boolean(item.separator, `${label} separator`),
+    ...(widths ? { widthsPt: widths } : {}),
+    ...(gaps ? { gapsPt: gaps } : {}),
+    ...(optionalBoolean(item.rightToLeft, `${label} right to left`) !== undefined
+      ? { rightToLeft: optionalBoolean(item.rightToLeft, `${label} right to left`) }
+      : {}),
+  };
+}
+
+function headerFooterReference(
+  value: unknown,
+  label: string,
+  kind: 'header' | 'footer',
+  sectionIndex: number,
+  blockIds: Set<string>,
+  maxBlocks: number,
+): DocumentStructureHeaderFooterReference {
+  const item = object(value, label);
+  exactKeys(
+    item,
+    ['kind', 'variant', 'relationshipId', 'partName', 'inherited', 'definingSectionIndex', 'blockIds'],
+    label,
+  );
+  const actualKind = enumeration(item.kind, `${label} kind`, HEADER_FOOTER_KINDS) as 'header' | 'footer';
+  if (actualKind !== kind) fail(`${label} kind is inconsistent with its section collection.`);
+  const definingSectionIndex = integer(item.definingSectionIndex, `${label} defining section`, 0, sectionIndex);
+  const referenceBlocks = array(item.blockIds, `${label} blocks`, maxBlocks).map((entry, index) => {
+    const blockId = id(entry, `${label} block ${index}`);
+    if (!blockIds.has(blockId)) fail(`${label} references an unknown block.`);
+    return blockId;
+  });
+  if (new Set(referenceBlocks).size !== referenceBlocks.length) fail(`${label} contains duplicate blocks.`);
+  return {
+    kind,
+    variant: enumeration(item.variant, `${label} variant`, HEADER_FOOTER_VARIANTS) as 'default' | 'first' | 'even',
+    ...(item.relationshipId === undefined ? {} : { relationshipId: text(item.relationshipId, `${label} relationship`, 1, 80) }),
+    ...(item.partName === undefined ? {} : { partName: text(item.partName, `${label} part`, 1, 200) }),
+    inherited: boolean(item.inherited, `${label} inherited`),
+    definingSectionIndex,
+    blockIds: referenceBlocks,
+  };
+}
+
+function docxLayoutInfo(
+  value: unknown,
+  limits: StructureLimits,
+  blockIds: Set<string>,
+): DocumentStructureDocxLayout {
+  const item = object(value, 'DOCX layout metadata');
+  exactKeys(item, ['evenAndOddHeaders', 'sections', 'fonts', 'embeddedFonts', 'themeFonts'], 'DOCX layout metadata');
+  const sections = array(item.sections, 'DOCX layout sections', limits.maxSections).map((entry, index): DocumentStructureDocxSection => {
+    const label = `DOCX layout section ${index}`;
+    const sectionObject = object(entry, label);
+    exactKeys(
+      sectionObject,
+      [
+        'sectionIndex', 'breakType', 'pageWidthPt', 'pageHeightPt', 'orientation', 'margins',
+        'columnCount', 'columns', 'columnBreakCount', 'titlePage', 'pageNumberStart', 'pageNumberFormat', 'headers', 'footers',
+      ],
+      label,
+    );
+    const sectionIndex = integer(sectionObject.sectionIndex, `${label} index`, 0, limits.maxSections - 1);
+    if (sectionIndex !== index) fail(`${label} is out of order.`);
+    const headers = array(sectionObject.headers, `${label} headers`, 3)
+      .map((reference, referenceIndex) => headerFooterReference(reference, `${label} header ${referenceIndex}`, 'header', sectionIndex, blockIds, limits.maxBlocks));
+    const footers = array(sectionObject.footers, `${label} footers`, 3)
+      .map((reference, referenceIndex) => headerFooterReference(reference, `${label} footer ${referenceIndex}`, 'footer', sectionIndex, blockIds, limits.maxBlocks));
+    for (const references of [headers, footers]) {
+      if (new Set(references.map((reference) => reference.variant)).size !== references.length) {
+        fail(`${label} contains duplicate header/footer variants.`);
+      }
+    }
+    return {
+      sectionIndex,
+      breakType: enumeration(sectionObject.breakType, `${label} break type`, SECTION_BREAK_TYPES) as DocumentStructureDocxSection['breakType'],
+      pageWidthPt: number(sectionObject.pageWidthPt, `${label} page width`, 1, 1_000_000),
+      pageHeightPt: number(sectionObject.pageHeightPt, `${label} page height`, 1, 1_000_000),
+      orientation: enumeration(sectionObject.orientation, `${label} orientation`, new Set(['portrait', 'landscape'])) as 'portrait' | 'landscape',
+      margins: paginationMargins(sectionObject.margins, `${label} margins`)!,
+      ...(sectionObject.columnCount === undefined ? {} : { columnCount: integer(sectionObject.columnCount, `${label} column count`, 1, 100) }),
+      ...(sectionObject.columns === undefined ? {} : { columns: docxColumns(sectionObject.columns, `${label} columns`) }),
+      ...(sectionObject.columnBreakCount === undefined ? {} : { columnBreakCount: integer(sectionObject.columnBreakCount, `${label} column break count`, 0, 1_000_000) }),
+      ...(sectionObject.titlePage === undefined ? {} : { titlePage: boolean(sectionObject.titlePage, `${label} title page`) }),
+      ...(sectionObject.pageNumberStart === undefined ? {} : { pageNumberStart: integer(sectionObject.pageNumberStart, `${label} page number start`, 1, 1_000_000_000) }),
+      ...(sectionObject.pageNumberFormat === undefined ? {} : { pageNumberFormat: text(sectionObject.pageNumberFormat, `${label} page number format`, 1, 32) }),
+      headers,
+      footers,
+    };
+  });
+  return {
+    evenAndOddHeaders: boolean(item.evenAndOddHeaders, 'DOCX even/odd headers flag'),
+    sections,
+    ...(item.fonts === undefined ? {} : {
+      fonts: array(item.fonts, 'DOCX font resolutions', 256).map((font, index) => fontResolution(font, index, 'DOCX')),
+    }),
+    ...(item.embeddedFonts === undefined ? {} : {
+      embeddedFonts: array(item.embeddedFonts, 'DOCX embedded fonts', 64).map((font, index) => embeddedFont(font, index, 'DOCX')),
+    }),
+    ...(item.themeFonts === undefined ? {} : { themeFonts: themeFonts(item.themeFonts, 'DOCX theme fonts') }),
+  };
+}
+
+function paginationInfo(
+  value: unknown,
+  limits: StructureLimits,
+  blockIds: Set<string>,
+  maxPage: number,
+): DocumentPaginationInfo {
+  const item = object(value, 'Document pagination');
+  exactKeys(item, ['status', 'mechanism', 'pageCount', 'pages', 'blockPages', 'warnings', 'renderer', 'geometry'], 'Document pagination');
+  const status = enumeration(item.status, 'Document pagination status', PAGINATION_STATUSES);
+  const mechanism = enumeration(item.mechanism, 'Document pagination mechanism', PAGINATION_MECHANISMS);
+  const pageCount = integer(item.pageCount, 'Document pagination page count', 0, maxPage);
+  let geometryLineCount = 0;
+  let geometryCellCount = 0;
+  let geometryColumnCount = 0;
+  const geometryEntries = () => geometryLineCount + geometryCellCount + geometryColumnCount;
+  const pages = array(item.pages, 'Document pagination pages', limits.maxPages).map((entry, index) => {
+    const label = `Document pagination page ${index}`;
+    const page = object(entry, label);
+    exactKeys(
+      page,
+      ['pageNumber', 'pageKind', 'blockIds', 'breakReason', 'pageWidthPt', 'pageHeightPt', 'orientation', 'margins', 'sectionIndex', 'sectionIndexApproximate', 'columnCount', 'columns'],
+      label,
+    );
+    const pageBlockIds = array(page.blockIds, `${label} block ids`, limits.maxBlocks)
+      .map((blockId, blockIndex) => {
+        const parsed = id(blockId, `${label} block ${blockIndex}`);
+        if (!blockIds.has(parsed)) fail(`${label} references an unknown block.`);
+        return parsed;
+      });
+    let margins;
+    if (page.margins !== undefined) {
+      const value = object(page.margins, `${label} margins`);
+      exactKeys(value, ['topPt', 'rightPt', 'bottomPt', 'leftPt', 'headerPt', 'footerPt'], `${label} margins`);
+      margins = {
+        topPt: number(value.topPt, `${label} top margin`, 0, 10_000),
+        rightPt: number(value.rightPt, `${label} right margin`, 0, 10_000),
+        bottomPt: number(value.bottomPt, `${label} bottom margin`, 0, 10_000),
+        leftPt: number(value.leftPt, `${label} left margin`, 0, 10_000),
+        ...(value.headerPt === undefined ? {} : { headerPt: number(value.headerPt, `${label} header margin`, 0, 10_000) }),
+        ...(value.footerPt === undefined ? {} : { footerPt: number(value.footerPt, `${label} footer margin`, 0, 10_000) }),
+      };
+    }
+    const orientation = page.orientation === undefined
+      ? undefined
+      : enumeration(page.orientation, `${label} orientation`, new Set(['portrait', 'landscape']));
+    const columns = page.columns === undefined
+      ? undefined
+      : array(page.columns, `${label} columns`, 64).map((column, columnIndex) => {
+        const parsed = columnGeometry(column, columnIndex, label, maxPage);
+        if (parsed.pageNumber !== integer(page.pageNumber, `${label} number`, 1, pageCount || maxPage)) {
+          fail(`${label} column references a different page.`);
+        }
+        return parsed;
+      });
+    if (columns) {
+      geometryColumnCount += columns.length;
+      if (geometryEntries() > MAX_PAGINATION_GEOMETRY_ENTRIES) fail(`${label} geometry exceeds the supported limit.`);
+      if (new Set(columns.map((column) => column.columnIndex)).size !== columns.length) {
+        fail(`${label} contains duplicate column indices.`);
+      }
+    }
+    return {
+      pageNumber: integer(page.pageNumber, `${label} number`, 1, pageCount || maxPage),
+      pageKind: enumeration(page.pageKind, `${label} kind`, PAGINATION_PAGE_KINDS),
+      blockIds: pageBlockIds,
+      breakReason: enumeration(page.breakReason, `${label} break reason`, PAGINATION_BREAK_REASONS),
+      ...(page.pageWidthPt === undefined ? {} : { pageWidthPt: number(page.pageWidthPt, `${label} width`, 1, 1_000_000) }),
+      ...(page.pageHeightPt === undefined ? {} : { pageHeightPt: number(page.pageHeightPt, `${label} height`, 1, 1_000_000) }),
+      ...(orientation ? { orientation } : {}),
+      ...(margins ? { margins } : {}),
+      ...(page.sectionIndex === undefined ? {} : { sectionIndex: integer(page.sectionIndex, `${label} section`, 0, 10_000) }),
+      ...(optionalBoolean(page.sectionIndexApproximate, `${label} section approximate`) !== undefined
+        ? { sectionIndexApproximate: optionalBoolean(page.sectionIndexApproximate, `${label} section approximate`) }
+        : {}),
+      ...(page.columnCount === undefined ? {} : { columnCount: integer(page.columnCount, `${label} column count`, 1, 64) }),
+      ...(columns ? { columns } : {}),
+    };
+  });
+  if (pages.length && pages.length !== pageCount) fail('Document pagination page count is inconsistent.');
+  if (new Set(pages.map((page) => page.pageNumber)).size !== pages.length) fail('Document pagination contains duplicate page numbers.');
+  const blockPages = array(item.blockPages, 'Document pagination block pages', limits.maxBlocks).map((entry, index) => {
+    const label = `Document pagination block ${index}`;
+    const entryObject = object(entry, label);
+    exactKeys(
+      entryObject,
+      [
+        'blockId', 'startPageNumber', 'endPageNumber', 'fragmentPages', 'approximate', 'geometryConfidence',
+        'boundingBox', 'lines', 'tableRows', 'rowIndex', 'columnIndex', 'rowSpan', 'columnSpan',
+      ],
+      label,
+    );
+    const blockId = id(entryObject.blockId, `${label} block id`);
+    if (!blockIds.has(blockId)) fail(`${label} references an unknown block.`);
+    const startPageNumber = integer(entryObject.startPageNumber, `${label} start page`, 1, maxPage);
+    const endPageNumber = entryObject.endPageNumber === undefined
+      ? undefined
+      : integer(entryObject.endPageNumber, `${label} end page`, 1, maxPage);
+    if (endPageNumber !== undefined && endPageNumber < startPageNumber) fail(`${label} page range is inverted.`);
+    if (pageCount > 0 && (startPageNumber > pageCount || (endPageNumber !== undefined && endPageNumber > pageCount))) {
+      fail(`${label} references a page beyond the pagination page count.`);
+    }
+    const fragmentPages = entryObject.fragmentPages === undefined
+      ? undefined
+      : array(entryObject.fragmentPages, `${label} fragment pages`, limits.maxPages).map((fragment, fragmentIndex) => {
+        const fragmentLabel = `${label} fragment page ${fragmentIndex}`;
+        const fragmentObject = object(fragment, fragmentLabel);
+        exactKeys(fragmentObject, ['pageNumber', 'fragmentIndex'], fragmentLabel);
+        return {
+          pageNumber: integer(fragmentObject.pageNumber, `${fragmentLabel} page`, 1, pageCount || maxPage),
+          ...(fragmentObject.fragmentIndex === undefined
+            ? {}
+            : { fragmentIndex: integer(fragmentObject.fragmentIndex, `${fragmentLabel} index`, 0, 1_000_000) }),
+        };
+      });
+    const lines = entryObject.lines === undefined
+      ? undefined
+      : array(entryObject.lines, `${label} lines`, MAX_PAGINATION_LINES_PER_BLOCK)
+        .map((line, lineIndex) => lineGeometry(line, lineIndex, label, pageCount || maxPage));
+    if (lines) {
+      geometryLineCount += lines.length;
+      if (geometryEntries() > MAX_PAGINATION_GEOMETRY_ENTRIES) fail(`${label} geometry exceeds the supported limit.`);
+    }
+    const tableRows = entryObject.tableRows === undefined
+      ? undefined
+      : array(entryObject.tableRows, `${label} table rows`, limits.maxTableRows)
+        .map((row, rowIndex) => rowGeometry(row, rowIndex, label, pageCount || maxPage, limits));
+    if (tableRows) {
+      for (const row of tableRows) {
+        geometryCellCount += row.cells?.length ?? 0;
+      }
+      if (geometryEntries() > MAX_PAGINATION_GEOMETRY_ENTRIES) fail(`${label} geometry exceeds the supported limit.`);
+    }
+    return {
+      blockId,
+      startPageNumber,
+      ...(endPageNumber !== undefined ? { endPageNumber } : {}),
+      ...(fragmentPages ? { fragmentPages } : {}),
+      ...(optionalBoolean(entryObject.approximate, `${label} approximate`) !== undefined
+        ? { approximate: optionalBoolean(entryObject.approximate, `${label} approximate`) }
+        : {}),
+      ...(entryObject.geometryConfidence === undefined
+        ? {}
+        : { geometryConfidence: geometryConfidence(entryObject.geometryConfidence, `${label} geometry confidence`) }),
+      ...(entryObject.boundingBox === undefined ? {} : {
+        boundingBox: geometryBox(entryObject.boundingBox, `${label} bounding box`, IMAGE_GEOMETRY_SPACES),
+      }),
+      ...(lines ? { lines } : {}),
+      ...(tableRows ? { tableRows } : {}),
+      ...(entryObject.rowIndex === undefined ? {} : { rowIndex: integer(entryObject.rowIndex, `${label} row index`, 0, limits.maxTableRows) }),
+      ...(entryObject.columnIndex === undefined ? {} : { columnIndex: integer(entryObject.columnIndex, `${label} column index`, 0, limits.maxTableCells) }),
+      ...(entryObject.rowSpan === undefined ? {} : { rowSpan: integer(entryObject.rowSpan, `${label} row span`, 1, limits.maxTableRows) }),
+      ...(entryObject.columnSpan === undefined ? {} : { columnSpan: integer(entryObject.columnSpan, `${label} column span`, 1, limits.maxTableCells) }),
+    };
+  });
+  if (new Set(blockPages.map((entry) => entry.blockId)).size !== blockPages.length) fail('Document pagination contains duplicate block page entries.');
+  let geometry;
+  if (item.geometry !== undefined) {
+    const value = object(item.geometry, 'Document pagination geometry');
+    exactKeys(value, ['lineCount', 'cellCount', 'columnCount', 'truncated'], 'Document pagination geometry');
+    geometry = {
+      lineCount: integer(value.lineCount, 'Document pagination geometry line count', 0, MAX_PAGINATION_GEOMETRY_ENTRIES),
+      cellCount: integer(value.cellCount, 'Document pagination geometry cell count', 0, MAX_PAGINATION_GEOMETRY_ENTRIES),
+      columnCount: integer(value.columnCount, 'Document pagination geometry column count', 0, MAX_PAGINATION_GEOMETRY_ENTRIES),
+      truncated: boolean(value.truncated, 'Document pagination geometry truncated'),
+    };
+    if (geometry.lineCount !== geometryLineCount || geometry.cellCount !== geometryCellCount || geometry.columnCount !== geometryColumnCount) {
+      fail('Document pagination geometry counts are inconsistent.');
+    }
+  }
+  return {
+    status,
+    mechanism,
+    pageCount,
+    pages,
+    blockPages,
+    warnings: warningList(item.warnings, 'Document pagination warnings', maxPage, limits.maxWarnings),
+    ...(item.renderer === undefined ? {} : { renderer: text(item.renderer, 'Document pagination renderer', 1, 200) }),
+    ...(geometry ? { geometry } : {}),
+  };
+}
+
 export function validateDocumentStructure(
   value: unknown,
   limits: StructureLimits = STRUCTURE_LIMITS,
@@ -344,7 +995,7 @@ export function validateDocumentStructure(
   const structure = object(value, 'Document structure');
   exactKeys(
     structure,
-    ['schemaVersion', 'extractionVersion', 'documentFormat', 'pageSemantics', 'pages', 'blocks', 'sections', 'tables', 'readingOrder', 'warnings', 'metadata'],
+    ['schemaVersion', 'extractionVersion', 'documentFormat', 'pageSemantics', 'pages', 'blocks', 'sections', 'tables', 'readingOrder', 'warnings', 'metadata', 'pagination', 'docxLayout'],
     'Document structure',
   );
   if (structure.schemaVersion !== DOCUMENT_STRUCTURE_SCHEMA_VERSION) {
@@ -442,6 +1093,61 @@ export function validateDocumentStructure(
     }
     if (depth > limits.maxDepth) fail('Document structure hierarchy is too deep.');
   }
+  const imagePlacementIds = new Set<string>();
+  let imageCount = 0;
+  for (const item of blocks) {
+    if (!item.image) continue;
+    imageCount += 1;
+    if (imageCount > MAX_STRUCTURE_IMAGES) fail('Document structure contains too many image blocks.');
+    if (item.type !== 'image') fail('Document structure image metadata is attached to a non-image block.');
+    if (item.image.placementId) {
+      if (imagePlacementIds.has(item.image.placementId)) fail('Document structure contains duplicate image placement ids.');
+      imagePlacementIds.add(item.image.placementId);
+    }
+    if (item.image.captionBlockId) {
+      const caption = blockById.get(item.image.captionBlockId);
+      if (!caption || !['paragraph', 'caption', 'header', 'footer'].includes(caption.type)) {
+        fail('Document structure image caption does not reference a text block.');
+      }
+    }
+    if (item.image.sourceParagraphBlockId) {
+      const source = blockById.get(item.image.sourceParagraphBlockId);
+      if (!source || !['paragraph', 'heading', 'table_cell', 'header', 'footer'].includes(source.type)) {
+        fail('Document structure image source block is invalid.');
+      }
+    }
+    const { parentTableBlockId, parentRowBlockId, parentCellBlockId } = item.image;
+    if (parentTableBlockId && parentRowBlockId && parentCellBlockId) {
+      const table = blockById.get(parentTableBlockId);
+      const row = blockById.get(parentRowBlockId);
+      const cell = blockById.get(parentCellBlockId);
+      if (!table || table.type !== 'table') fail('Document structure image references an unknown parent table.');
+      if (!row || row.type !== 'table_row' || row.parentId !== table.blockId) {
+        fail('Document structure image references an invalid parent row.');
+      }
+      if (!cell || cell.type !== 'table_cell' || cell.parentId !== row.blockId) {
+        fail('Document structure image references an invalid parent cell.');
+      }
+      if (item.parentId !== cell.blockId) fail('Document structure table image must be a child of its parent cell.');
+      if (item.image.tableId !== table.tableId) fail('Document structure image table id is inconsistent.');
+      if (item.image.rowIndex !== row.rowIndex) fail('Document structure image row index is inconsistent.');
+      if (item.image.columnIndex !== cell.columnIndex) fail('Document structure image column index is inconsistent.');
+      if (item.image.headerFooter) fail('Document structure table image also carries header/footer metadata.');
+    } else if (parentTableBlockId || parentRowBlockId || parentCellBlockId) {
+      fail('Document structure image table parents are incomplete.');
+    } else if (item.image.nestedTableDepth !== undefined) {
+      fail('Document structure image nested depth requires a parent cell.');
+    }
+    if (item.image.headerFooter) {
+      if (item.parentId) fail('Document structure header/footer image cannot have a parent block.');
+      if (item.image.sourceParagraphBlockId) {
+        const source = blockById.get(item.image.sourceParagraphBlockId);
+        if (!source || (source.type !== 'header' && source.type !== 'footer')) {
+          fail('Document structure header/footer image source block is invalid.');
+        }
+      }
+    }
+  }
 
   if (new Set(readingOrder).size !== readingOrder.length) fail('Document structure reading order contains duplicates.');
   for (const blockId of readingOrder) {
@@ -504,6 +1210,52 @@ export function validateDocumentStructure(
   }
   boolean(metadata.truncated, 'Document structure metadata truncated flag');
 
+  const pagination = structure.pagination === undefined
+    ? undefined
+    : paginationInfo(structure.pagination, limits, blockIds, limits.maxPages);
+  const docxLayout = structure.docxLayout === undefined
+    ? undefined
+    : docxLayoutInfo(structure.docxLayout, limits, blockIds);
+  if (docxLayout && documentFormat !== 'docx') fail('DOCX layout metadata is only valid for DOCX structure.');
+  for (const item of blocks) {
+    if (!item.image) continue;
+    if (item.image.appearances) {
+      if (!pagination) fail('Document structure image appearances require pagination metadata.');
+      for (const appearance of item.image.appearances) {
+        if (appearance.pageNumber > pagination!.pageCount) {
+          fail('Document structure image appearance references a page outside the pagination.');
+        }
+      }
+    }
+    if (item.image.headerFooter) {
+      if (!docxLayout) fail('Document structure header/footer image requires DOCX layout metadata.');
+      const headerFooter = item.image.headerFooter;
+      const section = docxLayout!.sections[headerFooter.definingSectionIndex];
+      if (!section) fail('Document structure header/footer image references an unknown defining section.');
+      const references = [...section.headers, ...section.footers];
+      const defining = references.find((reference) => (
+        reference.kind === headerFooter.kind
+        && reference.variant === headerFooter.variant
+        && reference.partName === headerFooter.partName
+        && reference.definingSectionIndex === headerFooter.definingSectionIndex
+        && reference.inherited === false
+      ));
+      if (!defining) fail('Document structure header/footer image does not match its defining section reference.');
+      for (const inheritedSectionIndex of headerFooter.inheritedSectionIndexes ?? []) {
+        const inheritedSection = docxLayout!.sections[inheritedSectionIndex];
+        if (!inheritedSection) fail('Document structure header/footer image references an unknown inherited section.');
+        const inherited = [...inheritedSection.headers, ...inheritedSection.footers].find((reference) => (
+          reference.kind === headerFooter.kind
+          && reference.variant === headerFooter.variant
+          && reference.partName === headerFooter.partName
+          && reference.definingSectionIndex === headerFooter.definingSectionIndex
+          && reference.inherited === true
+        ));
+        if (!inherited) fail('Document structure header/footer image inheritance is inconsistent.');
+      }
+    }
+  }
+
   return {
     schemaVersion: DOCUMENT_STRUCTURE_SCHEMA_VERSION,
     extractionVersion,
@@ -523,6 +1275,8 @@ export function validateDocumentStructure(
       ocrPageCount,
       truncated: boolean(metadata.truncated, 'Document structure metadata truncated flag'),
     },
+    ...(pagination ? { pagination } : {}),
+    ...(docxLayout ? { docxLayout } : {}),
   };
 }
 

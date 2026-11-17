@@ -2,6 +2,340 @@
 
 FormFlow is now an **extension-owned, locally encrypted vault** for the production workflow. The extension dashboard and popup share one canonical IndexedDB vault under the extension origin. The localhost dashboard remains a development and migration surface.
 
+## Phase 4.1.4.2 — Rendering discrepancies and complete image extraction (complete)
+
+Phase 4.1.4.2 resolves the two remaining pagination discrepancies and extends structured image extraction to table cells and headers/footers. The architecture is unchanged: Manifest V3, background-only vault cryptography, offscreen/parser-worker isolation, encrypted `extractionEnc`, additive schema v1, and local-only processing.
+
+### Root causes
+
+- **Nested tables (+1 page):** the renderer treats an automatic table width as content-fit. The corpus fixture's outer table had no `w:tblGrid` and an `auto` width, so the renderer collapsed the outer columns to their content minimum. The nested table then inherited a very narrow parent cell, wrapped every inner cell, and inflated each outer row from ~46 pt to ~70.5 pt. LibreOffice used the authored/available table width. The correction is a general layout-time table-width normalization, not a fixture page override.
+- **Mixed fonts (−1 page):** the packaged Carlito face had the same total line height as LibreOffice's Carlito but a different vertical split: its `hhea` ascent/descent/line-gap came from the win metrics, while LibreOffice used the typo split. The renderer adds line gap above the baseline per face and takes the maximum ascent plus maximum descent; LibreOffice takes maximum ascent plus maximum descent+leading. Single-face line heights matched; only mixed faces diverged (15.09 pt vs 16.8 pt), so FormFlow fit 40 paragraphs on one page instead of 38+2. The correction normalizes packaged font vertical metrics so leading sits below the baseline, preserving each single-face line height.
+
+### Layout corrections
+
+- Added bounded, layout-only DOCX table normalization. Tables with `tblW=auto`/missing width and an authored grid use the grid as a fixed width; tables without a grid synthesize equal columns from the available section/column width; nested grids are constrained to the parent cell width. `w:tblLayout` is set to `fixed`. Explicit, percentage, and floating tables are left authored and reported.
+- Added build-time font vertical-metric normalization for the packaged Carlito/Liberation faces. The runtime now builds a local, hash-verified font configuration from `fonts/font-metrics.json` and patched assets instead of the package manifest. Glyph outlines and advance widths are unchanged; only `hhea` ascent/descent/line-gap are moved to the typo split. A fallback to the packaged configuration is retained and warned.
+- Table normalization is bounded to 1,000 tables, 10,000 zip entries, and 100 MB uncompressed input. It runs only when the parsed structure contains tables. Warnings: `DOCX_TABLE_WIDTHS_NORMALIZED`, `DOCX_TABLE_LAYOUT_SKIPPED`, `DOCX_TABLE_NORMALIZATION_LIMIT`, `DOCX_FONT_VERTICAL_METRICS_NORMALIZED`.
+
+### Structured images
+
+- Images in normal table cells, nested table cells, and multiple cell paragraphs become stable child `image` blocks. Each carries `parentTableBlockId`, `parentRowBlockId`, `parentCellBlockId`, `tableId`, `rowIndex`, `columnIndex`, `nestedTableDepth`, `sourceParagraphBlockId`, `sourceParagraphIndex`, `placementIndex`, caption text, exact page association, bounding box, provenance, confidence, and warnings.
+- Header/footer images in default, first-page, and even-page variants become one source placement per source part. `headerFooter` records kind, variant, part name, defining section, and inherited sections. `appearances` records every physical page where that source placement paints; inherited headers/footers do not create duplicate source blocks.
+- Table/body image boxes use `renderer_page_content_points`; header/footer image boxes use `renderer_page_points`. Both are exact renderer boxes. External/linked images are never fetched. Image bytes never enter `DocumentStructure`; only metadata is encrypted inside `extractionEnc`.
+
+### Schema additions (additive, schema v1)
+
+- `DocumentStructureBlock.type: 'image'` continues, with new optional image fields: `placementId`, `parentTableBlockId`, `parentRowBlockId`, `parentCellBlockId`, `tableId`, `rowIndex`, `columnIndex`, `nestedTableDepth`, `sourceParagraphIndex`, `placementIndex`, `headerFooter`, `appearances`.
+- `DocumentImageAppearance`: page, optional exact box, confidence.
+- `DocumentStructureImageHeaderFooter`: kind, variant, part name, defining section, inherited section indexes.
+- `DocumentCoordinateSpace`/geometry boxes accept `renderer_page_points` for page-furniture appearances.
+- Validation now enforces image placement-ID uniqueness, bounded image count/appearances, MIME shape, parent table/row/cell consistency, nested depth, header/footer source/inheritance references, page-appearance bounds, and no parent/header-footer mixing. Existing fields and backups remain valid.
+
+### UI
+
+- The structure inspector shows image count, dimensions, alt text, caption, page association, table row/column, nested depth, and header/footer kind/variant/defining section/inheritance/appearance count.
+- Table cells render compact image summaries instead of hiding cell images. Inherited header/footer images appear once in the outline with their appearance range, not once per page.
+
+### Reference corpus
+
+Expanded from 20 to **22 fixtures** and re-rendered with LibreOffice 26.8.3.1:
+
+- **22/22 exact page counts**; total reference pages **58**, FormFlow pages **58**.
+- **1,108/1,117 comparable top-level block ranges exact (99.2%)**. The only mismatches are 9 body-paragraph boundaries in `header-footer-images`, where the large header/footer images shift body flow relative to LibreOffice; page count still matches.
+- Previous failures resolved: `nested-tables` now **2/2** with 3/3 exact block ranges; `multi-font-paragraph` now **2/2** with 40/40 exact.
+- `table-images`: 1/1 page, 3/3 exact, 3 table-cell placements (including one nested table), caption linked, 3 exact page appearances.
+- `header-footer-images`: 3/3 pages, 1 header + 1 footer source placement, 6 physical-page appearances across 3 pages.
+- All 21 non-header-footer fixtures retain 100% exact block mapping.
+
+### Verification
+
+| Suite | Result |
+|---|---|
+| `npm test` | **188/188 pass** (local 164, extension 12, server 12) |
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 106 files, 23.53 MB |
+| `validate:docx-pagination` | 22 fixtures, 22 exact page counts, 1,108/1,117 block ranges |
+| `validate:docx-degraded` | Pass |
+| `validate:docx-fidelity` | **16/16 pass** |
+| `validate:router-navigation` | **13/13 pass** |
+| `benchmark:docx-pagination` | Pass; cancellation `CANCELLED` |
+| Phase 4 ingestion E2E | **43/43 pass** |
+| Phase 4.1.2 OCR E2E | **54/54 pass** |
+| Offscreen parser E2E | **33/33 pass** |
+| Phase 3 E2E | **98/98 pass** |
+| Interruption E2E | **11/11 pass** |
+| Migration crash E2E | **23/23 pass** |
+| Extension reload E2E | **21/21 pass** |
+| Content isolation E2E | **16/16 pass** |
+| Recovery crash E2E | **8/8 pass** |
+
+### Performance
+
+- Extension **106 files, 23.53 MB**; parser worker **4.57 MB**; offscreen **1.68 MB**; background **0.23 MB**; fonts/WASM **6.13 MB**.
+- 5,000 mixed-font paragraphs: **1,350 ms** total pagination, 132 pages, 5,000 mappings.
+- 500-row nested table: **626 ms**, 18 pages, 1,501 mapped blocks, 629 KB pagination.
+- 200 body images: **183 ms**, 40 pages, 200 exact appearances, 138.3 KB image metadata.
+- 500 paragraphs with inherited header/footer images: **221 ms**, 15 pages, 2 source blocks with 30 appearances, 5.6 KB image metadata.
+- 5,000 plain paragraphs: **1,150 ms**; cancellation **5 ms** after layout start.
+- Browser process-tree RSS peak ~0.98–1.19 GB including Chromium/GPU overhead; deltas are noisy.
+
+### Word status
+
+Microsoft Word is still unavailable. The `WORD_REFERENCE_DIR` harness now also reports Word-vs-LibreOffice-vs-FormFlow page counts, Word/FormFlow image paint/appearance counts, and focused nested-table/mixed-font/table-image/header-footer boundary lines. It remains plumbing-tested only with a LibreOffice PDF and does **not** claim Word compatibility. No output is marked `verified_physical`.
+
+### Remaining limitations
+
+- Microsoft Word compatibility remains unverified.
+- `header-footer-images` body-flow boundaries differ from LibreOffice by 9 of 80 block ranges while page count matches.
+- Nested tables remain flattened into the parent cell in the structure model; images and depth are preserved, but nested-table row/cell blocks are not separate top-level blocks.
+- Header/footer images in table cells are supported as header/footer placements without table parent blocks because header/footer table blocks are not separately structured.
+- External images are never fetched; only placement metadata is retained.
+- Explicit/percentage/floating table widths are not normalized, by design.
+- Font substitution remains metric-compatible, not exact proprietary font fidelity. Vertical-metric normalization applies to the packaged substitute assets; document-embedded faces are used as authored and are not rewritten.
+- No Phase 4.1.5 or Phase 4.2 work was started.
+
+## Phase 4.1.4.1 — Pagination fidelity, geometry, and dependency hardening (complete)
+
+Phase 4.1.4.1 resolves the follow-up limitations without changing the Phase 4.1.4 fallback semantics.
+
+### Issue-by-issue result
+
+| Issue | Before | After |
+|---|---|---|
+| Microsoft Word validation | LibreOffice-only comparison; no harness for Word output. | The corpus harness accepts `WORD_REFERENCE_DIR` containing Word-exported PDFs and reports Word page counts/mapping. Word is not installed here, so **no Word compatibility is claimed**. The manual procedure is documented in [`PHASE_4_1_4_1_WORD_REFERENCE.md`](PHASE_4_1_4_1_WORD_REFERENCE.md). |
+| Font fidelity | Only packaged metric-compatible faces were reported indirectly. | The renderer’s embedded-font origin is used automatically. `docxLayout.fonts` records requested/resolved family, source, exact/substituted/embedded flags, coverage, face identity, and warnings. Theme fonts and `fontTable.xml` declarations are parsed. Malformed/oversized embedded faces are bounded and reported. |
+| Structured images | Images affected layout but were not blocks. | Inline/floating images become stable `image` blocks with relationship/source/media part, MIME, intrinsic pixels, display points, positioning, wrap, alt/title text, caption linkage, warnings, and exact renderer page boxes where the resource resolves. |
+| Line/cell geometry | Block-level only. | Paragraphs carry exact renderer line boxes per page/fragment. Table rows and cells carry exact boxes, indices, spans, continuation/header-repeat flags, and page/fragment mappings. Geometry confidence is explicit. |
+| Multi-column geometry | Page count only. | Sections carry column count/equal-width/gap/separator/explicit widths. Pages expose column boxes, widths/heights, section indices, and derived block/line column indices with approximation labels. |
+| React Router advisories | `react-router-dom` 6.30.6 / `react-router` 6.30.6 had two moderate advisories; no patched 6.x release. | Upgraded to **react-router-dom 7.18.5 / react-router 7.18.5** after checking all used APIs. `npm audit` and `npm audit --omit=dev` are clean. |
+
+### Schema additions
+
+All additions are optional and additive under `DocumentStructure` schema version 1:
+
+- `DocumentStructureBlock.type: 'image'` with `image` metadata.
+- `DocumentStructureBlock.columnBreakAfter`.
+- `DocumentStructureDocxLayout.fonts`, `embeddedFonts`, `themeFonts`.
+- `DocumentStructureDocxSection.columns` and `columnBreakCount`.
+- `DocumentPaginationInfo.geometry` summary.
+- `DocumentPaginationPage.sectionIndex`, `sectionIndexApproximate`, `columnCount`, `columns`.
+- `DocumentPaginationBlockPage.geometryConfidence`, `boundingBox`, `lines`, `tableRows`, `rowIndex`, `columnIndex`, `rowSpan`, `columnSpan`.
+- `DocumentCoordinateSpace: 'renderer_page_content_points'`.
+
+Old backups and structures without these fields remain valid.
+
+### Font behavior and limits
+
+- Embedded faces are used from the DOCX when the renderer admits them; the renderer deobfuscates in memory and never executes font content.
+- Packaged Carlito/Liberation faces remain the substitute set. Exact/local direct faces are reported as `exact_local`; embedded direct faces as `embedded`; packaged substitutes as `metric_substitute`; no-face resolution as `generic_fallback`/`unavailable`.
+- The embedded-font origin is bounded by the renderer (16 MiB per face, malformed/over-limit faces dropped). FormFlow reports `DOCX_EMBEDDED_FONT_DROPPED`, `DOCX_EMBEDDED_FONT_UNAVAILABLE`, and font-origin failures.
+- No proprietary fonts are packaged and no remote font is fetched.
+
+### Image behavior and limits
+
+- Media is read only from the DOCX package; external/linked images are recorded but **never fetched**.
+- Image count is capped at 200, per-image bytes at 12 MiB, total image bytes at 64 MiB, dimensions at 12,000 px, and pixels at 40 million.
+- Signature/MIME mismatch, invalid signature, oversized dimensions, missing relationship, missing media, external link, missing alt text, and dimension-unavailable cases produce explicit warnings.
+- Image bytes are never placed in `DocumentStructure`; only metadata is emitted. The original bytes remain in the existing encrypted document storage.
+- Image-only DOCX files may have an empty text body when the validated structure contains image blocks; they remain importable and encrypted.
+
+### Geometry and column behavior
+
+- Line and cell boxes use renderer page-content points and are labeled `exact`.
+- Section/page/column assignment is derived from renderer section breaks and authored column definitions; derived assignments/used-area heights are labeled `renderer_approximate` or `source_approximate`.
+- Single-fragment blocks omit redundant `fragmentPages`; cross-page blocks retain them. Page mappings remain in `startPageNumber`/`endPageNumber`.
+- Geometry is bounded by 60,000 entries, 2,000 lines per block, 16 columns per page, and a 300,000-character geometry budget. A 5,000-paragraph fixture imports with all 5,000 mappings, truncates line geometry to 1,538 lines, and stays under the existing 2.5 MB structure response limit.
+- Nested tables expose outer row/cell geometry; FormFlow’s existing flattened structure keeps nested table content in the parent cell.
+
+### Reference comparison
+
+Expanded from 14 to 20 LibreOffice-rendered fixtures. Results:
+
+- **18/20 exact page counts**; total reference and FormFlow pages are both 54.
+- **1,030/1,034 comparable top-level block ranges exactly matched** (99.6%).
+- **54/54 page orientations matched**.
+- Known discrepancies:
+  - `nested-tables`: LibreOffice 2 pages, FormFlow 3. This is a genuine nested-table layout difference; row/cell geometry is still emitted.
+  - `multi-font-paragraph`: LibreOffice 2 pages, FormFlow 1. This is a mixed-font line-metric difference.
+- Embedded-font and font-substitution fixtures both produced 1 page and exact mapping; the embedded fixture reported an embedded direct face.
+- Corrupt embedded font produced fallback plus `DOCX_EMBEDDED_FONT_UNAVAILABLE`.
+- Images-captions produced 6 image blocks with 6 exact page mappings.
+- Columns-complex produced 1-, 2-, and 3-column page geometry with 120pt/240pt unequal widths and an explicit column break.
+
+Full report: [`PHASE_4_1_4_PAGINATION_VALIDATION.md`](PHASE_4_1_4_PAGINATION_VALIDATION.md).
+
+### Word reference status
+
+Microsoft Word is not installed in this environment. The harness was plumbing-tested by supplying a LibreOffice-generated PDF in `WORD_REFERENCE_DIR`; that is **not** a Word validation and is not reported as one. No output is marked `verified_physical`.
+
+### Dependency remediation evidence
+
+- `react-router-dom` 6.30.6 → **7.18.5**, `react-router` 7.18.5.
+- Advisories removed: `GHSA-wrjc-x8rr-h8h6` (open redirect via backslash) and `GHSA-337j-9hxr-rhxg` (SSR hydration constructor injection). Both vulnerable ranges ended at 7.17.x.
+- `esbuild` 0.24.2 → **0.25.12**, removing `GHSA-67mh-4wv8-2f99`.
+- `npm audit` and `npm audit --omit=dev`: **0 vulnerabilities**.
+- Route regression: 13/13 checks covering HashRouter navigation, query-string routing, back/forward, unknown-route redirect, and no page errors.
+- FormFlow is a client-only HashRouter application; it does not use SSR hydration/`deserializeErrors`. The upgrade is still applied and tested.
+
+### Performance and cost
+
+- Production extension: **105 files, 23.49 MB**; parser worker **4.54 MB**; offscreen **1.68 MB**; background **0.22 MB**.
+- HarfBuzz WASM **434 KB**; TTF faces **5.63 MB**; font/WASM directory **6.13 MB**.
+- Worker startup **64–111 ms**.
+- 1,000 paragraphs: **296–314 ms** total pagination.
+- 5,000 paragraphs: **1,003–1,103 ms** total (font resolution ~0.3 s, renderer ~0.6 s, mapping ~0.1 s); 105 pages; all 5,000 block mappings retained; geometry explicitly truncated.
+- 500-row table: **396–398 ms** total.
+- Cancellation 5 ms after layout start returns `CANCELLED`.
+- Browser process-tree RSS peak ~0.92–1.03 GB in the benchmark runs; deltas are directional and noisy (0–87 MB).
+
+Full report: [`PHASE_4_1_4_PERFORMANCE.md`](PHASE_4_1_4_PERFORMANCE.md).
+
+### Verification
+
+| Command / suite | Result |
+|---|---|
+| `npm test` | **178/178 pass** |
+| `npm run test:local` | **154/154 pass** |
+| `npm run test:extension` | **12/12 pass** |
+| `npm run test:server` | **12/12 pass** |
+| `npm run typecheck` | Pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 105 files, 23.49 MB |
+| `validate:docx-pagination` | 20 fixtures, 18 exact page counts, 1,030/1,034 block ranges |
+| `validate:docx-degraded` | 9/9 pass |
+| `validate:router-navigation` | 13/13 pass |
+| `benchmark:docx-pagination` | Pass; cancellation `CANCELLED` |
+| `e2e-phase4-ingestion` | 43/43 pass |
+| `e2e-phase412-ocr` | 54/54 pass |
+| `e2e-phase4-offscreen` | 33/33 pass |
+| `e2e-phase3` | 98/98 pass |
+| `e2e-phase4-interruption` | 11/11 pass |
+| `e2e-migration-crash` | 23/23 pass |
+| `e2e-extension-reload` | 21/21 pass |
+| `e2e-content-isolation` | 16/16 pass |
+| `e2e-recovery-crash` | 8/8 pass |
+
+### Remaining limitations
+
+- No Microsoft Word reference is available; Word compatibility is not claimed.
+- Nested-table and mixed-font paragraph reference differences remain.
+- Embedded fonts are used only when the renderer admits them; unsupported/corrupt/oversized faces fall back with warnings.
+- Geometry is renderer-derived. Line/cell boxes are exact from the renderer; column/page/section assignments and used-column heights can be approximate and are labeled.
+- Large documents can truncate line/cell geometry while retaining all top-level page mappings.
+- External images are never fetched; image blocks preserve only linked placement metadata.
+- No Phase 4.1.5 or Phase 4.2 work was started.
+
+## Phase 4.1.4 — Genuine automatic DOCX pagination (complete)
+
+Phase 4.1.4 adds local automatic physical DOCX pagination without replacing the existing WordprocessingML parser or exposing a backend/document-conversion service. The pre-existing explicit-break, Word-reported-break, and logical fallbacks remain intact.
+
+### Renderer evaluation and selection
+
+| Candidate | Evaluation | Decision |
+|---|---|---|
+| `docx-preview` 0.4.1 (Apache-2.0, local ~75 KB minified) | Locally bundled DOM renderer; supports manual `w:br type="page"`, optional `w:lastRenderedPageBreak`, headers/footers, tables and page size. Its documentation explicitly states realtime automatic page breaking is **not implemented**. | Rejected as a physical pagination engine. |
+| `@docx-editor.dev/core` 2.38.0 + fonts 2.38.0 (Apache-2.0/OFL) | DOM-free OOXML layout engine with automatic page records, font-backed HarfBuzz shaping, paragraph/table fragments, section layout, headers/footers, merged cells, images, keep-with-next/keep-lines, widow/orphan controls and multi-column layout. The browser entry bundles to ~4.5 MB minified in the existing parser worker; packaged HarfBuzz WASM is 434 KB and the selected metric-compatible TTF faces are 5.63 MB. | **Selected.** It produces real automatic page records in a browser module worker and the cost is measured below. |
+| Mammoth HTML | Produces HTML text, not physical page layout. | Rejected for pagination. |
+| LibreOffice headless / remote conversion | Provides strong reference rendering, but is not a browser-local runtime and would violate the no-backend/no-remote-conversion constraint. | Used only as a test-time reference renderer, never at runtime. |
+
+### Implementation
+
+- The engine runs in the existing request-scoped parser Web Worker, not in the offscreen document or service worker. It receives DOCX bytes only and has no vault, DEK, KEK, passphrase, AAD, vault session, IndexedDB, or repository access.
+- HarfBuzz and the Carlito/Liberation Sans/Liberation Serif faces are packaged locally under `extension/dist/fonts/`; the build pins and verifies their SHA-256. No CDN, remote font, or network fetch is used.
+- The renderer uses compatible-font mapping: Calibri → Carlito, Arial/Helvetica → Liberation Sans, Times New Roman → Liberation Serif.
+- Page records provide dimensions, orientation, margins and fragment-level mappings. For each existing FormFlow block, `blockPages` now includes `fragmentPages` with the page number and renderer fragment index, plus `endPageNumber` when a paragraph/table spans pages. Cells are mapped through their table row’s physical page.
+- If renderer output does not complete or exceeds the 1,000-page limit, the existing explicit-break/reported-break/logical fallback is preserved with an explicit `DOCX_PAGINATION_RENDERER_UNAVAILABLE` warning.
+- Renderer output is marked `renderer_derived_physical` / `local_renderer`. It is **never** marked `verified_physical`.
+
+### Pagination semantics
+
+- `logical_fallback`: no automatic or explicit page-boundary evidence; the existing logical page remains authoritative. Produced when the renderer is unavailable.
+- `explicit_breaks`: page segments derived only from explicit page breaks/section breaks. Used only when automatic rendering is unavailable.
+- `renderer_reported_breaks`: segments derived from Word `w:lastRenderedPageBreak` markers. Used only when automatic rendering is unavailable.
+- `renderer_derived_physical`: automatic pages produced by the local font-backed renderer.
+- `verified_physical`: reserved for independently validated output; not emitted.
+
+### Section, header/footer and source metadata
+
+DOCX structure now additively includes `docxLayout`:
+
+- `sections[]` with section index, break type, page size, orientation, margins, column count, title-page flag, page-number start/format and header/footer references.
+- Header/footer references record `kind`, `variant` (`default`/`first`/`even`), relationship ID, resolved part name, defining section, inheritance status, and the existing block IDs for that source part.
+- Inherited headers/footers point to the defining section’s existing blocks; they are not duplicated as independent source content.
+- Header/footer blocks keep stable FormFlow block IDs and now carry part-specific source references such as `docx:header:header2.xml`.
+- `evenAndOddHeaders` is read from `word/settings.xml`; first-page and even variants are tracked even when the current section does not display them.
+- DOCX `pages` remains one logical page for compatibility. Physical pages live only in `pagination`, and `docxLayout` carries section metadata.
+
+### Reference-rendered validation
+
+A reproducible corpus is implemented in `scripts/dev/validate-docx-pagination.mjs`. It writes 14 DOCX fixtures, converts each with locally installed LibreOffice 26.8.3, imports the same bytes through the production extension in Chromium, extracts PDF page text with `pdfjs-dist`, and compares page counts and block start/end pages.
+
+- 14/14 fixtures had identical reference and FormFlow page counts.
+- 760/760 comparable top-level blocks had matching start/end page ranges using the documented text-segment method.
+- Orientation matched on every rendered page (42/42).
+- Fixtures cover automatic overflow, explicit breaks, section breaks, portrait/landscape, Letter/A4 and margin changes, long tables, repeating table headers, merged cells, keep-with-next/keep-lines, widow/orphan controls, first/even/inherited headers and footers, page numbering, inline images with captions, mixed fonts/sizes, and two-column sections.
+
+Full results and per-fixture notes: [`docs/PHASE_4_1_4_PAGINATION_VALIDATION.md`](PHASE_4_1_4_PAGINATION_VALIDATION.md).
+
+**Honest discrepancy:** a minimal 120-paragraph DOCX with no explicit styles produced 5 pages in the renderer and 3 in LibreOffice because the two implementations resolve default paragraph spacing differently. With explicit Calibri 11 / single-spacing styles, both produced 3 pages. The corpus therefore uses explicit styles and records LibreOffice as the reference, not Microsoft Word.
+
+### Performance
+
+Measured by `scripts/dev/benchmark-docx-pagination.mjs` in a dedicated Chromium module worker:
+
+- Production extension: **105 files, 23.42 MB**, up from the pre-Phase-4.1.4 78 files/15.08 MB.
+- Parser worker: **4.51 MB**; offscreen document remains **1.67 MB**; background remains **0.21 MB**.
+- HarfBuzz WASM: **434 KB**; selected TTF faces: **5.63 MB**; font/WASM directory: **6.13 MB**.
+- Worker startup: **64–109 ms** across runs after module caching.
+- Layout across repeated runs: **114–119 ms** for 120 paragraphs, **191–193 ms** for 500, **317–321 ms** for 1,200, **375–394 ms** for a 500-row table, **197–198 ms** for 500 mixed-font paragraphs; warm 120-paragraph layout was **45–46 ms**.
+- Browser process-tree RSS peaks were ~**0.92–1.03 GB** including Chromium, GPU, renderer and extension overhead; incremental deltas were noisy but measured at roughly **5–51 MB**. These are whole-process directional measurements, not isolated heap profiles.
+- Cancellation 5 ms after layout started on the 1,200-paragraph document returned `CANCELLED` without a pagination result.
+
+Full measurements: [`docs/PHASE_4_1_4_PERFORMANCE.md`](PHASE_4_1_4_PERFORMANCE.md).
+
+### Verification results
+
+| Command / suite | Result |
+|---|---|
+| `npm run typecheck` | Pass |
+| `npm test` | 170/170 pass |
+| `npm run test:local` | 146/146 pass |
+| `npm run test:extension` | 12/12 pass |
+| `npm run test:server` | 12/12 pass |
+| `npm run build` | Pass |
+| `npm run build:extension` | Pass; 105 files, 23.42 MB |
+| `scripts/dev/validate-docx-pagination.mjs` | 14/14 fixtures, 0 page-count differences |
+| `scripts/dev/e2e-docx-degraded.mjs` | 9/9 pass; missing fonts warn, missing HarfBuzz falls back |
+| `scripts/dev/benchmark-docx-pagination.mjs` | Pass; cancellation returned `CANCELLED` |
+| `scripts/dev/e2e-phase4-ingestion.mjs` | 38/38 pass |
+| `scripts/dev/e2e-phase412-ocr.mjs` | 54/54 pass |
+| `scripts/dev/e2e-phase4-offscreen.mjs` | 33/33 pass |
+| `scripts/dev/e2e-phase3.mjs` | 98/98 pass |
+| `scripts/dev/e2e-phase4-interruption.mjs` | 11/11 pass |
+| `scripts/dev/e2e-migration-crash.mjs` | 23/23 pass |
+| `scripts/dev/e2e-extension-reload.mjs` | 21/21 pass |
+| `scripts/dev/e2e-content-isolation.mjs` | 16/16 pass |
+| `scripts/dev/e2e-recovery-crash.mjs` | 8/8 pass |
+
+Real Chromium coverage now includes cross-page paragraphs with multiple fragment entries, tables spanning pages with row mappings, automatic pages without explicit break evidence, renderer-derived UI labels, cancellation during layout, and section/header/footer metadata.
+
+### Supported and unsupported layout
+
+Validated supported behavior includes automatic paragraph wrapping and overflow, metric-compatible font shaping, paragraph spacing, page dimensions/margins, explicit and section breaks, keep-with-next/keep-lines, widow/orphan controls, table row pagination, repeating table headers, merged cells, portrait/landscape sections, first/even/inherited headers and footers, page numbering metadata, inline images with captions, mixed fonts/sizes, and two-column sections.
+
+Remaining limitations:
+
+- Reference validation uses LibreOffice, not Microsoft Word. This is not Word-exact proof.
+- No output is `verified_physical`; renderer-derived pages are explicitly labeled.
+- Fonts are metric-compatible substitutes, not the document’s original faces. Missing or unsupported fonts can change wrapping and page boundaries; a warning is emitted.
+- Renderer-specific support for every OOXML feature is not claimed. Unsupported content is preserved in text/structure where possible and reported by renderer/content warnings.
+- Phase 4.1.4.1 adds structured image blocks, exact line/cell boxes, multi-column geometry, and font-resolution evidence; see the newer section above.
+- Block-to-renderer mapping is text/order based. Unmatched blocks are omitted from `blockPages` or marked `approximate`; the mapping is not line-level.
+- Renderer output above 1,000 pages or 20,000 mapped blocks is bounded and falls back or truncates mapping honestly.
+- Layout runs with a 20-second internal limit in addition to the existing ingestion timeout.
+- No backend conversion, remote rendering, AI/ONNX, or Phase 4.1.5/4.2/4.3 work was added.
+
 ## Phase 4.1.3 — Structured document extraction (complete)
 
 Phase 4.1.3 upgrades local ingestion from flat text to a versioned, deterministic `DocumentStructure` while preserving all plain-text interfaces and the existing vault/offscreen security boundary.
@@ -40,7 +374,7 @@ The schema contains:
 - Heading styles/outline levels, paragraph boundaries, alignment, hyperlink text, numbered/bulleted lists, nested list levels, tables, rows, cells, horizontal spans, vertical merges, and header/footer parts are preserved.
 - DOCX remains one explicitly **logical** page. No physical pagination is claimed.
 - Table cell boundaries are retained in the structure; the existing tab-separated plain text remains a backward-compatible derivative.
-- Header/footer placement across sections is approximate and reported with `DOCX_HEADERS_FOOTERS_APPROXIMATE`.
+- Header/footer parts are deduplicated and section relationships, variants, and inheritance are recorded in `docxLayout`. A document whose header/footer files are not referenced from any section keeps the older `DOCX_HEADERS_FOOTERS_APPROXIMATE` warning.
 
 ### OCR structure behavior
 

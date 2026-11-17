@@ -10,8 +10,10 @@ import type {
   DocumentPageExtractionMethod,
   DocumentPageSemantics,
   DocumentPageType,
+  DocumentPaginationInfo,
   DocumentStructure,
   DocumentStructureBlock,
+  DocumentStructureDocxLayout,
   DocumentStructureBoundingBox,
   DocumentStructurePage,
   DocumentStructurePageBounds,
@@ -29,6 +31,8 @@ export interface StructureDraft {
   pages: DocumentStructurePage[];
   blocks: DocumentStructureBlock[];
   warnings: ExtractionWarning[];
+  pagination?: DocumentPaginationInfo;
+  docxLayout?: DocumentStructureDocxLayout;
 }
 
 export function structureBlockId(pageNumber: number, index: number, suffix?: string): string {
@@ -83,6 +87,8 @@ export function structureBlock(input: {
   columnIndex?: number;
   rowSpan?: number;
   columnSpan?: number;
+  columnBreakAfter?: boolean;
+  image?: DocumentStructureBlock['image'];
   warnings?: ExtractionWarning[];
 }): DocumentStructureBlock {
   return {
@@ -107,6 +113,8 @@ export function structureBlock(input: {
     ...(input.columnIndex !== undefined ? { columnIndex: input.columnIndex } : {}),
     ...(input.rowSpan !== undefined ? { rowSpan: input.rowSpan } : {}),
     ...(input.columnSpan !== undefined ? { columnSpan: input.columnSpan } : {}),
+    ...(input.columnBreakAfter ? { columnBreakAfter: true } : {}),
+    ...(input.image ? { image: input.image } : {}),
     ...(input.warnings?.length ? { warnings: input.warnings } : {}),
   };
 }
@@ -289,6 +297,8 @@ export function finalizeStructure(draft: StructureDraft): DocumentStructure {
       ocrPageCount: pages.filter((page) => page.extractionMethod === 'ocr').length,
       truncated,
     },
+    ...(draft.pagination ? { pagination: draft.pagination } : {}),
+    ...(draft.docxLayout ? { docxLayout: draft.docxLayout } : {}),
   };
 }
 
@@ -324,5 +334,7 @@ export function replaceStructurePages(
     pages,
     blocks,
     warnings: [...retainedWarnings, ...warnings],
+    ...(structure.pagination ? { pagination: structure.pagination } : {}),
+    ...(structure.docxLayout ? { docxLayout: structure.docxLayout } : {}),
   });
 }

@@ -437,6 +437,7 @@ export type DocumentBlockType =
   | 'header'
   | 'footer'
   | 'caption'
+  | 'image'
   | 'unknown';
 export type DocumentExtractionProvenance =
   | 'pdf_native'
@@ -445,7 +446,62 @@ export type DocumentExtractionProvenance =
   | 'mixed'
   | 'inferred_from_layout'
   | 'txt_native';
-export type DocumentCoordinateSpace = 'pdf_page_points' | 'ocr_render_pixels';
+export type DocumentCoordinateSpace = 'pdf_page_points' | 'ocr_render_pixels' | 'renderer_page_content_points' | 'renderer_page_points';
+export type DocumentImagePositioning = 'inline' | 'anchored';
+export type DocumentImageWrap =
+  | 'inline'
+  | 'square'
+  | 'squareLeft'
+  | 'squareRight'
+  | 'tight'
+  | 'through'
+  | 'topAndBottom'
+  | 'behind'
+  | 'inFront'
+  | 'unknown';
+export interface DocumentImageAppearance {
+  pageNumber: number;
+  box?: DocumentGeometryBox;
+  confidence: DocumentGeometryConfidence;
+}
+export interface DocumentStructureImageHeaderFooter {
+  kind: 'header' | 'footer';
+  variant: 'default' | 'first' | 'even';
+  partName: string;
+  definingSectionIndex: number;
+  inheritedSectionIndexes?: number[];
+}
+export interface DocumentStructureImage {
+  relationshipId?: string;
+  sourcePart: string;
+  mediaPart?: string;
+  mimeType?: string;
+  external: boolean;
+  originalWidthPx?: number;
+  originalHeightPx?: number;
+  displayWidthPt: number;
+  displayHeightPt: number;
+  positioning: DocumentImagePositioning;
+  wrap: DocumentImageWrap;
+  alternativeText?: string;
+  title?: string;
+  placementId?: string;
+  sourceParagraphBlockId?: string;
+  sourceParagraphIndex?: number;
+  placementIndex?: number;
+  parentTableBlockId?: string;
+  parentRowBlockId?: string;
+  parentCellBlockId?: string;
+  tableId?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  nestedTableDepth?: number;
+  headerFooter?: DocumentStructureImageHeaderFooter;
+  appearances?: DocumentImageAppearance[];
+  captionBlockId?: string;
+  captionText?: string;
+  warnings: ExtractionWarning[];
+}
 
 export interface DocumentStructureBoundingBox {
   x0: number;
@@ -491,6 +547,8 @@ export interface DocumentStructureBlock {
   columnIndex?: number;
   rowSpan?: number;
   columnSpan?: number;
+  columnBreakAfter?: boolean;
+  image?: DocumentStructureImage;
   warnings?: ExtractionWarning[];
 }
 
@@ -531,6 +589,94 @@ export interface DocumentStructureSection {
   pageEnd: number;
   parentSectionId?: string;
 }
+export type DocumentHeaderFooterKind = 'header' | 'footer';
+export type DocumentHeaderFooterVariant = 'default' | 'first' | 'even';
+export type DocumentSectionBreakType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage';
+export interface DocumentStructureHeaderFooterReference {
+  kind: DocumentHeaderFooterKind;
+  variant: DocumentHeaderFooterVariant;
+  relationshipId?: string;
+  partName?: string;
+  inherited: boolean;
+  definingSectionIndex: number;
+  blockIds: string[];
+}
+export interface DocumentStructureDocxColumns {
+  count: number;
+  equalWidth: boolean;
+  gapPt: number;
+  separator: boolean;
+  widthsPt?: number[];
+  gapsPt?: number[];
+  rightToLeft?: boolean;
+}
+export interface DocumentStructureDocxSection {
+  sectionIndex: number;
+  breakType: DocumentSectionBreakType;
+  pageWidthPt: number;
+  pageHeightPt: number;
+  orientation: 'portrait' | 'landscape';
+  margins: DocumentPaginationMargins;
+  columnCount?: number;
+  columns?: DocumentStructureDocxColumns;
+  columnBreakCount?: number;
+  titlePage?: boolean;
+  pageNumberStart?: number;
+  pageNumberFormat?: string;
+  headers: DocumentStructureHeaderFooterReference[];
+  footers: DocumentStructureHeaderFooterReference[];
+}
+export type DocumentFontResolutionSource =
+  | 'embedded'
+  | 'exact_local'
+  | 'metric_substitute'
+  | 'generic_fallback'
+  | 'unavailable';
+export interface DocumentFontFaceResolution {
+  weight: number;
+  style: 'normal' | 'italic';
+  requestedFamily: string;
+  resolvedFamily?: string;
+  source: DocumentFontResolutionSource;
+  exact: boolean;
+  substituted: boolean;
+  embedded: boolean;
+  identity?: string;
+  warning?: string;
+}
+export interface DocumentFontResolution {
+  requestedFamily: string;
+  resolvedFamily?: string;
+  source: DocumentFontResolutionSource;
+  exact: boolean;
+  substituted: boolean;
+  embedded: boolean;
+  coverage: 'complete' | 'partial' | 'none';
+  faces: DocumentFontFaceResolution[];
+  warnings: string[];
+}
+export interface DocumentEmbeddedFont {
+  family: string;
+  style: 'regular' | 'bold' | 'italic' | 'boldItalic';
+  partName?: string;
+  relationshipId?: string;
+  fontKey?: string;
+  status: 'declared' | 'used' | 'dropped' | 'oversize' | 'malformed';
+  warning?: string;
+}
+export interface DocumentThemeFonts {
+  major?: string;
+  minor?: string;
+  majorEastAsia?: string;
+  minorEastAsia?: string;
+}
+export interface DocumentStructureDocxLayout {
+  evenAndOddHeaders: boolean;
+  sections: DocumentStructureDocxSection[];
+  fonts?: DocumentFontResolution[];
+  embeddedFonts?: DocumentEmbeddedFont[];
+  themeFonts?: DocumentThemeFonts;
+}
 
 export interface DocumentStructureTable {
   tableId: string;
@@ -551,6 +697,140 @@ export interface DocumentStructureMetadata {
   truncated: boolean;
 }
 
+export type DocumentPaginationStatus =
+  | 'logical_fallback'
+  | 'unavailable'
+  | 'explicit_breaks'
+  | 'renderer_reported_breaks'
+  | 'renderer_derived_physical'
+  | 'verified_physical';
+export type DocumentPaginationMechanism =
+  | 'none'
+  | 'wordprocessingml_breaks'
+  | 'wordprocessingml_last_rendered_breaks'
+  | 'wordprocessingml_sections'
+  | 'local_renderer';
+export type DocumentPaginationPageKind =
+  | 'logical'
+  | 'explicit_break_segment'
+  | 'renderer_reported'
+  | 'renderer_derived_physical'
+  | 'verified_physical';
+export type DocumentPaginationBreakReason =
+  | 'document_start'
+  | 'explicit_page_break'
+  | 'last_rendered_page_break'
+  | 'section_break'
+  | 'renderer_generated'
+  | 'unknown';
+export interface DocumentPaginationMargins {
+  topPt: number;
+  rightPt: number;
+  bottomPt: number;
+  leftPt: number;
+  headerPt?: number;
+  footerPt?: number;
+}
+export type DocumentGeometryConfidence =
+  | 'exact'
+  | 'renderer_approximate'
+  | 'source_approximate'
+  | 'text_order'
+  | 'unavailable';
+export interface DocumentGeometryBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  coordinateSpace: 'renderer_page_content_points' | 'renderer_page_points';
+}
+export interface DocumentPaginationLineGeometry {
+  lineIndex: number;
+  pageNumber: number;
+  fragmentIndex: number;
+  box: DocumentGeometryBox;
+  columnIndex?: number;
+  confidence: DocumentGeometryConfidence;
+}
+export interface DocumentPaginationCellGeometry {
+  rowIndex: number;
+  columnIndex: number;
+  rowSpan?: number;
+  columnSpan?: number;
+  pageNumber: number;
+  fragmentIndex: number;
+  box: DocumentGeometryBox;
+  confidence: DocumentGeometryConfidence;
+  repeatedHeader?: boolean;
+}
+export interface DocumentPaginationRowGeometry {
+  rowIndex: number;
+  pageNumber: number;
+  fragmentIndex: number;
+  box: DocumentGeometryBox;
+  isHeaderRow?: boolean;
+  isHeaderRepeat?: boolean;
+  isContinuation?: boolean;
+  hasContinuation?: boolean;
+  confidence: DocumentGeometryConfidence;
+  cells?: DocumentPaginationCellGeometry[];
+}
+export interface DocumentPaginationColumnGeometry {
+  pageNumber: number;
+  columnIndex: number;
+  sectionIndex?: number;
+  box: DocumentGeometryBox;
+  widthPt: number;
+  heightPt: number;
+  confidence: DocumentGeometryConfidence;
+  source: 'section_properties' | 'renderer_content' | 'mixed';
+}
+export interface DocumentPaginationGeometrySummary {
+  lineCount: number;
+  cellCount: number;
+  columnCount: number;
+  truncated: boolean;
+}
+export interface DocumentPaginationPage {
+  pageNumber: number;
+  pageKind: DocumentPaginationPageKind;
+  blockIds: string[];
+  breakReason: DocumentPaginationBreakReason;
+  pageWidthPt?: number;
+  pageHeightPt?: number;
+  orientation?: 'portrait' | 'landscape';
+  margins?: DocumentPaginationMargins;
+  sectionIndex?: number;
+  sectionIndexApproximate?: boolean;
+  columnCount?: number;
+  columns?: DocumentPaginationColumnGeometry[];
+}
+export interface DocumentPaginationBlockPage {
+  blockId: string;
+  startPageNumber: number;
+  endPageNumber?: number;
+  fragmentPages?: Array<{ pageNumber: number; fragmentIndex?: number }>;
+  approximate?: boolean;
+  geometryConfidence?: DocumentGeometryConfidence;
+  boundingBox?: DocumentGeometryBox;
+  lines?: DocumentPaginationLineGeometry[];
+  tableRows?: DocumentPaginationRowGeometry[];
+  rowIndex?: number;
+  columnIndex?: number;
+  rowSpan?: number;
+  columnSpan?: number;
+}
+export interface DocumentPaginationInfo {
+  status: DocumentPaginationStatus;
+  mechanism: DocumentPaginationMechanism;
+  pageCount: number;
+  pages: DocumentPaginationPage[];
+  blockPages: DocumentPaginationBlockPage[];
+  warnings: ExtractionWarning[];
+  renderer?: string;
+  geometry?: DocumentPaginationGeometrySummary;
+}
+
 export interface DocumentStructure {
   schemaVersion: DocumentStructureSchemaVersion;
   extractionVersion: number;
@@ -563,6 +843,8 @@ export interface DocumentStructure {
   readingOrder: string[];
   warnings: ExtractionWarning[];
   metadata: DocumentStructureMetadata;
+  pagination?: DocumentPaginationInfo;
+  docxLayout?: DocumentStructureDocxLayout;
 }
 
 export interface DocumentExtractionDetails {

@@ -14,9 +14,16 @@
     "test:server": "node --test server/test/*.test.mjs",
     "test": "npm run typecheck && npm run test:local && npm run test:extension && npm run test:server",
     "test:extension": "node --test extension/test/*.test.ts",
-    "test:local": "node scripts/test-local.mjs"
+    "test:local": "node scripts/test-local.mjs",
+    "validate:docx-pagination": "node scripts/dev/validate-docx-pagination.mjs",
+    "validate:docx-degraded": "node scripts/dev/e2e-docx-degraded.mjs",
+    "validate:docx-fidelity": "node scripts/dev/e2e-docx-fidelity.mjs",
+    "validate:router-navigation": "node scripts/dev/e2e-router-navigation.mjs",
+    "benchmark:docx-pagination": "node scripts/dev/benchmark-docx-pagination.mjs"
   },
   "dependencies": {
+    "@docx-editor.dev/core": "2.38.0",
+    "@docx-editor.dev/fonts": "2.38.0",
     "@fontsource/inter": "^5.1.1",
     "@huggingface/transformers": "^4.3.2",
     "@noble/hashes": "^2.4.0",
@@ -31,7 +38,7 @@
     "pdfjs-dist": "^6.5.438",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
+    "react-router-dom": "7.18.5",
     "tesseract.js": "^7.0.0",
     "zod": "^4.6.7"
   },
@@ -41,7 +48,7 @@
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
-    "esbuild": "^0.24.2",
+    "esbuild": "0.25.12",
     "fake-indexeddb": "^6.2.8",
     "playwright": "^1.65.1",
     "typescript": "~5.7.2",

@@ -74,11 +74,13 @@ function buildPdf({ pages, password = false }) {
   return Buffer.from(pdf, 'binary');
 }
 
-function buildDocx() {
+function buildDocx(pageBreak = true) {
+  const explicitBreak = pageBreak ? '<w:br w:type="page"/>' : '';
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
 <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Admissions Heading</w:t></w:r></w:p>
-<w:p><w:r><w:t>DOCX paragraph one with useful text.</w:t><w:br/><w:t>DOCX line two.</w:t></w:r></w:p>
+<w:p><w:r><w:t>DOCX paragraph one with useful text.</w:t><w:br/><w:t>DOCX line two.</w:t>${explicitBreak}</w:r></w:p>
+<w:p><w:r><w:t>DOCX explicit page two paragraph.</w:t></w:r></w:p>
 <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Field</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Degree</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B.Tech</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
 </w:body></w:document>`;
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -89,6 +91,55 @@ function buildDocx() {
     'word/_rels/document.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
     'word/document.xml': strToU8(documentXml),
     'word/styles.xml': strToU8(stylesXml),
+  });
+}
+
+function buildPaginationDocx() {
+  const paragraph = (text) => `<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+  const text = 'A deterministic paragraph that must wrap across several physical pages when the renderer measures the local Calibri font metrics. '.repeat(8);
+  const paragraphs = Array.from({ length: 40 }, (_, index) => paragraph(`Pagination paragraph ${index + 1}. ${text}`)).join('');
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`;
+  return zipSync({
+    '[Content_Types].xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`),
+    '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`),
+    'word/document.xml': strToU8(documentXml),
+  });
+}
+
+function buildImageDocx(withCaption = true) {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=', 'base64');
+  const drawing = `<w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="1828800" cy="1371600"/><wp:docPr id="1" name="image1" descr="E2E image alt"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="1" name="image1.png" descr="E2E image alt"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdImg1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const caption = withCaption ? '<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>Figure 1. E2E caption</w:t></w:r></w:p>' : '';
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r>${drawing}</w:r></w:p>${caption}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`;
+  return zipSync({
+    '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>'),
+    '_rels/.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
+    'word/_rels/document.xml.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rIdImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>'),
+    'word/styles.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="Caption"/></w:style></w:styles>'),
+    'word/media/image1.png': png,
+    'word/document.xml': strToU8(documentXml),
+  });
+}
+
+function buildManyParagraphDocx(count) {
+  const paragraph = (text) => `<w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+  const paragraphs = Array.from({ length: count }, (_, index) => paragraph(`Large document paragraph ${index + 1} with deterministic text for the local pagination geometry budget.`)).join('');
+  return zipSync({
+    '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
+    '_rels/.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),
+    'word/document.xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`),
+  });
+}
+
+function buildLongTableDocx() {
+  const cell = (text) => `<w:tc><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="20"/></w:rPr><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const row = (index) => `<w:tr>${[1, 2, 3].map((column) => cell(`Row ${index} column ${column}`)).join('')}</w:tr>`;
+  const rows = Array.from({ length: 50 }, (_, index) => row(index + 1)).join('');
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Long table introduction</w:t></w:r></w:p><w:tbl>${rows}</w:tbl><w:p><w:r><w:t>Long table conclusion</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`;
+  return zipSync({
+    '[Content_Types].xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`),
+    '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`),
+    'word/document.xml': strToU8(documentXml),
   });
 }
 
@@ -187,6 +238,118 @@ try {
     && docxText.data.structure.blocks.some((block) => block.type === 'heading' && block.text.includes('Admissions Heading'))
     && docxText.data.structure.tables.length === 1
     && docxText.data.structure.blocks.some((block) => block.type === 'table_cell' && block.text === 'B.Tech'), JSON.stringify({ pages: docxText?.data?.structure?.pages, tables: docxText?.data?.structure?.tables }));
+  check('real Chromium DOCX pagination uses the local font-backed renderer rather than explicit-break metadata alone', docxText?.data?.structure?.pagination?.status === 'renderer_derived_physical'
+    && docxText.data.structure.pagination.mechanism === 'local_renderer'
+    && /@docx-editor\.dev\/core/.test(docxText.data.structure.pagination.renderer ?? '')
+    && docxText.data.structure.pagination.pageCount === 2
+    && docxText.data.structure.pagination.blockPages.length > 0
+    && docxText.data.structure.pagination.blockPages.some((entry) => entry.fragmentPages?.length || entry.lines?.length || entry.tableRows?.length)
+    && docxText.data.structure.pagination.status !== 'verified_physical', JSON.stringify(docxText?.data?.structure?.pagination));
+  check('automatic DOCX pagination supersedes stale break-only warnings', !docxText?.data?.structure?.warnings?.some((warning) => warning.code === 'DOCX_EXPLICIT_BREAK_PAGINATION' || warning.code === 'DOCX_PAGE_COUNT_UNAVAILABLE'), JSON.stringify(docxText?.data?.structure?.warnings));
+
+  const logicalDocxImport = await message(page, 'p4_docx_logical', 'IMPORT_DOCUMENT', {
+    name: 'phase4-logical.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildDocx(false)).toString('base64'),
+    importId: 'p4_docx_logical',
+  });
+  const logicalDocxText = logicalDocxImport?.ok
+    ? await message(page, 'p4_docx_logical_text', 'GET_DOCUMENT_TEXT', { documentId: logicalDocxImport.data.document.id })
+    : null;
+  check('real Chromium DOCX without break evidence receives automatic physical pages', logicalDocxImport?.ok === true
+    && logicalDocxText?.data?.structure?.pagination?.status === 'renderer_derived_physical'
+    && logicalDocxText.data.structure.pagination.pageCount >= 1
+    && logicalDocxText.data.structure.pagination.pages.length === logicalDocxText.data.structure.pagination.pageCount, JSON.stringify(logicalDocxText?.data?.structure?.pagination));
+
+  const overflowImport = await message(page, 'p4_docx_overflow', 'IMPORT_DOCUMENT', {
+    name: 'phase4-overflow.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildPaginationDocx()).toString('base64'),
+    importId: 'p4_docx_overflow',
+  });
+  const overflowText = overflowImport?.ok
+    ? await message(page, 'p4_docx_overflow_text', 'GET_DOCUMENT_TEXT', { documentId: overflowImport.data.document.id })
+    : null;
+  const overflowPagination = overflowText?.data?.structure?.pagination;
+  check('automatic pagination splits a long paragraph across physical pages with fragment mappings', overflowImport?.ok === true
+    && overflowPagination?.pageCount > 1
+    && overflowPagination.blockPages.some((entry) => (entry.endPageNumber ?? entry.startPageNumber) > entry.startPageNumber && (entry.fragmentPages?.length ?? 0) > 1), JSON.stringify({ pages: overflowPagination?.pageCount, sample: overflowPagination?.blockPages?.find((entry) => (entry.endPageNumber ?? entry.startPageNumber) > entry.startPageNumber) }));
+
+  const tableImport = await message(page, 'p4_docx_table', 'IMPORT_DOCUMENT', {
+    name: 'phase4-long-table.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildLongTableDocx()).toString('base64'),
+    importId: 'p4_docx_table',
+  });
+  const tableText = tableImport?.ok
+    ? await message(page, 'p4_docx_table_text', 'GET_DOCUMENT_TEXT', { documentId: tableImport.data.document.id })
+    : null;
+  const tableStructure = tableText?.data?.structure;
+  const tablePagination = tableStructure?.pagination;
+  const tableBlock = tableStructure?.blocks.find((block) => block.type === 'table');
+  const tableMapping = tablePagination?.blockPages.find((entry) => entry.blockId === tableBlock?.blockId);
+  const mappedRow = tableBlock?.children?.length
+    ? tablePagination?.blockPages.find((entry) => entry.blockId === tableBlock.children[0])
+    : undefined;
+  check('automatic pagination maps a table and its rows across physical pages', tableImport?.ok === true
+    && tablePagination?.status === 'renderer_derived_physical'
+    && (tableMapping?.endPageNumber ?? 0) > (tableMapping?.startPageNumber ?? 0)
+    && (tableMapping?.fragmentPages?.length ?? 0) > 1
+    && mappedRow?.startPageNumber === tableMapping?.startPageNumber, JSON.stringify({ table: tableMapping, row: mappedRow }));
+
+  const imageImport = await message(page, 'p4_docx_image', 'IMPORT_DOCUMENT', {
+    name: 'phase4-image.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildImageDocx()).toString('base64'),
+    importId: 'p4_docx_image',
+  });
+  const imageText = imageImport?.ok
+    ? await message(page, 'p4_docx_image_text', 'GET_DOCUMENT_TEXT', { documentId: imageImport.data.document.id })
+    : null;
+  const imageStructure = imageText?.data?.structure;
+  const imageBlock = imageStructure?.blocks.find((block) => block.type === 'image');
+  const imageMapping = imageStructure?.pagination?.blockPages.find((entry) => entry.blockId === imageBlock?.blockId);
+  check('real Chromium DOCX exposes a structured image block with caption and page association', imageImport?.ok === true
+    && imageBlock?.image?.mimeType === 'image/png'
+    && imageBlock.image.displayWidthPt === 144
+    && imageBlock.image.displayHeightPt === 108
+    && imageBlock.image.alternativeText === 'E2E image alt'
+    && imageBlock.image.captionText === 'Figure 1. E2E caption'
+    && imageMapping?.geometryConfidence === 'exact'
+    && imageMapping?.boundingBox?.width === 144, JSON.stringify({ image: imageBlock?.image, mapping: imageMapping }));
+  check('image line/cell/column geometry is present in the encrypted structure', (imageStructure?.pagination?.geometry?.lineCount ?? 0) > 0
+    && (imageStructure?.pagination?.pages?.[0]?.columns?.length ?? 0) > 0, JSON.stringify(imageStructure?.pagination?.geometry));
+
+  const imageOnlyImport = await message(page, 'p4_docx_image_only', 'IMPORT_DOCUMENT', {
+    name: 'phase4-image-only.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildImageDocx(false)).toString('base64'),
+    importId: 'p4_docx_image_only',
+  });
+  const imageOnlyText = imageOnlyImport?.ok
+    ? await message(page, 'p4_docx_image_only_text', 'GET_DOCUMENT_TEXT', { documentId: imageOnlyImport.data.document.id })
+    : null;
+  check('image-only DOCX imports with an empty text body and a structured image block', imageOnlyImport?.ok === true
+    && imageOnlyImport.data.document.extractedTextStatus === 'extracted'
+    && imageOnlyText?.data?.text === ''
+    && imageOnlyText.data.structure.blocks.some((block) => block.type === 'image'), JSON.stringify({ error: imageOnlyImport?.error, text: imageOnlyText?.data?.text, blocks: imageOnlyText?.data?.structure?.blocks?.map((block) => block.type) }));
+
+  const largeDocxStarted = Date.now();
+  const largeDocxImport = await message(page, 'p4_docx_large', 'IMPORT_DOCUMENT', {
+    name: 'phase4-large-pagination.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    dataBase64: Buffer.from(buildManyParagraphDocx(5000)).toString('base64'),
+    importId: 'p4_docx_large',
+  });
+  const largeDocxText = largeDocxImport?.ok
+    ? await message(page, 'p4_docx_large_text', 'GET_DOCUMENT_TEXT', { documentId: largeDocxImport.data.document.id, maxChars: 1_000_000 })
+    : null;
+  const largePagination = largeDocxText?.data?.structure?.pagination;
+  check('large 5,000-paragraph DOCX imports through the bounded pagination protocol', largeDocxImport?.ok === true
+    && largePagination?.status === 'renderer_derived_physical'
+    && largePagination.blockPages.length === 5000
+    && largePagination.geometry?.truncated === true
+    && Date.now() - largeDocxStarted < 60_000, JSON.stringify({ error: largeDocxImport?.error, pages: largePagination?.pageCount, mapped: largePagination?.blockPages?.length, geometry: largePagination?.geometry, ms: Date.now() - largeDocxStarted }));
 
   const txt = Buffer.from('\uFEFFTXT paragraph one\r\n\r\nTXT paragraph two', 'utf8');
   const txtImport = await message(page, 'p4_txt', 'IMPORT_DOCUMENT', {
@@ -302,6 +465,23 @@ try {
   check('inspector shows the deterministic structured view', structureView.includes('Deterministic local layout:')
     && structureView.includes('UI upload paragraph one')
     && structureView.includes('Plain text'));
+  await uiPage.locator('tr', { hasText: 'phase4-fixture.docx' }).click();
+  await uiPage.click('button:has-text("Structure")');
+  await uiPage.waitForSelector('text=Renderer-derived physical pages:', { timeout: 30000 });
+  const docxStructureView = await uiPage.locator('body').innerText();
+  check('inspector labels renderer-derived physical pages without claiming Word verification', docxStructureView.includes('Renderer-derived physical pages: 2')
+    && docxStructureView.includes('not verified against Microsoft Word')
+    && docxStructureView.includes('Physical page'));
+
+  await uiPage.locator('tr', { hasText: 'phase4-image.docx' }).click();
+  await uiPage.click('button:has-text("Structure")');
+  await uiPage.waitForSelector('text=Alt: E2E image alt', { timeout: 30000 });
+  const imageStructureView = await uiPage.locator('body').innerText();
+  check('inspector shows image count, dimensions, alt text, caption, and page association', imageStructureView.includes('1 image')
+    && imageStructureView.includes('144×108 pt')
+    && imageStructureView.includes('Alt: E2E image alt')
+    && imageStructureView.includes('Caption: Figure 1. E2E caption')
+    && imageStructureView.includes('Physical page 1'));
 
   await uiPage.locator('tr', { hasText: 'ui-progress.pdf' }).click();
   await uiPage.click('button:has-text("Preview")');
