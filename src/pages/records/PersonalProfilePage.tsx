@@ -13,7 +13,7 @@ import { useApp } from '@/context/AppContext';
 import type { VaultField } from '@/services/types';
 
 export function PersonalProfilePage() {
-  const { user, fields, documents, addField, updateField, deleteField, resolveConflict, dataLoading } = useApp();
+  const { user, fields, documents, addField, updateField, deleteField, resolveConflict, verifyField, dataLoading } = useApp();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<VaultField | null>(null);
   const [mode, setMode] = useState<'edit' | 'resolve'>('edit');
@@ -28,7 +28,20 @@ export function PersonalProfilePage() {
   const identity = fields.filter((field) => field.category === 'identification');
   const conflicts = fields.filter((field) => field.conflicts?.length);
   const totalFields = personal.length + contact.length;
-  const personalComplete = totalFields > 0 ? Math.round((totalFields / Math.max(1, totalFields)) * 100) : 0;
+  const expectedProfileKeys = [
+    'personal.fullName',
+    'personal.dateOfBirth',
+    'contact.email',
+    'contact.phone',
+    'contact.addressLine1',
+    'contact.city',
+    'contact.state',
+    'contact.country',
+  ];
+  const personalComplete = Math.round(
+    (expectedProfileKeys.filter((key) => Boolean(fields.find((field) => field.key === key)?.value?.trim())).length
+      / expectedProfileKeys.length) * 100,
+  );
   const sourceDocNames = Array.from(new Set(fields.map((field) => field.source.documentName).filter(Boolean)));
 
   const openEdit = (field: VaultField) => {
@@ -118,7 +131,7 @@ export function PersonalProfilePage() {
               <Card>
                 <CardHeader title="Personal information" subtitle={`${personal.length} extracted values · source attribution enabled`} action={<span className="ff-code ff-muted">{personalComplete}% complete</span>} />
                 <div style={{ padding: '0 16px 16px' }}>
-                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={personal} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} emptyLabel="No personal values extracted yet. Upload a document or add a value." />}
+                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={personal} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} onVerify={(field) => void verifyField(field.id)} emptyLabel="No personal values extracted yet. Upload a document or add a value." />}
                 </div>
               </Card>
 
@@ -129,14 +142,14 @@ export function PersonalProfilePage() {
                   action={<button type="button" className="ff-link-button" style={{ color: 'var(--ff-primary)' }} onClick={() => navigate('/records/addresses')}>Manage addresses <ArrowRight size={12} /></button>}
                 />
                 <div style={{ padding: '0 16px 16px' }}>
-                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={contact} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} emptyLabel="No contact values extracted yet." />}
+                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={contact} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} onVerify={(field) => void verifyField(field.id)} emptyLabel="No contact values extracted yet." />}
                 </div>
               </Card>
 
               <Card>
                 <CardHeader title="Identification" subtitle="Sensitive values are never autofilled without explicit review." action={<Badge tone="warning">Extra review</Badge>} />
                 <div style={{ padding: '0 16px 16px' }}>
-                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={identity} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} emptyLabel="No identification values extracted yet." />}
+                  {dataLoading ? <div className="ff-spinner" /> : <FieldTable fields={identity} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} onVerify={(field) => void verifyField(field.id)} emptyLabel="No identification values extracted yet." />}
                 </div>
               </Card>
             </>

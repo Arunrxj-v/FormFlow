@@ -11,13 +11,17 @@ import {
   GraduationCap,
   LockKeyhole,
   ShieldCheck,
+  Download,
+  Sparkles,
   Upload,
+  XCircle,
   Zap,
 } from 'lucide-react';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge as BadgePill } from '@/components/ui/Badge';
 import { useApp } from '@/context/AppContext';
+import { ProgressBar } from '@/components/ui/States';
 
 export function OverviewPage() {
   const {
@@ -27,6 +31,9 @@ export function OverviewPage() {
     activity,
     vaultStatus,
     lockVault,
+    modelStatus,
+    installModel,
+    cancelModelInstall,
   } = useApp();
   const navigate = useNavigate();
 
@@ -157,12 +164,43 @@ export function OverviewPage() {
 
           <Card className="ff-section-card">
             <div className="ff-row ff-between">
+              <div className="ff-row ff-gap-8"><Sparkles size={17} className="ff-primary" /><span className="ff-h3">Local AI model</span></div>
+              <BadgePill tone={modelStatus?.ready ? 'success' : modelStatus?.status === 'failed' || modelStatus?.status === 'corrupt' ? 'danger' : 'warning'}>
+                {modelStatus?.ready ? 'Ready' : modelStatus?.status === 'downloading' ? 'Downloading' : modelStatus?.status === 'verifying' ? 'Verifying' : modelStatus?.status === 'installed' ? 'Installed' : modelStatus?.status === 'failed' ? 'Failed' : 'Not installed'}
+              </BadgePill>
+            </div>
+            <div className="ff-stack ff-gap-8 ff-mt-16">
+              <div className="ff-info-pair"><span>Model</span><span>Qwen3-0.6B · INT8</span></div>
+              <div className="ff-info-pair"><span>Runtime</span><span>Local WASM · no cloud</span></div>
+              <div className="ff-info-pair"><span>Download</span><span>{modelStatus?.record?.expectedBytes ? `${Math.round(modelStatus.record.expectedBytes / 1048576)} MB` : '734 MB'}</span></div>
+            </div>
+            {modelStatus && ['downloading', 'verifying', 'initializing'].includes(modelStatus.status) ? (
+              <div className="ff-mt-12">
+                <ProgressBar value={modelStatus.progress?.percent ?? 0} label={`${modelStatus.status === 'verifying' ? 'Verifying' : 'Downloading'} · ${Math.round(modelStatus.progress?.percent ?? 0)}%`} />
+                <Button className="ff-mt-8" fullWidth icon={XCircle} onClick={() => void cancelModelInstall()}>Cancel download</Button>
+              </div>
+            ) : modelStatus?.ready || modelStatus?.status === 'installed' ? (
+              <Button className="ff-mt-12" fullWidth icon={Sparkles} onClick={() => navigate('/settings?tab=model')}>Model settings &amp; self-test</Button>
+            ) : (
+              <>
+                <div className="ff-body-sm ff-muted ff-mt-12">
+                  Basic document processing works without the model. Install it for grounded AI-assisted extraction.
+                </div>
+                <Button className="ff-mt-8" fullWidth variant="primary" icon={Download} onClick={() => void installModel().catch(() => undefined)}>
+                  {modelStatus?.status === 'failed' ? 'Retry model download' : 'Download local model'}
+                </Button>
+              </>
+            )}
+          </Card>
+
+          <Card className="ff-section-card">
+            <div className="ff-row ff-between">
               <div className="ff-row ff-gap-8"><Chrome size={17} className="ff-primary" /><span className="ff-h3">Extension popup</span></div>
               <BadgePill tone="success">Same vault</BadgePill>
             </div>
             <div className="ff-stack ff-gap-8 ff-mt-16">
               <div className="ff-info-pair"><span>Storage owner</span><span>Extension origin</span></div>
-              <div className="ff-info-pair"><span>Autofill shortcut</span><span className="ff-kbd">Alt + F</span></div>
+              <div className="ff-info-pair"><span>Open popup</span><span>Toolbar icon</span></div>
               <div className="ff-info-pair"><span>Content access</span><span className="ff-muted">After user action only</span></div>
             </div>
             <Button className="ff-mt-12" fullWidth icon={BookOpenCheck} onClick={() => navigate('/extension')}>

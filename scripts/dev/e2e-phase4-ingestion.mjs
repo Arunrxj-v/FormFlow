@@ -202,6 +202,7 @@ try {
   await page.click('button:has-text("Create encrypted vault")');
   await page.waitForURL(/#\/dashboard$/);
   await page.waitForTimeout(700);
+  await message(page, 'e2e_disable_model_auto', 'UPDATE_PREFERENCES', { autoDownloadModel: false });
   check('vault created', true);
 
   const marker = 'FORMPHASE4REALPDF';

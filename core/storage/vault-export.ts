@@ -74,9 +74,11 @@ export interface PortableFile {
 }
 
 export interface PortableValue {
-  record: Omit<ExtractedValueRecord, 'valueEnc' | 'normalizedValueEnc' | 'labelEnc'>;
+  record: Omit<ExtractedValueRecord, 'valueEnc' | 'normalizedValueEnc' | 'labelEnc' | 'evidenceEnc'>;
   value: string;
   normalizedValue: string;
+  /** Plaintext only inside the encrypted backup payload; re-encrypted on import. */
+  evidence?: string;
 }
 
 export interface PortableConflict {
@@ -470,9 +472,10 @@ function validateDocumentRecord(value: unknown): Omit<DocumentRecord, 'nameEnc' 
 const VALUE_KEYS = [
   'id', 'key', 'label', 'category', 'sourceDocumentId', 'sourcePage', 'confidence',
   'extractionMethod', 'verificationStatus', 'sensitive', 'userModified', 'createdAt', 'updatedAt',
+  'sourceBlockId', 'modelVersion',
 ] as const;
 
-function validateValueRecord(value: unknown): Omit<ExtractedValueRecord, 'valueEnc' | 'normalizedValueEnc' | 'labelEnc'> {
+function validateValueRecord(value: unknown): Omit<ExtractedValueRecord, 'valueEnc' | 'normalizedValueEnc' | 'labelEnc' | 'evidenceEnc'> {
   const record = object(value, 'Backup value record');
   allowedKeys(record, VALUE_KEYS, 'Backup value record');
   return {
@@ -487,6 +490,8 @@ function validateValueRecord(value: unknown): Omit<ExtractedValueRecord, 'valueE
     verificationStatus: enumeration(record.verificationStatus, 'Backup value verification status', VERIFICATION_STATUSES) as ExtractedValueRecord['verificationStatus'],
     sensitive: boolean(record.sensitive, 'Backup value sensitive flag'),
     userModified: boolean(record.userModified, 'Backup value modified flag'),
+    sourceBlockId: optionalString(record.sourceBlockId, 'Backup value source block', 200),
+    modelVersion: optionalString(record.modelVersion, 'Backup value model version', 120),
     createdAt: timestamp(record.createdAt, 'Backup value createdAt'),
     updatedAt: timestamp(record.updatedAt, 'Backup value updatedAt'),
   };
@@ -843,11 +848,12 @@ function validatePayload(value: unknown, envelope: EncryptedBackupEnvelope): Por
 
   const values: PortableValue[] = valuesRaw.map((entry, index) => {
     const item = object(entry, `Backup value ${index}`);
-    allowedKeys(item, ['record', 'value', 'normalizedValue'], `Backup value ${index}`);
+    allowedKeys(item, ['record', 'value', 'normalizedValue', 'evidence'], `Backup value ${index}`);
     return {
       record: validateValueRecord(item.record),
       value: string(item.value, 'Backup value', 100_000),
       normalizedValue: string(item.normalizedValue, 'Backup normalized value', 100_000),
+      evidence: optionalString(item.evidence, 'Backup value evidence', 1_000),
     };
   });
 
@@ -1359,6 +1365,7 @@ async function verifyPreparedImport(
     await checkJson(value.valueEnc, source.value, 'value', value.id, 'value');
     await checkJson(value.normalizedValueEnc, source.normalizedValue, 'value', value.id, 'normalizedValue');
     await checkJson(value.labelEnc ?? '', source.record.label, 'value', value.id, 'label');
+    if (source.evidence) await checkJson(value.evidenceEnc ?? '', source.evidence, 'value', value.id, 'evidence');
   }
   const conflictById = new Map(payload.conflicts.map((entry) => [entry.record.id, entry]));
   for (const conflict of prepared.conflicts) {
@@ -1486,7 +1493,7 @@ export const vaultExportService = {
 
     const portableValues: PortableValue[] = [];
     for (const record of values as ExtractedValueRecord[]) {
-      const { valueEnc, normalizedValueEnc, labelEnc, ...rest } = record;
+      const { valueEnc, normalizedValueEnc, labelEnc, evidenceEnc, ...rest } = record;
       const label = labelEnc
         ? await decryptJsonWithKey<string>(
           await vaultSession.getDataKey(),
@@ -1494,8 +1501,16 @@ export const vaultExportService = {
           contextFor(activeVault, 'value', record.id, 'label'),
         )
         : record.label;
+      const evidence = evidenceEnc
+        ? await decryptJsonWithKey<string>(
+          await vaultSession.getDataKey(),
+          evidenceEnc,
+          contextFor(activeVault, 'value', record.id, 'evidence'),
+        )
+        : undefined;
       portableValues.push({
         record: { ...rest, label },
+        ...(evidence ? { evidence } : {}),
         value: await decryptJsonWithKey<string>(
           await vaultSession.getDataKey(),
           valueEnc,
@@ -1937,6 +1952,9 @@ export const vaultExportService = {
         labelEnc: await encryptJsonWithKey(key, value.record.label, context('value', value.record.id, 'label')),
         valueEnc: await encryptJsonWithKey(key, value.value, context('value', value.record.id, 'value')),
         normalizedValueEnc: await encryptJsonWithKey(key, value.normalizedValue, context('value', value.record.id, 'normalizedValue')),
+        ...(value.evidence
+          ? { evidenceEnc: await encryptJsonWithKey(key, value.evidence, context('value', value.record.id, 'evidence')) }
+          : {}),
       });
     }
 

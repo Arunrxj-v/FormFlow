@@ -14,6 +14,9 @@ export interface ExtractedCandidate {
   sensitive: boolean;
   needsReview: boolean;
   reason: string;
+  supportingText?: string;
+  sourceBlockId?: string;
+  modelVersion?: string;
 }
 
 export interface DocumentClassification {
@@ -284,5 +287,8 @@ export function candidateToField(candidate: ExtractedCandidate) {
     verificationStatus: 'extracted' as const,
     sensitive: candidate.sensitive,
     userModified: false,
+    ...(candidate.supportingText ? { evidence: candidate.supportingText } : {}),
+    ...(candidate.sourceBlockId ? { sourceBlockId: candidate.sourceBlockId } : {}),
+    ...(candidate.modelVersion ? { modelVersion: candidate.modelVersion } : {}),
   };
 }

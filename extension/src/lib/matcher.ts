@@ -12,7 +12,11 @@ function recordFromFields(fields: VaultField[]): Record<string, string> {
   return map;
 }
 
-export function buildSuggestions(fields: VaultField[], scanFields: ScanFieldPayload[]): MatchSuggestion[] {
+export function buildSuggestions(
+  fields: VaultField[],
+  scanFields: ScanFieldPayload[],
+  options: { allowLongAnswers?: boolean } = {},
+): MatchSuggestion[] {
   const byKey = new Map(fields.map((field) => [field.key, field]));
   const record = recordFromFields(fields);
 
@@ -37,7 +41,9 @@ export function buildSuggestions(fields: VaultField[], scanFields: ScanFieldPayl
     let item = key ? byKey.get(key) : undefined;
     if (!item && key === 'skills.technical') item = byKey.get('other.skills');
 
-    const generated = field.kind === 'longAnswer' ? generateGroundedAnswer('longAnswer', record) : null;
+    const generated = field.kind === 'longAnswer' && options.allowLongAnswers !== false
+      ? generateGroundedAnswer('longAnswer', record)
+      : null;
     let value = item?.value ?? generated ?? '';
     let confidence = item?.confidence ?? (generated ? 72 : 0);
     let needsReview = false;

@@ -251,39 +251,35 @@ test('preferences and history round-trip', async () => {
   assert.ok(typeof sync.body.synced === 'number');
 });
 
-test('google drive and ai provider routes', async () => {
-  const driveStatus = await api('/api/drive/status');
-  assert.equal(driveStatus.status, 200);
-  assert.equal(typeof driveStatus.body.drive.connected, 'boolean');
-
-  const disconnect = await api('/api/drive/disconnect', { method: 'POST', body: '{}' });
-  assert.equal(disconnect.status, 200);
-  assert.equal(disconnect.body.drive.connected, false);
-
-  const matchFields = await api('/api/ai/match-fields', {
-    method: 'POST',
-    body: JSON.stringify({ fieldLabel: 'Email Address', fieldName: 'email', candidates: ['contact.email', 'personal.fullName'] }),
-  });
-  assert.equal(matchFields.status, 200);
+test('removed cloud routes are not available', async () => {
+  for (const [path, method, body] of [
+    ['/api/drive/status', 'GET', undefined],
+    ['/api/drive/disconnect', 'POST', '{}'],
+    ['/api/drive/files', 'GET', undefined],
+    ['/api/drive/import', 'POST', '{}'],
+    ['/api/ai/match-fields', 'POST', '{}'],
+    ['/api/ai/generate-answer', 'POST', '{}'],
+  ]) {
+    const response = await api(path, method === 'GET' ? {} : { method, body });
+    assert.equal(response.status, 404, `${path} must be removed`);
+  }
 });
 
-test('google oauth separation: sign-in vs drive scopes and protection', async () => {
+test('google oauth sign-in scope and drive removal', async () => {
   // 1. Sign-in URL generation (public, minimal identity scopes only)
   const signinUrlRes = await api('/api/auth/google/url?intent=signin', {}, null);
   assert.equal(signinUrlRes.status, 200);
   assert.ok(signinUrlRes.body.url.includes('accounts.google.com'));
   assert.ok(signinUrlRes.body.url.includes('openid'));
-  assert.ok(signinUrlRes.body.url.includes('userinfo.email'));
-  assert.ok(!signinUrlRes.body.url.includes('drive.file'), 'Sign-in URL MUST NOT request drive scopes');
+  const signinScope = new URL(signinUrlRes.body.url).searchParams.get('scope') ?? '';
+  assert.equal(signinScope, 'openid email profile');
+  assert.ok(!signinUrlRes.body.url.includes('drive'), 'Sign-in URL MUST NOT request drive scopes');
 
-  // 2. Drive URL generation requires authentication
+  // 2. Drive document-storage authorization is removed.
   const unauthedDriveRes = await api('/api/auth/google/url?intent=drive', {}, null);
-  assert.equal(unauthedDriveRes.status, 401);
-
-  // 3. Authenticated Drive URL requests drive.file scope
+  assert.equal(unauthedDriveRes.status, 410);
   const authedDriveRes = await api('/api/auth/google/url?intent=drive', {}, token);
-  assert.equal(authedDriveRes.status, 200);
-  assert.ok(authedDriveRes.body.url.includes('drive.file'), 'Drive URL must request drive.file scope');
+  assert.equal(authedDriveRes.status, 410);
 
   // 4. Callback with access_denied error redirects to login or settings with friendly error
   const rawFetch = async (url) => {
@@ -342,7 +338,7 @@ test('google oauth separation: sign-in vs drive scopes and protection', async ()
   assert.ok(setCookie?.includes('Max-Age=0'));
 });
 
-test('google sign-in account lifecycle and strict drive separation', async () => {
+test('google sign-in account lifecycle without drive access', async () => {
   const db = new DatabaseSync(dbPath);
   const googleEmail = 'alex.oauth.user@example.com';
   const googleName = 'Alex Mercer';
@@ -362,36 +358,13 @@ test('google sign-in account lifecycle and strict drive separation', async () =>
   assert.equal(createdUser.email, googleEmail);
   assert.equal(createdUser.account_type, 'Personal');
 
-  // 3. Verify that Google Drive is NOT connected for this user
+  // 3. Sign-in must not create any Google Drive connection or token.
   const driveConn = db.prepare('SELECT * FROM google_connections WHERE user_id = ?').get(newUserId);
-  assert.equal(driveConn, undefined, 'Google Drive must not be connected when signing in with Google');
-
-  // Verify drive status endpoint returns connected: false
-  // Create a token for this new user
-  const alexToken = await import('../security.mjs').then((m) => m.createToken(newUserId));
-  const alexDriveStatus = await api('/api/drive/status', {}, alexToken);
-  assert.equal(alexDriveStatus.status, 200);
-  assert.equal(alexDriveStatus.body.drive.connected, false);
-  assert.equal(alexDriveStatus.body.drive.accountEmail, '');
+  assert.equal(driveConn, undefined, 'Google Drive must not be connected by sign-in');
 
   // 4. Subsequent Google Sign-In finds and reuses the exact same account
   const reLookupUser = db.prepare('SELECT * FROM users WHERE email = ?').get(googleEmail);
   assert.equal(reLookupUser.id, newUserId);
-
-  // 5. Explicit Drive connection authorizes Drive for this user only
-  db.prepare(`
-    INSERT INTO google_connections (user_id, access_token, refresh_token, token_expiry, scope, email, account_name, created_at, updated_at)
-    VALUES (?, 'at_123', 'rt_123', ?, 'https://www.googleapis.com/auth/drive.file', ?, ?, ?, ?)
-  `).run(newUserId, Date.now() + 3600000, googleEmail, googleName, new Date().toISOString(), new Date().toISOString());
-
-  const updatedDriveStatus = await api('/api/drive/status', {}, alexToken);
-  assert.equal(updatedDriveStatus.status, 200);
-  assert.equal(updatedDriveStatus.body.drive.connected, true);
-  assert.equal(updatedDriveStatus.body.drive.accountEmail, googleEmail);
-
-  // 6. Test user (other account) still has drive disconnected
-  const testUserDriveStatus = await api('/api/drive/status', {}, token);
-  assert.equal(testUserDriveStatus.body.drive.connected, false);
 
   db.close();
 });

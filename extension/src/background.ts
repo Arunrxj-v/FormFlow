@@ -27,6 +27,7 @@ import { VaultOperationCoordinator, type VaultOperationKind } from '../../core/v
 import { vaultService } from '../../core/application/vault-service';
 import { profileService } from '../../core/application/profile-service';
 import { documentService } from '../../core/application/document-service';
+import { extractDocumentInformation } from '../../core/application/extraction-service';
 import type { DocumentParseInput } from '../../core/documents/parsers/types';
 import { acceptOffscreenParserPort, parseDocumentInOffscreen } from './offscreen/parser-client';
 import {
@@ -40,6 +41,9 @@ import { profileRecordService } from '../../core/application/profile-service';
 import { quotaManager } from '../../core/storage/quota-manager';
 import { base64ToArrayBuffer, bufferToBase64 } from '../../core/encryption/crypto-service';
 import { buildSuggestions } from './lib/matcher';
+import { augmentAmbiguousWithAi } from './lib/ai-matcher';
+import { modelManager } from './model/model-manager';
+import type { ModelChatMessage } from '../../shared/model-protocol';
 import {
   failure,
   isTrustedExtensionSender,
@@ -276,6 +280,26 @@ function validateFieldInput(value: Record<string, unknown>) {
   if (typeof category !== 'string' || !FIELD_CATEGORIES.includes(category as (typeof FIELD_CATEGORIES)[number])) {
     throw new Error('Field category is not supported.');
   }
+  const page = source.page === undefined
+    ? undefined
+    : typeof source.page === 'number' && Number.isInteger(source.page) && source.page >= 1 && source.page <= 100_000
+      ? source.page
+      : (() => { throw new Error('Field source page is invalid.'); })();
+  const sourcePage = value.sourcePage === undefined
+    ? undefined
+    : typeof value.sourcePage === 'number' && Number.isInteger(value.sourcePage) && value.sourcePage >= 1 && value.sourcePage <= 100_000
+      ? value.sourcePage
+      : (() => { throw new Error('Field source page is invalid.'); })();
+  const verificationStatus: 'extracted' | 'user_verified' | 'outdated' = value.verificationStatus === undefined
+    ? 'extracted'
+    : value.verificationStatus === 'extracted' || value.verificationStatus === 'user_verified' || value.verificationStatus === 'outdated'
+      ? value.verificationStatus
+      : (() => { throw new Error('Field verification status is invalid.'); })();
+  const extractionMethod: 'deterministic' | 'ai' | 'manual' | 'derived' = value.extractionMethod === undefined
+    ? 'deterministic'
+    : value.extractionMethod === 'deterministic' || value.extractionMethod === 'ai' || value.extractionMethod === 'manual' || value.extractionMethod === 'derived'
+      ? value.extractionMethod
+      : (() => { throw new Error('Field extraction method is invalid.'); })();
   return {
     key: requireString(value, 'key', 1, 200),
     label: requireString(value, 'label', 0, 300),
@@ -284,18 +308,17 @@ function validateFieldInput(value: Record<string, unknown>) {
     source: {
       documentId: requireString(source, 'documentId', 1, 200),
       documentName: optionalString(source, 'documentName', 300) ?? 'Local document',
-      page: typeof source.page === 'number' ? source.page : undefined,
+      page,
     },
-    sourcePage: typeof value.sourcePage === 'number' ? value.sourcePage : undefined,
+    sourcePage,
     confidence: requireNumber(value, 'confidence', 0, 100),
-    verificationStatus: typeof value.verificationStatus === 'string'
-      ? value.verificationStatus as 'extracted' | 'user_verified' | 'outdated'
-      : 'extracted',
+    verificationStatus,
     sensitive: typeof value.sensitive === 'boolean' ? value.sensitive : undefined,
-    extractionMethod: typeof value.extractionMethod === 'string'
-      ? value.extractionMethod as 'deterministic' | 'ai' | 'manual' | 'derived'
-      : 'deterministic',
+    extractionMethod,
     userModified: typeof value.userModified === 'boolean' ? value.userModified : false,
+    evidence: optionalString(value, 'evidence', 1_000),
+    sourceBlockId: optionalString(value, 'sourceBlockId', 200),
+    modelVersion: optionalString(value, 'modelVersion', 120),
   };
 }
 
@@ -400,7 +423,7 @@ async function updateSettings(payload: Record<string, unknown>) {
 }
 
 function buildSettingsPatch(payload: Record<string, unknown>): Partial<Preferences> {
-  const allowed = new Set(['confirmBeforeAutofill', 'requireSensitiveReview', 'allowLongAnswers', 'autoDownloadFiles', 'productNotifications', 'activityNotifications', 'compactMode', 'autoLockMinutes', 'ocrLanguage']);
+  const allowed = new Set(['confirmBeforeAutofill', 'requireSensitiveReview', 'allowLongAnswers', 'autoDownloadFiles', 'productNotifications', 'activityNotifications', 'compactMode', 'autoLockMinutes', 'ocrLanguage', 'autoDownloadModel']);
   const patch: Partial<Preferences> = {};
   for (const [key, value] of Object.entries(payload)) {
     if (!allowed.has(key) || value === undefined) continue;
@@ -514,6 +537,10 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
         requireString(payload, 'id', 1, 160),
         requireString(payload, 'value', 0, 100_000),
       );
+    }
+    case MESSAGE.VERIFY_FIELD: {
+      await ensureUnlocked();
+      return profileService.verifyField(requireString(payload, 'id', 1, 160));
     }
     case MESSAGE.GET_ACTIVITY:
       await ensureUnlocked();
@@ -705,6 +732,29 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
         documentProgressPorts.delete(importId);
       }
     }
+    case MESSAGE.EXTRACT_DOCUMENT: {
+      await ensureUnlocked();
+      const documentId = requireString(payload, 'documentId', 1, 160);
+      const useAi = payload.useAi !== false;
+      let model: ((messages: ModelChatMessage[], options?: { maxNewTokens?: number }) => Promise<{ text: string }>) | undefined;
+      let modelVersion: string | undefined;
+      if (useAi) {
+        try {
+          const status = await modelManager.status();
+          const record = status.record;
+          if (record && (record.status === 'installed' || record.status === 'ready')) {
+            model = (messages, options) => modelManager.infer(messages, options);
+            modelVersion = `${record.modelId}@${record.revision.slice(0, 12)}:${record.dtype}`;
+          }
+        } catch {
+          // Deterministic extraction remains available when the model is unavailable.
+        }
+      }
+      return extractDocumentInformation(documentId, {
+        ...(model ? { model } : {}),
+        ...(modelVersion ? { modelVersion } : {}),
+      });
+    }
     case MESSAGE.DELETE_DOCUMENT: {
       await ensureUnlocked();
       const documentId = requireString(payload, 'documentId', 1, 160);
@@ -801,10 +851,13 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     case MESSAGE.SCAN_ACTIVE_TAB: {
       await ensureUnlocked();
       const { tab, scan } = await scanPage();
+      const preferences = await settingsRepository.getPreferences();
       return {
         tab: { id: tab.id, url: tab.url, title: tab.title },
         scan,
-        matches: buildSuggestions(await vaultRepository.listFields(), scan.fields),
+        matches: buildSuggestions(await vaultRepository.listFields(), scan.fields, {
+          allowLongAnswers: preferences.allowLongAnswers,
+        }),
       };
     }
     case MESSAGE.GET_FORM_SUGGESTIONS: {
@@ -812,11 +865,70 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       const { tab, scan } = await scanPage();
       const collectionId = optionalString(payload, 'collectionId', 120);
       const fields = await collectionScopedFields(collectionId);
+      const preferences = await settingsRepository.getPreferences();
       return {
         tab: { id: tab.id, url: tab.url, title: tab.title },
         scan,
-        matches: buildSuggestions(fields, scan.fields),
+        matches: buildSuggestions(fields, scan.fields, {
+          allowLongAnswers: preferences.allowLongAnswers,
+        }),
         collections: await collectionRepository.list(),
+      };
+    }
+    case MESSAGE.AI_MATCH_FIELDS: {
+      await ensureUnlocked();
+      const rawFields = Array.isArray(payload.fields) ? payload.fields : [];
+      if (rawFields.length === 0 || rawFields.length > 60) {
+        throw new FormFlowError('VALIDATION_FAILED', 'Form fields for local AI matching are invalid.');
+      }
+      const scanFields: ScanPayload['fields'] = rawFields.map((entry, position) => {
+        if (!entry || typeof entry !== 'object') throw new FormFlowError('VALIDATION_FAILED', `Form field ${position} is invalid.`);
+        const item = entry as Record<string, unknown>;
+        const index = Number(item.index);
+        const label = typeof item.label === 'string' ? item.label.slice(0, 240) : '';
+        const kind = typeof item.kind === 'string' ? item.kind : 'unknown';
+        const options = Array.isArray(item.options)
+          ? item.options.filter((option): option is string => typeof option === 'string').slice(0, 80).map((option) => option.slice(0, 200))
+          : undefined;
+        return {
+          index: Number.isInteger(index) ? index : position,
+          label,
+          kind: kind as ScanPayload['fields'][number]['kind'],
+          confidence: 0,
+          sensitive: false,
+          tag: 'input',
+          type: 'text',
+          required: false,
+          currentValue: '',
+          ...(options ? { options } : {}),
+        };
+      });
+      const status = await modelManager.status();
+      const record = status.record;
+      if (!record || (record.status !== 'installed' && record.status !== 'ready')) {
+        return {
+          suggestions: [],
+          matched: 0,
+          aiUsed: false,
+          message: 'Install and verify the local model in Settings → Local AI to use AI-assisted matching.',
+        };
+      }
+      const fields = await collectionScopedFields(optionalString(payload, 'collectionId', 120));
+      const preferences = await settingsRepository.getPreferences();
+      const suggestions = buildSuggestions(fields, scanFields, {
+        allowLongAnswers: preferences.allowLongAnswers,
+      });
+      const outcome = await augmentAmbiguousWithAi(
+        fields,
+        scanFields,
+        suggestions,
+        (messages, options) => modelManager.infer(messages, options),
+      );
+      return {
+        suggestions: outcome.suggestions,
+        matched: outcome.matched,
+        aiUsed: true,
+        message: outcome.message,
       };
     }
     case MESSAGE.FILL_ACTIVE_TAB: {
@@ -860,11 +972,37 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return { ok: true };
     }
     case MESSAGE.MODEL_STATUS:
-      return {
-        status: 'not_installed',
-        ready: false,
-        message: 'Local AI runtime is not installed in this phase.',
-      };
+      return modelManager.status();
+    case MESSAGE.MODEL_INSTALL:
+      return modelManager.install();
+    case MESSAGE.MODEL_CANCEL:
+      return modelManager.cancel();
+    case MESSAGE.MODEL_REMOVE:
+      return modelManager.remove().then(() => ({ ok: true }));
+    case MESSAGE.MODEL_SELF_TEST:
+      return modelManager.selfTest();
+    case MESSAGE.INFER: {
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      if (messages.length === 0 || messages.length > 8) throw new FormFlowError('VALIDATION_FAILED', 'Inference messages are invalid.');
+      const normalized: ModelChatMessage[] = messages.map((entry, index) => {
+        if (!entry || typeof entry !== 'object') throw new FormFlowError('VALIDATION_FAILED', `Inference message ${index} is invalid.`);
+        const value = entry as Record<string, unknown>;
+        if (value.role !== 'system' && value.role !== 'user' && value.role !== 'assistant') {
+          throw new FormFlowError('VALIDATION_FAILED', `Inference message ${index} role is invalid.`);
+        }
+        if (typeof value.content !== 'string' || value.content.length === 0 || value.content.length > 24_000) {
+          throw new FormFlowError('VALIDATION_FAILED', `Inference message ${index} content is invalid.`);
+        }
+        return { role: value.role, content: value.content };
+      });
+      const maxNewTokens = typeof payload.maxNewTokens === 'number' && Number.isFinite(payload.maxNewTokens)
+        ? Math.trunc(payload.maxNewTokens)
+        : 320;
+      return modelManager.infer(normalized, { maxNewTokens });
+    }
+    case MESSAGE.INFER_CANCEL:
+      modelManager.disposeWorker();
+      return { cancelled: true };
     default:
       throw new Error(`Unknown extension operation: ${request.operation}`);
   }
@@ -888,6 +1026,12 @@ const SESSION_STABLE_EXEMPT = new Set<string>([
   'OPEN_DASHBOARD',
   'OPEN_TAB',
   'MODEL_STATUS',
+  'MODEL_INSTALL',
+  'MODEL_CANCEL',
+  'MODEL_REMOVE',
+  'MODEL_SELF_TEST',
+  'INFER',
+  'INFER_CANCEL',
   'GET_ENCRYPTION_STATUS',
   'MIGRATE_ENCRYPTION',
   'CANCEL_DOCUMENT_IMPORT',
@@ -915,6 +1059,8 @@ const LEASE_KINDS: Record<string, VaultOperationKind> = {
   [MESSAGE.GET_DOCUMENT_BLOB]: 'read',
   [MESSAGE.IMPORT_DOCUMENT]: 'mutation',
   [MESSAGE.RETRY_DOCUMENT_EXTRACTION]: 'mutation',
+  [MESSAGE.EXTRACT_DOCUMENT]: 'mutation',
+  [MESSAGE.VERIFY_FIELD]: 'mutation',
   [MESSAGE.RENAME_DOCUMENT]: 'mutation',
   [MESSAGE.DELETE_DOCUMENT]: 'mutation',
   [MESSAGE.LIST_COLLECTIONS]: 'read',
@@ -932,6 +1078,7 @@ const LEASE_KINDS: Record<string, VaultOperationKind> = {
   [MESSAGE.CLEAR_HISTORY]: 'mutation',
   [MESSAGE.SCAN_ACTIVE_TAB]: 'read',
   [MESSAGE.GET_FORM_SUGGESTIONS]: 'read',
+  [MESSAGE.AI_MATCH_FIELDS]: 'read',
   [MESSAGE.FILL_ACTIVE_TAB]: 'read',
   [MESSAGE.EXPORT_VAULT]: 'read',
   [MESSAGE.IMPORT_VAULT]: 'mutation',

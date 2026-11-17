@@ -27,6 +27,7 @@ import { dashboardService } from '../../core/application/dashboard-service';
 import { documentService } from '../../core/application/document-service';
 import { parseDocument } from '../../core/documents/parsers';
 import { profileRecordService, profileService } from '../../core/application/profile-service';
+import { extractDocumentInformation } from '../../core/application/extraction-service';
 import { historyService } from '../../core/application/history-service';
 import { vaultService } from '../../core/application/vault-service';
 import { activityRepository, collectionRepository, profileRecordRepository, settingsRepository } from '../../core/database/repositories';
@@ -85,6 +86,29 @@ export const vaultClient: VaultClientApi = {
   updateField: (id, value) => profileService.updateField(id, value),
   deleteField: (id) => profileService.deleteField(id),
   resolveConflict: (id, value) => profileService.resolveConflict(id, value),
+  verifyField: (id) => profileService.verifyField(id),
+  extractDocument: (id) => extractDocumentInformation(id),
+  modelStatus: async () => ({
+    status: 'not_installed',
+    ready: false,
+    record: null,
+    capabilities: { webgpu: false, wasm: true, hardwareConcurrency: 1 },
+    preferredVariant: 'q8',
+    storage: await quotaManager.estimate(),
+    message: 'Local model lifecycle is available in the installed Chrome extension build.',
+  }),
+  installModel: async () => {
+    throw new Error('Install the FormFlow Chrome extension to manage the local AI model.');
+  },
+  cancelModelInstall: async () => ({ cancelled: false }),
+  removeModel: async () => undefined,
+  selfTestModel: async () => ({
+    ok: false,
+    runtime: 'wasm',
+    variant: 'q8',
+    message: 'Local inference is available in the installed Chrome extension build.',
+  }),
+  cancelInference: async () => ({ cancelled: false }),
   listDocuments: () => documentService.list(),
   getDocument: (id) => documentService.get(id),
   importDocument: (file, category, subcategory, options): Promise<DocumentImportResult> =>

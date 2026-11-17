@@ -74,10 +74,13 @@ const statusOptions: { value: 'all' | DocumentStatus; label: string }[] = [
 export function DocumentsPage() {
   const {
     documents,
+    fields,
     removeDocument,
     renameDocument,
     retryDocument,
     unlinkDocument,
+    extractDocument,
+    cancelInference,
     dataLoading,
   } = useApp();
   const { toast } = useToast();
@@ -355,6 +358,9 @@ export function DocumentsPage() {
         {selected ? (
           <DocumentInspector
             document={selected}
+            linkedFields={fields.filter((field) => field.source.documentId === selected.id)}
+            onExtract={() => extractDocument(selected.id, true)}
+            onCancelExtract={cancelInference}
             onRemove={() => setDeleteTarget(selected)}
             onRetry={() => retryDocument(selected.id)}
             onRename={() => { setRenameTarget(selected); setRenameValue(selected.name); }}
@@ -393,7 +399,7 @@ export function DocumentsPage() {
         open={Boolean(renameTarget)}
         onClose={() => setRenameTarget(null)}
         title="Rename document"
-        description="Only the FormFlow display name changes. The original Drive file is untouched."
+        description="Only the FormFlow display name changes. The original local file is untouched."
         footer={
           <>
             <Button onClick={() => setRenameTarget(null)}>Cancel</Button>

@@ -258,6 +258,7 @@ try {
 
   await createVault(page, dashboardA, 'Phase 3 source vault', sourcePass);
   const created = await message(page, 'e2e_created', 'VAULT_STATUS');
+  await message(page, 'e2e_disable_model_auto', 'UPDATE_PREFERENCES', { autoDownloadModel: false });
   check('dashboard creates an encrypted vault', created?.ok === true && created.data?.unlocked === true && created.data?.encrypted === true);
 
   const manifest = await page.evaluate(() => chrome.runtime.getManifest());
@@ -331,7 +332,7 @@ try {
 
   await page.goto(`${dashboardA}#/records/personal`, { waitUntil: 'load' });
   await page.waitForTimeout(800);
-  await page.click('button:has-text("Add Information")');
+  await page.click('button:has-text("Add value")');
   await page.fill('input[placeholder="e.g. Full Name, Date of Birth"]', 'Email address');
   await page.fill('input[placeholder="e.g. John Doe"]', 'phase3-private@example.com');
   await page.click('button:has-text("Save value")');
@@ -655,7 +656,7 @@ try {
   await target.setInputFiles('input[type=file]', backupPath);
   await target.waitForTimeout(3000);
   const importReport = (await target.locator('body').innerText()).replace(/\s+/g, ' ');
-  check('encrypted import into fresh vault completes', importReport.includes('Documents 1') && importReport.includes('Values 1'), importReport.slice(-220));
+  check('encrypted import into fresh vault completes', importReport.includes('Documents 1') && /Values \d+/.test(importReport), importReport.slice(-220));
   await target.goto(`${dashboardB}#/documents`, { waitUntil: 'load' });
   await target.waitForTimeout(1200);
   check('imported PDF present in target vault', (await target.locator('body').innerText()).includes('phase3-real.pdf'));

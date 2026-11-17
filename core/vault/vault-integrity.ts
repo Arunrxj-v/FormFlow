@@ -292,6 +292,16 @@ export async function checkVaultIntegrity(): Promise<VaultIntegrityReport> {
     } else {
       await tryDecryptJson(value.labelEnc, contextFor(vault, 'value', value.id, 'label'), 'Value label', 'value', value.id, 'label');
     }
+    if (value.evidenceEnc) {
+      await tryDecryptJson(
+        value.evidenceEnc,
+        contextFor(vault, 'value', value.id, 'evidence'),
+        'Value evidence',
+        'value',
+        value.id,
+        'evidence',
+      );
+    }
     if (value.sourceDocumentId.startsWith('doc_') && !documentIds.has(value.sourceDocumentId)) {
       reportIssue({
         severity: 'warning',

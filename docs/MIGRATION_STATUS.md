@@ -933,36 +933,23 @@ Completed. IndexedDB repositories and services are wired into the dashboard. Loc
 
 ### Phase 3 — Extension-owned dashboard and AI runtime
 
-- Build the dashboard into the extension.
-- Vault setup and unlock UI.
-- Local AI runtime and Qwen3 worker.
-- Model download, progress, integrity verification, and installation UI.
-- WebGPU and WASM execution.
-- Offline inference verification.
+Completed in the Phase 4.2 integration: the dashboard is extension-owned; vault setup/unlock, local Qwen3 worker, model download/progress/integrity/installation UI, WASM execution, and offline inference are implemented. WebGPU is detected but the verified artifact runs on WASM.
 
 ### Phase 4 — Document ingestion
 
 - Phase 4.1 local PDF, DOCX, and TXT ingestion is complete.
 - Phase 4.1.2 local English OCR for scanned/image-only PDF pages is complete; additional languages require new verified language assets.
-- Intelligent field extraction and source attribution remain future work.
+- Intelligent field extraction, source attribution, conflict review, and local-AI candidate merging are complete in Phase 4.3; additional OCR languages remain future work.
 
 ### Phase 5 — Form intelligence
 
-- Deterministic field matching against the local vault.
-- Semantic matching with Qwen3.
-- Contextual answer generation.
-- Review and approval workflow.
+Completed: deterministic field matching, optional local Qwen3 matching for ambiguous labels, grounded contextual answers, review/approval, sensitive-field approval, and safe autofill with no auto-submit.
 
 ### Phase 6 — Security and cloud removal
 
-- Encrypt the existing vault data through the new crypto layer.
-- Backup and restore.
-- Remove Google Drive.
-- Remove Gemini and OpenAI-compatible providers.
-- Remove demo data and mock execution paths.
-- Full offline verification and security testing.
+Completed: encrypted vault migration, journaled backup/restore, Google Drive document-storage removal, external AI provider removal, dead client cloud/demo path removal, parser/model isolation, and offline/local inference verification. Optional legacy identity-only Google sign-in remains in the development server and is not used by the extension.
 
-## Known limitations after Phase 2
+## Historical limitations after Phase 2 (superseded by later phases)
 
 - The dashboard still has non-migrated surfaces that use the backend: authentication, Google Drive connections, and some onboarding/extension screens.
 - Google Drive, Gemini, and OpenAI-compatible code remain.
@@ -975,3 +962,34 @@ Completed. IndexedDB repositories and services are wired into the dashboard. Loc
 - No encrypted backup/restore exists.
 - IndexedDB data is not encrypted in this phase.
 - Existing user data remains in the old backend storage until a user runs the migration wizard.
+
+---
+
+## Phase 4.2–4.4 completion (product integration)
+
+The previously listed Phase 4.2/4.3/4.4 gaps are now implemented as one integrated product:
+
+- **Local model lifecycle:** pinned Qwen3-0.6B-Instruct-ONNX INT8 artifacts, SHA-256 file registry, Cache Storage installation, progress, cancel, retry/resume, corrupt/incomplete detection, version metadata, storage checks, integrity verification before load, self-test, idle unload, removal, and inference cancellation.
+- **Local inference:** bundled Transformers.js/ORT WASM assets, an isolated offscreen-hosted model worker, cached-only loading, strict worker protocol, bounded context/output/timeouts, offline inference, and no remote fallback. WebGPU capability is detected and reported; the verified default remains WASM INT8.
+- **Document → profile pipeline:** deterministic extraction remains mandatory. The local model adds optional grounded candidates with page/block/evidence/model-version provenance. AI output is restricted to the canonical field catalogue, normalized with deterministic validators, required to appear in the source, and never allowed to override deterministic or verified values. Conflicts are surfaced, not silently applied.
+- **Profile:** editable encrypted values and structured records, verification action, source evidence, conflict review, and additive backup/restore of the new evidence metadata. Structured education/employment/address/skill/certification/project records are synthesised from grounded candidates without overwriting user-edited records.
+- **Autofill:** deterministic matching first, optional local-AI matching for ambiguous labels, review/approval, sensitive-field approval, React-controlled input support, read-back verification, explicit failure reporting, and no auto-submit.
+- **Cloud removal:** Google Drive document storage/picker/import and external AI provider routes were removed from the production client and legacy server. The legacy server keeps local deterministic processing and optional identity-only Google sign-in. `intent=drive` returns 410.
+- **Dashboard integration:** model setup/status/download/maintenance UI, extraction action in the document inspector, evidence/verification UI, first-run automatic download after first upload, and an Overview model card.
+
+### Validation snapshot
+
+- `npm test`: typecheck, local/unit, extension, and server suites pass.
+- Production dashboard and extension builds pass.
+- Chromium E2E passed: Phase 3 encryption/autofill/backup/recovery; Phase 4 ingestion; offscreen parser fault isolation (test-hooks build); interruption; process-crash recovery; migration crash resume; extension reload; content isolation; router navigation; and the real local-model workflow.
+- The model E2E uses the real pinned Hugging Face files via a local fixture server, real SHA-256 installation, the real offscreen model worker, real WASM inference, offline inference, AI extraction, provenance, and AI field matching.
+
+### Remaining limitations
+
+- The Qwen3-0.6B INT8 model is useful but imperfect; source grounding and review are mandatory, and some fields can be missed.
+- WASM inference is slower than native/WebGPU and is documented in `docs/LOCAL_MODEL.md`.
+- Verified Q4F16 WebGPU execution and model-repository upgrades are not exposed.
+- Genuine Microsoft Word reference files remain unavailable, so `verified_physical` is still not claimed.
+- The local model download was validated through real model files and the real installer, but not as a live multi-hundred-megabyte internet download in the automated suite.
+
+See `docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md` for the final report.

@@ -431,8 +431,10 @@ export class GoogleFormsAdapter implements FormAdapter {
 
       targetOpt.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       this.dispatchUserClick(targetOpt);
-      targetOpt.setAttribute('aria-checked', 'true');
-      return true;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const selected = radios.find((radio) => radio.getAttribute('aria-checked') === 'true'
+        || Boolean(radio.querySelector<HTMLInputElement>('input[type="radio"]')?.checked));
+      return selected === targetOpt;
     }
 
     // 2. Checkboxes
@@ -448,10 +450,11 @@ export class GoogleFormsAdapter implements FormAdapter {
 
         if (shouldCheck && !isChecked) {
           this.dispatchUserClick(cb);
-          cb.setAttribute('aria-checked', 'true');
-          anyMatched = true;
-        } else if (shouldCheck && isChecked) {
-          anyMatched = true;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        if (shouldCheck) {
+          anyMatched = cb.getAttribute('aria-checked') === 'true'
+            || Boolean(cb.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked);
         }
       }
 
@@ -468,7 +471,7 @@ export class GoogleFormsAdapter implements FormAdapter {
       select.value = option.value;
       select.dispatchEvent(createEvent('input', { bubbles: true }));
       select.dispatchEvent(createEvent('change', { bubbles: true }));
-      return true;
+      return select.value === option.value;
     }
 
     const listbox = container.querySelector<HTMLElement>('[role="listbox"]');
@@ -490,7 +493,9 @@ export class GoogleFormsAdapter implements FormAdapter {
 
       if (matchOpt) {
         this.dispatchUserClick(matchOpt);
-        return true;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return matchOpt.getAttribute('aria-selected') === 'true'
+          || (listbox.textContent ?? '').toLowerCase().includes(value.toLowerCase().trim());
       }
       return false;
     }
@@ -515,7 +520,7 @@ export class GoogleFormsAdapter implements FormAdapter {
         input.dispatchEvent(createEvent('change', { bubbles: true }));
         input.dispatchEvent(createEvent('keyup', { bubbles: true, key: 'Unidentified' }));
         input.dispatchEvent(createEvent('blur', { bubbles: true }));
-        return true;
+        return (input as HTMLInputElement | HTMLTextAreaElement).value === value;
       } else {
         // [role="textbox"]
         input.focus();
@@ -523,7 +528,7 @@ export class GoogleFormsAdapter implements FormAdapter {
         input.dispatchEvent(createEvent('input', { bubbles: true }));
         input.dispatchEvent(createEvent('change', { bubbles: true }));
         input.dispatchEvent(createEvent('blur', { bubbles: true }));
-        return true;
+        return (input.textContent ?? '') === value;
       }
     }
 

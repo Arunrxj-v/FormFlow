@@ -108,6 +108,10 @@ export interface FieldSource {
   documentName: string;
   page?: number;
   extractedAt?: string;
+  /** Short supporting excerpt from the source document. */
+  evidence?: string;
+  blockId?: string;
+  modelVersion?: string;
 }
 
 export interface FieldConflict {
@@ -210,17 +214,6 @@ export interface FormHistoryItem {
   duration: string;
 }
 
-export interface DriveConnection {
-  connected: boolean;
-  accountEmail: string;
-  targetFolder: string;
-  storageUsed: string;
-  storageTotal: string;
-  lastSync: string;
-  permissions: string[];
-  isDemo: boolean;
-  accountName?: string;
-}
 
 export interface ExtensionConnection {
   installed: boolean;
@@ -241,6 +234,8 @@ export interface Preferences {
   compactMode: boolean;
   autoLockMinutes: number;
   ocrLanguage: string;
+  /** Start the local model download after the first successful document upload. */
+  autoDownloadModel: boolean;
 }
 
 export interface OnboardingState {
@@ -262,16 +257,6 @@ export interface VaultRecord {
   setupCompleted: boolean;
 }
 
-export interface DriveFile {
-  id: string;
-  name: string;
-  mimeType: string;
-  fileType: FileKind;
-  sizeLabel: string;
-  modifiedAt: string;
-  category: DocumentCategory;
-  subcategory: string;
-}
 
 export interface VaultProfile {
   id: 'me';
@@ -351,6 +336,9 @@ export interface VaultFieldInput {
   sensitive?: boolean;
   extractionMethod?: ExtractionMethod;
   userModified?: boolean;
+  evidence?: string;
+  sourceBlockId?: string;
+  modelVersion?: string;
 }
 
 export interface ExtractionWarning {
@@ -947,6 +935,10 @@ export interface ExtractedValueRecord {
   verificationStatus: VerificationStatus;
   sensitive: boolean;
   userModified: boolean;
+  /** Authenticated supporting excerpt; absent on legacy rows. */
+  evidenceEnc?: string;
+  sourceBlockId?: string;
+  modelVersion?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1108,4 +1100,45 @@ export interface ModelCapabilities {
   wasm: boolean;
   hardwareConcurrency: number;
   deviceMemoryGb?: number;
+}
+
+export interface ModelStatusSnapshot {
+  status: ModelStatus;
+  ready: boolean;
+  record: InstalledModelRecord | null;
+  capabilities: ModelCapabilities;
+  preferredVariant: 'q8' | 'q4f16';
+  storage: StorageEstimate | null;
+  message: string;
+  inference?: {
+    active: boolean;
+    generatedTokens: number;
+  };
+  progress?: {
+    phase: 'checking' | 'downloading' | 'verifying' | 'ready';
+    percent: number;
+    filePath: string;
+    downloadedBytes: number;
+    totalBytes: number;
+  };
+}
+
+export interface ModelSelfTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  loadMs?: number;
+  runtime: ModelRuntime;
+  variant: 'q8' | 'q4f16';
+  message: string;
+}
+
+export interface DocumentExtractionSummary {
+  documentId: string;
+  candidates: number;
+  deterministic: number;
+  ai: number;
+  conflicts: number;
+  aiUsed: boolean;
+  modelVersion?: string;
+  warnings: string[];
 }

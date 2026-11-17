@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Database,
   Download,
+  Sparkles,
   HardDrive,
   KeyRound,
   LockKeyhole,
@@ -20,6 +21,7 @@ import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { Tabs } from '@/components/ui/Tabs';
 import { ConfirmDialog } from '@/components/ui/Modal';
+import { ModelSettingsCard } from '@/components/settings/ModelSettingsCard';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/context/ToastContext';
 import { documentService } from '@/services/documentService';
@@ -30,6 +32,7 @@ import type { Preferences } from '@/services/types';
 const tabs = [
   { id: 'profile', label: 'Profile', icon: <UserRound size={14} /> },
   { id: 'security', label: 'Vault security', icon: <ShieldCheck size={14} /> },
+  { id: 'model', label: 'Local AI', icon: <Sparkles size={14} /> },
   { id: 'preferences', label: 'Autofill', icon: <SlidersHorizontal size={14} /> },
 ];
 
@@ -60,7 +63,7 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab');
-  const [tab, setTab] = useState(['profile', 'security', 'preferences'].includes(initialTab ?? '') ? initialTab! : 'profile');
+  const [tab, setTab] = useState(['profile', 'security', 'model', 'preferences'].includes(initialTab ?? '') ? initialTab! : 'profile');
   const [name, setName] = useState(user?.name ?? '');
   const [email, setEmail] = useState(user?.email ?? '');
   const [prefs, setPrefs] = useState<Preferences>(preferences);
@@ -76,7 +79,7 @@ export function SettingsPage() {
   const [integrityBusy, setIntegrityBusy] = useState(false);
 
   useEffect(() => { setPrefs(preferences); }, [preferences]);
-  useEffect(() => { if (initialTab && ['profile', 'security', 'preferences'].includes(initialTab)) setTab(initialTab); }, [initialTab]);
+  useEffect(() => { if (initialTab && ['profile', 'security', 'model', 'preferences'].includes(initialTab)) setTab(initialTab); }, [initialTab]);
   useEffect(() => { setName(user?.name ?? ''); setEmail(user?.email ?? ''); }, [user]);
   useEffect(() => {
     void documentService.getStorageEstimate().then(setStorage).catch(() => undefined);
@@ -290,16 +293,15 @@ export function SettingsPage() {
             </>
           ) : null}
 
+          {tab === 'model' ? <ModelSettingsCard /> : null}
+
           {tab === 'preferences' ? (
             <Card>
               <CardHeader title="Autofill safeguards" subtitle="These settings control what the extension is allowed to do." action={<Badge tone="primary">Recommended defaults</Badge>} />
               <div className="ff-settings-section">
                 {[
-                  { key: 'confirmBeforeAutofill' as const, label: 'Confirm before filling', desc: 'Show a review step for every detected form.' },
                   { key: 'requireSensitiveReview' as const, label: 'Require extra review for sensitive fields', desc: 'Identity and address values need explicit approval.' },
                   { key: 'allowLongAnswers' as const, label: 'Allow grounded long answers', desc: 'Compose answers from verified vault values only.' },
-                  { key: 'activityNotifications' as const, label: 'Autofill activity notifications', desc: 'Show in-app confirmations when a form is filled.' },
-                  { key: 'compactMode' as const, label: 'Compact density', desc: 'Reduce spacing in dense tables and lists.' },
                 ].map((item) => (
                   <div className="ff-setting-row" key={item.key}>
                     <div><div className="ff-label">{item.label}</div><div className="ff-body-sm ff-muted">{item.desc}</div></div>

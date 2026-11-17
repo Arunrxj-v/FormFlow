@@ -85,11 +85,17 @@ export class VaultSession {
 
   async unlockWithDataKey(key: CryptoKey): Promise<void> {
     await this.enqueue(async () => {
-      const raw = await exportKeyRaw(key);
-      const b64 = bufferToBase64(raw);
       this.epoch += 1;
-      this.key = await importDataKey(raw);
-      await this.backend.set(b64);
+      // The extension backend is memory-only. Keep the CryptoKey directly
+      // instead of exporting a second raw base64 copy inside the worker.
+      if (this.backend.kind === 'memory') {
+        this.key = key;
+        await this.backend.set(null);
+      } else {
+        const raw = await exportKeyRaw(key);
+        this.key = await importDataKey(raw);
+        await this.backend.set(bufferToBase64(raw));
+      }
       this.generation += 1;
       this.emit(false);
     });

@@ -61,6 +61,7 @@ const fallbackState: PopupState = {
     requireSensitiveReview: true,
     allowLongAnswers: true,
     autoDownloadFiles: false,
+    autoDownloadModel: true,
     productNotifications: false,
     activityNotifications: true,
     compactMode: false,
@@ -70,10 +71,10 @@ const fallbackState: PopupState = {
   history: [],
 };
 
-function send<T>(operation: string, payload: Record<string, unknown> = {}): Promise<T> {
+function send<T>(operation: string, payload: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<T> {
   const requestId = `popup_${crypto.randomUUID()}`;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The extension service did not respond in time.')), 10_000);
+    const timer = setTimeout(() => reject(new Error('The extension service did not respond in time.')), timeoutMs);
     chrome.runtime.sendMessage({ protocol: 1, requestId, operation, payload }, (response: { ok?: boolean; data?: T; error?: string } | undefined) => {
       clearTimeout(timer);
       if (chrome.runtime.lastError) {
@@ -102,6 +103,8 @@ export function Popup() {
   const [filling, setFilling] = useState(false);
   const [error, setError] = useState('');
   const [matches, setMatches] = useState<MatchSuggestion[]>([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMessage, setAiMessage] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
   const [overrides, setOverrides] = useState<Record<number, string>>({});
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -155,6 +158,7 @@ export function Popup() {
     setScanning(true);
     setError('');
     setResult(null);
+    setAiMessage('');
     try {
       const data = await send<{ tab: { url: string; title: string }; scan: ScanPayload; matches: MatchSuggestion[]; collections: Collection[] }>(
         MESSAGE.GET_FORM_SUGGESTIONS,
@@ -282,6 +286,43 @@ export function Popup() {
   };
 
   const valueFor = (match: MatchSuggestion) => overrides[match.index] ?? match.value;
+  const improveWithAi = useCallback(async () => {
+    if (!scan) return;
+    setAiBusy(true);
+    setAiMessage('');
+    try {
+      const data = await send<{
+        suggestions: MatchSuggestion[];
+        matched: number;
+        aiUsed: boolean;
+        message: string;
+      }>(
+        MESSAGE.AI_MATCH_FIELDS,
+        {
+          collectionId,
+          fields: scan.fields.map((field) => ({
+            index: field.index,
+            label: field.label,
+            kind: field.kind,
+            ...(field.options?.length ? { options: field.options } : {}),
+          })),
+        },
+        240_000,
+      );
+      if (data.suggestions.length) {
+        setMatches(data.suggestions);
+        setSelected(data.suggestions
+          .filter((match) => match.value && !match.needsReview && !match.conflict && !match.unsupported)
+          .map((match) => match.index));
+      }
+      setAiMessage(data.message);
+    } catch (error) {
+      setAiMessage(error instanceof Error ? error.message : 'Local AI matching failed.');
+    } finally {
+      setAiBusy(false);
+    }
+  }, [scan, collectionId]);
+
   const selectedMatches = matches.filter((match) => selected.includes(match.index));
   const sensitiveSelected = selectedMatches.some((match) => match.sensitive);
 
@@ -403,7 +444,6 @@ export function Popup() {
           <div className="ffp-body">
             <div className="ffp-card">
               {([
-                ['confirmBeforeAutofill', 'Confirm before autofill'],
                 ['requireSensitiveReview', 'Review sensitive values'],
                 ['allowLongAnswers', 'Allow grounded long answers'],
               ] as const).map(([key, label]) => (
@@ -553,6 +593,24 @@ export function Popup() {
                   </div>
 
                   {error ? <div className="ffp-safeguard" style={{ background: '#fef2f2', borderColor: '#fecaca', color: '#991b1b' }}><AlertTriangle size={14} /><span>{error}</span></div> : null}
+
+                  {!scanning && !scan?.isEditor && matches.some((match) => !match.value && !match.unsupported) ? (
+                    <div className="ffp-card" style={{ padding: 10, marginBottom: 8 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 8 }}>
+                        <Sparkles size={14} style={{ color: 'var(--primary)', marginTop: 1 }} />
+                        <span style={{ fontSize: 10, color: 'var(--secondary)', lineHeight: 1.45 }}>
+                          Deterministic matching ran first. Ambiguous labels can be matched locally by the installed model.
+                          AI suggestions always require your review and never change deterministic matches.
+                        </span>
+                      </div>
+                      <button type="button" className="ffp-btn-secondary" style={{ width: '100%' }} onClick={() => void improveWithAi()} disabled={aiBusy}>
+                        {aiBusy ? <><Loader2 size={13} className="ffp-spin" /> Matching with local AI…</> : <><Sparkles size={13} /> Improve {matches.filter((match) => !match.value && !match.unsupported).length} ambiguous field{matches.filter((match) => !match.value && !match.unsupported).length === 1 ? '' : 's'} with local AI</>}
+                      </button>
+                      {aiMessage ? <div style={{ marginTop: 6, fontSize: 10, color: 'var(--secondary)', lineHeight: 1.4 }}>{aiMessage}</div> : null}
+                    </div>
+                  ) : aiMessage ? (
+                    <div className="ffp-card" style={{ padding: 9, marginBottom: 8, fontSize: 10, color: 'var(--secondary)' }}>{aiMessage}</div>
+                  ) : null}
 
                   {scanning ? (
                     <div className="ffp-center" style={{ padding: 24, gap: 8 }}><Loader2 size={20} className="ffp-spin" style={{ color: 'var(--primary)' }} /><span style={{ fontSize: 11, color: 'var(--secondary)' }}>Scanning page form fields…</span></div>

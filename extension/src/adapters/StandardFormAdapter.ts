@@ -150,7 +150,7 @@ export class StandardFormAdapter implements FormAdapter {
         continue;
       }
 
-      const ok = this.setNativeValue(element, item.value);
+      const ok = this.setNativeValue(element, item.value, doc);
       if (ok) {
         filled += 1;
         this.highlightFilled(element);
@@ -163,7 +163,7 @@ export class StandardFormAdapter implements FormAdapter {
     return { filled, failed, skipped };
   }
 
-  private setNativeValue(element: HTMLElement, value: string): boolean {
+  private setNativeValue(element: HTMLElement, value: string, doc: Document): boolean {
     if (element instanceof HTMLSelectElement) {
       const option = Array.from(element.options).find(
         (item) => item.value === value || item.textContent?.trim().toLowerCase() === value.toLowerCase()
@@ -172,14 +172,21 @@ export class StandardFormAdapter implements FormAdapter {
       element.value = option.value;
       element.dispatchEvent(createEvent('input', { bubbles: true }));
       element.dispatchEvent(createEvent('change', { bubbles: true }));
-      return true;
+      return element.value === option.value;
     }
 
     if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
-      if (!element.checked) {
-        element.click();
-      }
-      return true;
+      const optionLabel = (this.labelFor(element, doc)
+        || element.getAttribute('aria-label')
+        || element.value
+        || '').trim().toLowerCase();
+      const targets = value.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+      const matches = targets.some((target) => optionLabel === target
+        || optionLabel.includes(target)
+        || target.includes(optionLabel));
+      if (!matches) return false;
+      if (!element.checked) element.click();
+      return element.checked;
     }
 
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -190,14 +197,15 @@ export class StandardFormAdapter implements FormAdapter {
       element.dispatchEvent(createEvent('input', { bubbles: true }));
       element.dispatchEvent(createEvent('change', { bubbles: true }));
       element.dispatchEvent(createEvent('keyup', { bubbles: true, key: 'Unidentified' }));
-      return true;
+      // Verify the page did not reject or overwrite the value synchronously.
+      return element.value === value;
     }
 
     if (element.getAttribute('role') === 'textbox') {
       element.textContent = value;
       element.dispatchEvent(createEvent('input', { bubbles: true }));
       element.dispatchEvent(createEvent('change', { bubbles: true }));
-      return true;
+      return (element.textContent ?? '') === value;
     }
 
     return false;

@@ -14,10 +14,14 @@ import { createOcrWorker, ocrDetails, type OcrWorkerHandle } from './ocr';
 import { openPdfRenderer, renderPdfPage, type PdfRenderSession } from './pdf-renderer';
 import { publishOffscreenDiagnostics } from './diagnostics';
 import {
+  OFFSCREEN_MODEL_DISPOSE,
+  OFFSCREEN_MODEL_RESPONSE,
   OFFSCREEN_PARSER_MAX_CONCURRENT,
   OFFSCREEN_PARSER_PORT,
   OFFSCREEN_PARSER_PROTOCOL_VERSION,
   OFFSCREEN_PARSER_WORKER,
+  parseModelDisposeEnvelope,
+  parseModelRequestEnvelope,
   parseOffscreenCancelRequest,
   parseOffscreenErrorMessage,
   parseOffscreenParseRequest,
@@ -32,6 +36,11 @@ import {
   type OffscreenParseRequest,
   type WorkerParseRequest,
 } from '../../../shared/offscreen-parser-protocol';
+import {
+  MODEL_WORKER_PROTOCOL_VERSION,
+  parseModelWorkerResponse,
+  type ModelWorkerResponse,
+} from '../../../shared/model-protocol';
 
 interface ParseJob {
   requestId: string;
@@ -116,6 +125,8 @@ const diagnostics: Diagnostics = {
 const jobs = new Map<string, ParseJob>();
 let port: chrome.runtime.Port | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let modelWorker: Worker | null = null;
+let modelRequestIds = new Set<string>();
 let closed = false;
 let testParseDelayMs = 0;
 let testOcrDelayMs = 0;
@@ -169,9 +180,9 @@ function clearIdleTimer(): void {
 
 function scheduleIdleClose(): void {
   clearIdleTimer();
-  if (jobs.size > 0) return;
+  if (jobs.size > 0 || modelWorker) return;
   idleTimer = setTimeout(() => {
-    if (jobs.size === 0) shutdown();
+    if (jobs.size === 0 && !modelWorker) shutdown();
   }, 15_000);
 }
 
@@ -237,6 +248,15 @@ function shutdown(): void {
     }
   }
   jobs.clear();
+  if (modelWorker) {
+    try {
+      modelWorker.terminate();
+    } catch {
+      // Already terminated.
+    }
+    modelWorker = null;
+    modelRequestIds = new Set();
+  }
   updateActive();
   try {
     port?.disconnect();
@@ -727,6 +747,77 @@ function cancelParse(request: OffscreenCancelRequest): void {
   send(errorMessage(request.requestId, 'CANCELLED', 'Document parsing was cancelled.'));
 }
 
+function requestIdFrom(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = (raw as { requestId?: unknown }).requestId;
+  return typeof value === 'string' && value.length >= 3 && value.length <= 160 ? value : null;
+}
+
+function sendModelError(requestId: string, code: 'MODEL_LOAD_FAILED' | 'INFERENCE_FAILED', message: string): void {
+  const response: ModelWorkerResponse = {
+    protocol: MODEL_WORKER_PROTOCOL_VERSION,
+    type: 'error',
+    requestId,
+    code,
+    message: message.slice(0, 1_000),
+  };
+  send({
+    type: OFFSCREEN_MODEL_RESPONSE,
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId,
+    response,
+  });
+}
+
+function ensureModelWorker(): Worker {
+  if (modelWorker) return modelWorker;
+  const worker = new Worker(chrome.runtime.getURL('model.worker.js'), { type: 'module' });
+  worker.onmessage = (event: MessageEvent<unknown>) => {
+    let response: ModelWorkerResponse;
+    try {
+      response = parseModelWorkerResponse(event.data);
+    } catch {
+      return;
+    }
+    modelRequestIds.delete(response.requestId);
+    send({
+      type: OFFSCREEN_MODEL_RESPONSE,
+      protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+      requestId: response.requestId,
+      response,
+    });
+  };
+  worker.onerror = () => {
+    const pendingIds = [...modelRequestIds];
+    modelRequestIds = new Set();
+    try {
+      worker.terminate();
+    } catch {
+      // Already terminated.
+    }
+    if (modelWorker === worker) modelWorker = null;
+    for (const requestId of pendingIds) {
+      sendModelError(requestId, 'MODEL_LOAD_FAILED', 'The local model worker crashed.');
+    }
+    scheduleIdleClose();
+  };
+  modelWorker = worker;
+  return worker;
+}
+
+function disposeModelWorker(): void {
+  if (modelWorker) {
+    try {
+      modelWorker.terminate();
+    } catch {
+      // Already terminated.
+    }
+  }
+  modelWorker = null;
+  modelRequestIds = new Set();
+  scheduleIdleClose();
+}
+
 function handlePortMessage(raw: unknown): void {
   if (!raw || typeof raw !== 'object') {
     diagnostics.malformedRequests += 1;
@@ -775,6 +866,27 @@ function handlePortMessage(raw: unknown): void {
     } else {
       diagnostics.malformedRequests += 1;
       publishDiagnostics();
+    }
+    return;
+  }
+  if (type === 'MODEL_REQUEST') {
+    try {
+      const envelope = parseModelRequestEnvelope(raw);
+      const worker = ensureModelWorker();
+      modelRequestIds.add(envelope.requestId);
+      worker.postMessage(envelope.request);
+    } catch (error) {
+      const invalidRequestId = requestIdFrom(raw) ?? 'model_invalid';
+      sendModelError(invalidRequestId, 'INFERENCE_FAILED', error instanceof Error ? error.message : 'Malformed model request.');
+    }
+    return;
+  }
+  if (type === OFFSCREEN_MODEL_DISPOSE) {
+    try {
+      parseModelDisposeEnvelope(raw);
+      disposeModelWorker();
+    } catch {
+      // Invalid dispose requests are ignored.
     }
     return;
   }

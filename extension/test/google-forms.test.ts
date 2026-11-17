@@ -216,9 +216,14 @@ function buildSampleGoogleForm(): MockDocument {
   q3.appendChild(new MockElement('DIV', { role: 'heading', 'aria-level': '3' }, 'Branch'));
   const radioGroup = new MockElement('DIV', { role: 'radiogroup', 'aria-label': 'Branch' });
   const branches = ['CT', 'CM', 'EC', 'EE', 'EEE'];
+  const radioElements: MockElement[] = [];
   branches.forEach((b) => {
     const row = new MockElement('DIV', { class: 'SGIOEc' });
     const radio = new MockElement('DIV', { role: 'radio', 'aria-checked': 'false', 'data-value': b, 'aria-label': b });
+    radio.addEventListener('click', () => {
+      for (const item of radioElements) item.setAttribute('aria-checked', item === radio ? 'true' : 'false');
+    });
+    radioElements.push(radio);
     row.appendChild(radio);
     row.appendChild(new MockElement('SPAN', { class: 'aDTYNe' }, b));
     radioGroup.appendChild(row);
@@ -234,6 +239,7 @@ function buildSampleGoogleForm(): MockDocument {
   skills.forEach((s) => {
     const row = new MockElement('DIV', { class: 'Y6FdBh' });
     const cb = new MockElement('DIV', { role: 'checkbox', 'aria-checked': 'false', 'data-value': s, 'aria-label': s });
+    cb.addEventListener('click', () => cb.setAttribute('aria-checked', cb.getAttribute('aria-checked') === 'true' ? 'false' : 'true'));
     row.appendChild(cb);
     row.appendChild(new MockElement('SPAN', { class: 'aDTYNe' }, s));
     checkGroup.appendChild(row);
@@ -245,8 +251,15 @@ function buildSampleGoogleForm(): MockDocument {
   const q5 = new MockElement('DIV', { role: 'listitem' });
   q5.appendChild(new MockElement('DIV', { role: 'heading', 'aria-level': '3' }, 'Select your semester'));
   const listbox = new MockElement('DIV', { role: 'listbox', 'aria-label': 'Semester' });
+  const optionElements: MockElement[] = [];
   for (let i = 1; i <= 8; i++) {
-    listbox.appendChild(new MockElement('DIV', { role: 'option', 'data-value': `Semester ${i}` }, `Semester ${i}`));
+    const option = new MockElement('DIV', { role: 'option', 'data-value': `Semester ${i}`, 'aria-selected': 'false' }, `Semester ${i}`);
+    option.addEventListener('click', () => {
+      for (const item of optionElements) item.setAttribute('aria-selected', item === option ? 'true' : 'false');
+      listbox.textContent = `Semester ${i}`;
+    });
+    optionElements.push(option);
+    listbox.appendChild(option);
   }
   q5.appendChild(listbox);
   list.appendChild(q5);
@@ -437,4 +450,17 @@ test('FormAdapterRegistry selects GoogleFormsAdapter on Google Forms and returns
   doc.location.href = 'https://docs.google.com/forms/d/e/1FAIpQLSc.../viewform';
   const adapter = registry.getAdapter(doc as any, doc.location.href);
   assert.equal(adapter.name, 'Google Forms');
+});
+
+
+test('does not claim success when the page rejects an autofill value', async () => {
+  const doc = buildSampleGoogleForm();
+  const emailInput = doc.querySelector('input[type="email"]') as any;
+  emailInput.addEventListener('input', () => { emailInput.value = ''; });
+  const adapter = new GoogleFormsAdapter();
+  adapter.scan(doc as any);
+  const result = await adapter.fill([{ index: 6, value: 'rejected@example.com' }], doc as any);
+  assert.equal(result.filled, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(result.skipped.length, 1);
 });

@@ -54,7 +54,18 @@ export function FieldEditorDialog({ field, mode, open, onClose, onSave, onDelete
         <div className="ff-field">
           <label className="ff-field__label" htmlFor="field-value">Value</label>
           <Input id="field-value" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
-          <span className="ff-field__hint">Source: {field.source.documentName}</span>
+          <span className="ff-field__hint">
+            Source: {field.source.documentName}
+            {field.source.page ? ` · page ${field.source.page}` : ''}
+            {field.source.blockId ? ` · block ${field.source.blockId}` : ''}
+            {field.source.modelVersion ? ` · ${field.source.modelVersion}` : ''}
+            {' · '}{field.verificationStatus === 'user_verified' ? 'Verified by you' : 'Extracted value — verify before use'}
+          </span>
+          {field.source.evidence ? (
+            <div className="ff-note ff-mt-12" style={{ fontStyle: 'italic' }}>
+              “{field.source.evidence}”
+            </div>
+          ) : null}
         </div>
 
         {mode === 'resolve' && field.conflicts?.length ? (

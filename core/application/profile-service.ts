@@ -57,6 +57,14 @@ export const profileService = {
     await activityRepository.record('document_updated', field.label, 'Conflict resolved');
     return field;
   },
+
+  async verifyField(fieldId: string): Promise<VaultField> {
+    await vaultRepository.markVerified(fieldId);
+    const field = (await vaultRepository.listFields()).find((item) => item.id === fieldId);
+    if (!field) throw new FormFlowError('NOT_FOUND', 'Vault value not found.');
+    await activityRepository.record('document_updated', field.label, 'Vault value verified by you');
+    return field;
+  },
 };
 
 type ProfileRecordType = ProfileRecordRow['type'];
@@ -109,7 +117,11 @@ export const profileRecordService = {
     if (!record.degree.trim() || !record.institution.trim()) {
       throw new FormFlowError('VALIDATION_FAILED', 'Degree and institution are required.');
     }
-    const saved = await profileRecordRepository.save<EducationRecord>('education', record, documentId ?? record.documentId);
+    const linkedDocumentId = documentId ?? record.documentId;
+    const saved = await profileRecordRepository.save<EducationRecord>('education', {
+      ...record,
+      ...(linkedDocumentId ? { documentId: linkedDocumentId } : {}),
+    }, linkedDocumentId);
     await activityRepository.record('document_updated', saved.degree, 'Education record saved');
     return saved;
   },
@@ -127,7 +139,11 @@ export const profileRecordService = {
     if (!record.role.trim() || !record.company.trim()) {
       throw new FormFlowError('VALIDATION_FAILED', 'Role and company are required.');
     }
-    const saved = await profileRecordRepository.save<EmploymentRecord>('employment', record, documentId ?? record.documentId);
+    const linkedDocumentId = documentId ?? record.documentId;
+    const saved = await profileRecordRepository.save<EmploymentRecord>('employment', {
+      ...record,
+      ...(linkedDocumentId ? { documentId: linkedDocumentId } : {}),
+    }, linkedDocumentId);
     await activityRepository.record('document_updated', saved.role, 'Employment record saved');
     return saved;
   },

@@ -30,6 +30,9 @@ const DOCX_LAYOUT_FONTS = [
   ['LiberationSerif-BoldItalic.ttf', 'f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7', 'Liberation Serif', 700, 'italic'],
 ];
 const HARFBUZZ_WASM_SHA256 = '6eeed8e1bc9ad7773038e48ff8f9e07e0ad228572c594b45e5357e9c2f7a0b2e';
+const TRANSFORMERS_SHA256 = '8b5a3171f8876bab2b1820a7d65eb87628e3d30bb5ea85b9dd398e76eb34decb';
+const ORT_ASYNCIFY_MJS_SHA256 = '0966b6105cd936744498aa60df7a22cbd47af3374dbc64a9ab561c08a71e3611';
+const ORT_ASYNCIFY_WASM_SHA256 = '49871f5a4409519797e127440868a6d1923339d9185907f301a5b2a1d90af082';
 const NODE_ONLY_LAYOUT_IMPORTS = ['fs', 'url', 'path', 'fs/promises', 'node:fs', 'node:url', 'node:path', 'node:fs/promises'];
 
 async function exists(target) {
@@ -225,6 +228,10 @@ async function verifyBuild(distDir) {
   await requireFile(path.join(distDir, 'offscreen-parser.html'), 'offscreen-parser.html');
   await requireFile(path.join(distDir, 'offscreen-parser.js'), 'offscreen-parser.js');
   await requireFile(path.join(distDir, 'document-parser.worker.js'), 'document-parser.worker.js');
+  await requireFile(path.join(distDir, 'model.worker.js'), 'model.worker.js');
+  await requireFile(path.join(distDir, 'transformers.min.js'), 'transformers.min.js');
+  await requireFile(path.join(distDir, 'ort', 'ort-wasm-simd-threaded.asyncify.mjs'), 'ort/ort-wasm-simd-threaded.asyncify.mjs');
+  await requireFile(path.join(distDir, 'ort', 'ort-wasm-simd-threaded.asyncify.wasm'), 'ort/ort-wasm-simd-threaded.asyncify.wasm');
   await requireFile(path.join(distDir, 'popup.js'), 'popup.js');
   await requireFile(path.join(distDir, 'popup.html'), 'popup.html');
   await requireFile(path.join(distDir, 'popup.css'), 'popup.css');
@@ -326,6 +333,32 @@ async function main() {
     });
     await cp(path.join(src, 'offscreen', 'parser.html'), path.join(tempOut, 'offscreen-parser.html'));
 
+    const modelWorkerResult = await bundle(path.join(src, 'model', 'model-worker.ts'), path.join(tempOut, 'model.worker.js'), {
+      format: 'esm',
+      metafile: true,
+    });
+    await copyVerified(
+      path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'transformers.min.js'),
+      path.join(tempOut, 'transformers.min.js'),
+      TRANSFORMERS_SHA256,
+    );
+    await mkdir(path.join(tempOut, 'ort'), { recursive: true });
+    await copyVerified(
+      path.join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.asyncify.mjs'),
+      path.join(tempOut, 'ort', 'ort-wasm-simd-threaded.asyncify.mjs'),
+      ORT_ASYNCIFY_MJS_SHA256,
+    );
+    await copyVerified(
+      path.join(root, 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.asyncify.wasm'),
+      path.join(tempOut, 'ort', 'ort-wasm-simd-threaded.asyncify.wasm'),
+      ORT_ASYNCIFY_WASM_SHA256,
+    );
+    await writeFile(
+      path.join(tempOut, 'ort', 'THIRD_PARTY_NOTICES.txt'),
+      'Transformers.js 4.3.2 — Apache-2.0\nONNX Runtime Web 1.31.0 — MIT\nTransformer.js and ORT runtime assets are bundled locally; model weights are downloaded only from the configured public Hugging Face repository after explicit user action.\n',
+      'utf8',
+    );
+
     const vaultAuthorityPatterns = [
       /core[\\/]vault[\\/]/,
       /core[\\/]database[\\/]/,
@@ -353,7 +386,11 @@ async function main() {
     const backgroundInputs = bundledInputs(backgroundResult);
     const offscreenInputs = bundledInputs(offscreenResult);
     const parserInputs = bundledInputs(parserWorkerResult);
+    const modelWorkerInputs = bundledInputs(modelWorkerResult);
     assertNoInputs('Service worker', backgroundInputs, parserPatterns);
+    assertNoInputs('Service worker', backgroundInputs, [/node_modules[\\/]@huggingface[\\/]transformers/]);
+    assertNoInputs('Model worker', modelWorkerInputs, vaultAuthorityPatterns);
+    assertNoInputs('Model worker', modelWorkerInputs, parserPatterns);
     assertNoInputs('Offscreen document', offscreenInputs, offscreenForbidden);
     assertHasInput('Offscreen document', offscreenInputs, /node_modules[\\/]pdfjs-dist/);
     assertHasInput('Offscreen document', offscreenInputs, /node_modules[\\/]tesseract\.js/);

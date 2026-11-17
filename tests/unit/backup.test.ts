@@ -171,6 +171,9 @@ await vaultRepository.addField({
   confidence: 99,
   verificationStatus: 'user_verified',
   extractionMethod: 'manual',
+  evidence: 'Email address: backup@example.com',
+  sourceBlockId: 'p1_b1',
+  modelVersion: 'qwen3-0.6b-instruct@test:q8',
 });
 
 test('exports an encrypted archive without plaintext sensitive data', async () => {
@@ -239,6 +242,9 @@ test('rejects a wrong backup passphrase and imports into an empty vault', async 
   assert.equal(ocrText.extraction?.structure?.pagination?.status, 'logical_fallback');
   const fields = await vaultRepository.listFields();
   assert.equal(fields[0]!.value, 'backup@example.com');
+  assert.equal(fields[0]!.source.evidence, 'Email address: backup@example.com');
+  assert.equal(fields[0]!.source.blockId, 'p1_b1');
+  assert.equal(fields[0]!.source.modelVersion, 'qwen3-0.6b-instruct@test:q8');
 });
 
 test('rejects importing into a non-empty vault', async () => {

@@ -1,9 +1,12 @@
 import type {
   ActivityItem,
   Collection,
+  DocumentExtractionSummary,
   DocumentIngestionProgress,
   DocumentTextResult,
   FormHistoryItem,
+  ModelSelfTestResult,
+  ModelStatusSnapshot,
   Preferences,
   StorageEstimate,
   VaultDocument,
@@ -148,6 +151,14 @@ export interface VaultClientApi {
   updateField(id: string, value: string): Promise<VaultField>;
   deleteField(id: string): Promise<void>;
   resolveConflict(id: string, value: string): Promise<VaultField>;
+  verifyField(id: string): Promise<VaultField>;
+  extractDocument(id: string, useAi?: boolean): Promise<DocumentExtractionSummary>;
+  modelStatus(): Promise<ModelStatusSnapshot>;
+  installModel(): Promise<{ started: boolean; status: ModelStatusSnapshot }>;
+  cancelModelInstall(): Promise<{ cancelled: boolean }>;
+  removeModel(): Promise<void>;
+  selfTestModel(): Promise<ModelSelfTestResult>;
+  cancelInference(): Promise<{ cancelled: boolean }>;
   listDocuments(): Promise<VaultDocument[]>;
   getDocument(id: string): Promise<VaultDocument | null>;
   importDocument(

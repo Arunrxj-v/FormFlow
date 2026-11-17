@@ -15,7 +15,7 @@ import type { VaultField } from '@/services/types';
 const addressKeys = ['contact.addressLine1', 'contact.city', 'contact.state', 'contact.country', 'contact.postalCode'];
 
 export function AddressesPage() {
-  const { fields, updateField, deleteField, resolveConflict } = useApp();
+  const { fields, updateField, deleteField, resolveConflict, verifyField } = useApp();
   const { toast } = useToast();
   const [selected, setSelected] = useState<VaultField | null>(null);
   const [mode, setMode] = useState<'edit' | 'resolve'>('edit');
@@ -80,7 +80,7 @@ export function AddressesPage() {
                     <span className="ff-address-map__label"><Navigation size={12} /> Address preview</span>
                   </div>
                   <div className="ff-mt-12">
-                    <FieldTable fields={addressFields} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} />
+                    <FieldTable fields={addressFields} onEdit={openEdit} onDelete={setDeleteTarget} onResolve={openResolve} onVerify={(field) => void verifyField(field.id)} />
                   </div>
                 </div>
               </Card>

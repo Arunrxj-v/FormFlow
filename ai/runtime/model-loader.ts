@@ -1,5 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { MODEL_CACHE_NAME, MODEL_METADATA_ID } from '@shared/constants';
+import { MODEL_CACHE_NAME, MODEL_METADATA_ID, MODEL_REVISION } from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
 import type { InstalledModelRecord, ModelCapabilities, ModelRuntime } from '@shared/types';
 import { getDb } from '../../core/database/database';
@@ -52,7 +52,9 @@ export async function detectModelCapabilities(): Promise<ModelCapabilities> {
 export function preferredVariant(capabilities: ModelCapabilities): ModelVariant {
   // INT8 is the verified-compatible artifact across WebGPU and WASM. Q4F16 is
   // offered as an optional WebGPU-optimised download, never silently substituted.
-  return capabilities.webgpu ? MODEL_VARIANTS.q4f16 : MODEL_VARIANTS.q8;
+  // Q8 is the artifact verified for local CPU/WASM execution. Q4F16 remains
+  // an explicit opt-in WebGPU experiment and is never auto-selected.
+  return MODEL_VARIANTS.q8;
 }
 
 export function defaultVariant(): ModelVariant {
@@ -94,7 +96,146 @@ async function hashResponse(response: Response, expectedSize: number, onBytes?: 
   return { sha256: bytesToHex(hasher.digest()), bytes };
 }
 
-async function downloadFile(
+const MODEL_PART_QUERY = '?formflow-model-part=';
+const MODEL_PART_CHUNK_BYTES = 8 * 1024 * 1024;
+
+function partKey(url: string, index: number): string {
+  return `${url}${MODEL_PART_QUERY}${index}`;
+}
+
+function partIndex(key: string, url: string): number | null {
+  const prefix = `${url}${MODEL_PART_QUERY}`;
+  if (!key.startsWith(prefix)) return null;
+  const value = Number(key.slice(prefix.length));
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+async function listParts(cache: Cache, url: string): Promise<Array<{ key: string; index: number }>> {
+  const requests = await cache.keys();
+  const entries: Array<{ key: string; index: number }> = [];
+  for (const request of requests) {
+    const key = request.url;
+    const index = partIndex(key, url);
+    if (index !== null) entries.push({ key, index });
+  }
+  return entries.sort((a, b) => a.index - b.index);
+}
+
+async function clearParts(cache: Cache, url: string): Promise<void> {
+  for (const entry of await listParts(cache, url)) await cache.delete(entry.key);
+}
+
+async function readParts(
+  cache: Cache,
+  url: string,
+  filePath: string,
+  fileSize: number,
+  expectedTotal: number,
+  onProgress: (progress: DownloadProgress) => void,
+  fileIndex: number,
+  fileCount: number,
+  totalCompleted: number,
+  signal: AbortSignal,
+): Promise<{ parts: Array<{ key: string; index: number }>; bytes: number; hasher: ReturnType<typeof sha256.create>; nextIndex: number }> {
+  const parts = await listParts(cache, url);
+  const hasher = sha256.create();
+  let bytes = 0;
+  let nextIndex = 0;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (parts[index]!.index !== index) {
+      // A gap would make Range offsets and concatenation unsafe. Restart the
+      // file rather than combining non-contiguous chunks.
+      await clearParts(cache, url);
+      return { parts: [], bytes: 0, hasher: sha256.create(), nextIndex: 0 };
+    }
+  }
+  for (const part of parts) {
+    if (signal.aborted) {
+      await clearParts(cache, url);
+      throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
+    }
+    const response = await cache.match(part.key);
+    if (!response) {
+      await clearParts(cache, url);
+      return { parts: [], bytes: 0, hasher: sha256.create(), nextIndex: 0 };
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      await clearParts(cache, url);
+      return { parts: [], bytes: 0, hasher: sha256.create(), nextIndex: 0 };
+    }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (signal.aborted) {
+        await clearParts(cache, url);
+        throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
+      }
+      if (value) {
+        hasher.update(value);
+        bytes += value.byteLength;
+        if (bytes > fileSize) {
+          await clearParts(cache, url);
+          return { parts: [], bytes: 0, hasher: sha256.create(), nextIndex: 0 };
+        }
+      }
+    }
+    nextIndex = Math.max(nextIndex, part.index + 1);
+  }
+  if (bytes > 0) {
+    onProgress({
+      phase: 'verifying',
+      filePath,
+      fileIndex,
+      fileCount,
+      fileBytes: bytes,
+      fileTotalBytes: fileSize,
+      totalBytes: totalCompleted + bytes,
+      totalTotalBytes: expectedTotal,
+      percent: Math.min(99, ((totalCompleted + bytes) / expectedTotal) * 100),
+    });
+  }
+  return { parts, bytes, hasher, nextIndex };
+}
+
+async function finalizeParts(
+  cache: Cache,
+  url: string,
+  fileSize: number,
+  parts: Array<{ key: string; index: number }>,
+): Promise<void> {
+  if (parts.length === 0) throw new FormFlowError('MODEL_DOWNLOAD_FAILED', 'No downloaded model chunks are available.');
+  const ordered = [...parts].sort((a, b) => a.index - b.index);
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for (const part of ordered) {
+          const response = await cache.match(part.key);
+          const reader = response?.body?.getReader();
+          if (!reader) throw new Error('A downloaded model chunk is missing.');
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) controller.enqueue(value);
+          }
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  await cache.put(url, new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'content-length': String(fileSize),
+    },
+  }));
+  await clearParts(cache, url);
+}
+
+export async function downloadFile(
   variant: ModelVariant,
   fileIndex: number,
   totalCompleted: number,
@@ -107,75 +248,160 @@ async function downloadFile(
 
   const existing = await cache.match(url);
   if (existing) {
-    const length = Number(existing.headers.get('content-length') ?? 0);
-    if (length === file.size) {
-      const verified = await hashResponse(existing.clone(), file.size, (bytes) => {
-        onProgress({
-          phase: 'verifying',
-          filePath: file.path,
-          fileIndex,
-          fileCount: variant.files.length,
-          fileBytes: bytes,
-          fileTotalBytes: file.size,
-          totalBytes: totalCompleted + bytes,
-          totalTotalBytes: variant.totalBytes,
-          percent: Math.min(99, ((totalCompleted + bytes) / variant.totalBytes) * 100),
+    try {
+      const length = Number(existing.headers.get('content-length') ?? 0);
+      if (length === file.size) {
+        const verified = await hashResponse(existing.clone(), file.size, (bytes) => {
+          onProgress({
+            phase: 'verifying',
+            filePath: file.path,
+            fileIndex,
+            fileCount: variant.files.length,
+            fileBytes: bytes,
+            fileTotalBytes: file.size,
+            totalBytes: totalCompleted + bytes,
+            totalTotalBytes: variant.totalBytes,
+            percent: Math.min(99, ((totalCompleted + bytes) / variant.totalBytes) * 100),
+          });
         });
-      });
-      if (!file.sha256 || verified.sha256 === file.sha256) {
-        return { sha256: verified.sha256, size: file.size, totalBytes: verified.bytes };
+        if (!file.sha256 || verified.sha256 === file.sha256) {
+          await clearParts(cache, url);
+          return { sha256: verified.sha256, size: file.size, totalBytes: totalCompleted + verified.bytes };
+        }
+        await cache.delete(url);
+      } else {
+        await cache.delete(url);
       }
-      await cache.delete(url);
-    } else {
+    } catch {
       await cache.delete(url);
     }
   }
 
-  const response = await fetch(url, { signal, redirect: 'follow', credentials: 'omit' });
+  let resume = await readParts(cache, url, file.path, file.size, variant.totalBytes, onProgress, fileIndex, variant.files.length, totalCompleted, signal);
+  let { bytes: downloaded, hasher, nextIndex } = resume;
+  let parts = resume.parts;
+
+  if (downloaded === file.size) {
+    const digest = bytesToHex(hasher.digest());
+    if (file.sha256 && digest !== file.sha256) {
+      await clearParts(cache, url);
+      throw new FormFlowError('MODEL_HASH_MISMATCH', `Integrity check failed for ${file.path}.`);
+    }
+    await finalizeParts(cache, url, file.size, parts);
+    return { sha256: digest, size: downloaded, totalBytes: totalCompleted + downloaded };
+  }
+
+  const headers: Record<string, string> = {};
+  if (downloaded > 0) headers.Range = `bytes=${downloaded}-`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { signal, redirect: 'follow', credentials: 'omit', headers });
+  } catch (error) {
+    if (signal.aborted) {
+      await clearParts(cache, url);
+      throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
+    }
+    throw new FormFlowError(
+      'MODEL_DOWNLOAD_FAILED',
+      `Model download was interrupted for ${file.path}. Retry will resume from ${downloaded} verified bytes.`,
+      { cause: error },
+    );
+  }
+
+  if (downloaded > 0 && response.status === 200) {
+    // The server ignored the Range request. Start this file over rather than
+    // concatenating a full response onto already-downloaded bytes.
+    await clearParts(cache, url);
+    downloaded = 0;
+    nextIndex = 0;
+    hasher = sha256.create();
+    parts = [];
+  } else if (downloaded > 0 && response.status === 416) {
+    await clearParts(cache, url);
+    throw new FormFlowError('MODEL_DOWNLOAD_FAILED', `The model server rejected the resume range for ${file.path}. Retry the installation.`);
+  } else if (response.status === 206) {
+    const contentRange = response.headers.get('content-range') ?? '';
+    const match = contentRange.match(/^bytes (\d+)-(\d+)\/(\d+)$/);
+    if (!match
+      || Number(match[1]) !== downloaded
+      || Number(match[3]) !== file.size
+      || Number(match[2]) < downloaded
+      || Number(match[2]) >= file.size) {
+      await clearParts(cache, url);
+      throw new FormFlowError('MODEL_DOWNLOAD_FAILED', `The model server returned an invalid range response for ${file.path}.`);
+    }
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && Number(contentLength) !== file.size - downloaded) {
+      await clearParts(cache, url);
+      throw new FormFlowError('MODEL_DOWNLOAD_FAILED', `The model server returned an unexpected range length for ${file.path}.`);
+    }
+  }
+
   if (!response.ok) {
     throw new FormFlowError('MODEL_DOWNLOAD_FAILED', `Model download failed (HTTP ${response.status}) for ${file.path}.`);
   }
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    if (signal.aborted) throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
-    const bytes = new Uint8Array(buffer);
-    const digest = bytesToHex(sha256(bytes));
-    if (file.sha256 && digest !== file.sha256) {
-      throw new FormFlowError('MODEL_HASH_MISMATCH', `Integrity check failed for ${file.path}.`);
+
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  let nextPartIndex = nextIndex;
+  const flush = async (): Promise<void> => {
+    if (pendingBytes === 0) return;
+    const combined = new Uint8Array(pendingBytes);
+    let offset = 0;
+    for (const chunk of pending) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
     }
-    await cache.put(url, new Response(buffer, { headers: response.headers }));
-    onProgress({
-      phase: 'downloading',
-      filePath: file.path,
-      fileIndex,
-      fileCount: variant.files.length,
-      fileBytes: buffer.byteLength,
-      fileTotalBytes: file.size,
-      totalBytes: totalCompleted + buffer.byteLength,
-      totalTotalBytes: variant.totalBytes,
-      percent: Math.min(99, ((totalCompleted + buffer.byteLength) / variant.totalBytes) * 100),
-    });
-    return { sha256: digest, size: buffer.byteLength, totalBytes: totalCompleted + buffer.byteLength };
-  }
+    await cache.put(partKey(url, nextPartIndex), new Response(combined, {
+      status: 200,
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(pendingBytes),
+      },
+    }));
+    nextPartIndex += 1;
+    pending = [];
+    pendingBytes = 0;
+  };
 
-  const [hashStream, cacheStream] = response.body.tee();
-  const hashResponseForCache = new Response(cacheStream, {
-    status: 200,
-    headers: { 'content-type': 'application/octet-stream', 'content-length': String(file.size) },
-  });
-  const cachePut = cache.put(url, hashResponseForCache);
-
-  let downloaded = 0;
-  const hasher = sha256.create();
-  const reader = hashStream.getReader();
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    if (!response.body) {
+      const buffer = await response.arrayBuffer();
       if (signal.aborted) throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
-      if (value) {
+      const value = new Uint8Array(buffer);
+      hasher.update(value);
+      downloaded += value.byteLength;
+      pending.push(value);
+      pendingBytes = value.byteLength;
+      await flush();
+      onProgress({
+        phase: 'downloading',
+        filePath: file.path,
+        fileIndex,
+        fileCount: variant.files.length,
+        fileBytes: downloaded,
+        fileTotalBytes: file.size,
+        totalBytes: totalCompleted + downloaded,
+        totalTotalBytes: variant.totalBytes,
+        percent: Math.min(99, ((totalCompleted + downloaded) / variant.totalBytes) * 100),
+      });
+    } else {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (signal.aborted) throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
+        if (!value) continue;
         hasher.update(value);
         downloaded += value.byteLength;
+        if (downloaded > file.size) {
+          await clearParts(cache, url);
+          throw new FormFlowError('MODEL_DOWNLOAD_FAILED', `Downloaded ${file.path} exceeded its declared size.`);
+        }
+        pending.push(value);
+        pendingBytes += value.byteLength;
+        if (pendingBytes >= MODEL_PART_CHUNK_BYTES) await flush();
         onProgress({
           phase: 'downloading',
           filePath: file.path,
@@ -188,26 +414,34 @@ async function downloadFile(
           percent: Math.min(99, ((totalCompleted + downloaded) / variant.totalBytes) * 100),
         });
       }
+      await flush();
     }
-    await cachePut;
   } catch (error) {
     if (signal.aborted || (error instanceof FormFlowError && error.code === 'MODEL_CANCELLED')) {
-      await cache.delete(url);
+      await clearParts(cache, url);
       throw new FormFlowError('MODEL_CANCELLED', 'Model download was cancelled.');
     }
-    await cache.delete(url);
-    throw error;
+    if (error instanceof FormFlowError) throw error;
+    throw new FormFlowError(
+      'MODEL_DOWNLOAD_FAILED',
+      `Model download was interrupted for ${file.path}. Retry will resume from ${downloaded} verified bytes.`,
+      { cause: error },
+    );
   }
 
   if (downloaded !== file.size) {
-    await cache.delete(url);
-    throw new FormFlowError('MODEL_HASH_MISMATCH', `Downloaded ${file.path} has an unexpected size.`);
+    throw new FormFlowError(
+      'MODEL_DOWNLOAD_FAILED',
+      `Model download is incomplete for ${file.path}. Retry will resume from ${downloaded} verified bytes.`,
+    );
   }
   const digest = bytesToHex(hasher.digest());
   if (file.sha256 && digest !== file.sha256) {
-    await cache.delete(url);
+    await clearParts(cache, url);
     throw new FormFlowError('MODEL_HASH_MISMATCH', `Integrity check failed for ${file.path}.`);
   }
+  parts = await listParts(cache, url);
+  await finalizeParts(cache, url, file.size, parts);
   return { sha256: digest, size: downloaded, totalBytes: totalCompleted + downloaded };
 }
 
@@ -244,7 +478,7 @@ export const modelLoader = {
     const started: InstalledModelRecord = {
       id: recordId,
       modelId: MODEL_METADATA_ID,
-      revision: '54250909aca286a05b9d013c8af7a21859ee6ead',
+      revision: MODEL_REVISION,
       dtype: variant.dtype,
       runtime: variant.runtime,
       status: 'downloading',
@@ -283,6 +517,14 @@ export const modelLoader = {
         });
       }
 
+      // transformers.js 4.3.2 reads config.json under the main revision while
+      // discovering pipeline files even when a pinned revision is supplied.
+      // Alias the exact verified config bytes so discovery remains local-only.
+      const modelCache = await openCache();
+      for (const alias of ['config.json', 'tokenizer_config.json']) {
+        const cachedAlias = await modelCache.match(resolveModelUrl(alias, MODEL_REVISION));
+        if (cachedAlias) await modelCache.put(resolveModelUrl(alias, 'main'), cachedAlias.clone());
+      }
       const installed: InstalledModelRecord = {
         ...started,
         status: 'installed',
@@ -326,13 +568,29 @@ export const modelLoader = {
     const files: InstalledModelRecord['files'] = [];
     for (const file of variant.files) {
       const response = await cache.match(resolveModelUrl(file.path));
-      if (!response) return { ...record, status: 'not_installed', error: `Missing model file: ${file.path}` };
-      const length = Number(response.headers.get('content-length') ?? 0);
-      const hash = response.headers.get('x-formflow-sha256');
-      total += length;
-      files.push({ path: file.path, size: file.size, sha256: file.sha256, sha256Computed: hash ?? undefined });
-      if (length !== file.size) {
-        return { ...record, status: 'corrupt', error: `Corrupt model file: ${file.path}` };
+      if (!response) {
+        const missing: InstalledModelRecord = { ...record, status: 'not_installed', error: `Missing model file: ${file.path}` };
+        if (!readonly) {
+          const db = await getDb();
+          await db.put('modelMetadata', missing);
+        }
+        return missing;
+      }
+      let verified: { sha256: string; bytes: number };
+      try {
+        verified = await hashResponse(response.clone(), file.size);
+      } catch {
+        verified = { sha256: '', bytes: 0 };
+      }
+      total += verified.bytes;
+      files.push({ path: file.path, size: file.size, sha256: file.sha256, sha256Computed: verified.sha256 || undefined });
+      if (verified.bytes !== file.size || (file.sha256 && verified.sha256 !== file.sha256)) {
+        const corrupt: InstalledModelRecord = { ...record, status: 'corrupt', files, error: `Corrupt or tampered model file: ${file.path}` };
+        if (!readonly) {
+          const db = await getDb();
+          await db.put('modelMetadata', corrupt);
+        }
+        return corrupt;
       }
     }
     const updated: InstalledModelRecord = {
@@ -361,8 +619,12 @@ export const modelLoader = {
     const variant = variantById(variantId);
     const cache = await openCache();
     for (const file of variant.files) {
-      await cache.delete(resolveModelUrl(file.path));
+      const url = resolveModelUrl(file.path);
+      await cache.delete(url);
+      await clearParts(cache, url);
     }
+    await cache.delete(resolveModelUrl('config.json', 'main'));
+    await cache.delete(resolveModelUrl('tokenizer_config.json', 'main'));
     const db = await getDb();
     await db.delete('modelMetadata', `${MODEL_METADATA_ID}:${variant.id}`);
   },

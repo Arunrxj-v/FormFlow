@@ -2,8 +2,11 @@ import type { FormFlowErrorCode } from '@shared/errors';
 import type {
   ActivityItem,
   Collection,
+  DocumentExtractionSummary,
   DocumentTextResult,
   FormHistoryItem,
+  ModelSelfTestResult,
+  ModelStatusSnapshot,
   Preferences,
   StorageEstimate,
   VaultDocument,
@@ -188,6 +191,17 @@ export const vaultClient: VaultClientApi = {
   updateField: (id, value) => send<VaultField>(MESSAGE.UPDATE_FIELD, { id, value }),
   deleteField: (id) => send<void>(MESSAGE.DELETE_FIELD, { id }),
   resolveConflict: (id, value) => send<VaultField>(MESSAGE.RESOLVE_CONFLICT, { id, value }),
+  verifyField: (id) => send<VaultField>(MESSAGE.VERIFY_FIELD, { id }),
+  extractDocument: (id, useAi = true) =>
+    send<DocumentExtractionSummary>(MESSAGE.EXTRACT_DOCUMENT, { documentId: id, useAi }, 600_000),
+  modelStatus: () => send<ModelStatusSnapshot>(MESSAGE.MODEL_STATUS, {}, 60_000),
+  installModel: () => send<{ started: boolean; status: ModelStatusSnapshot }>(MESSAGE.MODEL_INSTALL, {}, 120_000),
+  cancelModelInstall: () => send<{ cancelled: boolean }>(MESSAGE.MODEL_CANCEL),
+  removeModel: async () => {
+    await send<void>(MESSAGE.MODEL_REMOVE, {}, 120_000);
+  },
+  selfTestModel: () => send<ModelSelfTestResult>(MESSAGE.MODEL_SELF_TEST, {}, 600_000),
+  cancelInference: () => send<{ cancelled: boolean }>(MESSAGE.INFER_CANCEL),
   listDocuments: async () => {
     const result = await send<{ documents: VaultDocument[] }>(MESSAGE.LIST_DOCUMENTS);
     return result.documents;

@@ -4,7 +4,7 @@ import { createReadStream, statSync } from 'node:fs';
 import busboy from 'busboy';
 import { db, defaultPreferences } from './db.mjs';
 import { createToken, hashPassword, verifyPassword, verifyToken, createOAuthState, verifyOAuthState, assertProductionSecret, isProduction } from './security.mjs';
-import { processDocument, createProvider } from './ai.mjs';
+import { processDocument } from './ai.mjs';
 import {
   saveDocumentFile,
   getDocumentFilePath,
@@ -14,16 +14,7 @@ import {
   MAX_FILE_SIZE,
 } from './storage.mjs';
 import { extractDocumentText } from './extractor.mjs';
-import {
-  generateAuthUrl,
-  exchangeCode,
-  fetchUserInfo,
-  saveConnection,
-  getConnectionStatus,
-  disconnect as disconnectDrive,
-  listFiles as listDriveFiles,
-  downloadFileContent,
-} from './drive.mjs';
+import { generateAuthUrl, exchangeCode, fetchUserInfo } from './google-auth.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || process.env.APP_ORIGIN || 'http://localhost:5173';
@@ -363,20 +354,14 @@ async function route(req, res, url) {
     }
     if (method === 'GET' && path === '/api/auth/google/url') {
       const intent = url.searchParams.get('intent') || 'signin';
-      let userId = null;
-      if (intent === 'drive') {
-        try {
-          const authed = authUser(req);
-          userId = authed.id;
-        } catch (err) {
-          return json(res, 401, { error: 'Please sign in to FormFlow before connecting Google Drive.' });
-        }
+      if (intent !== 'signin') {
+        return json(res, 410, { error: 'Google Drive document storage has been removed from FormFlow. Documents stay in your local encrypted vault.' });
       }
       try {
-        const authUrl = generateAuthUrl({ intent, userId });
+        const authUrl = generateAuthUrl({ intent: 'signin' });
         return json(res, 200, { url: authUrl });
       } catch (err) {
-        return json(res, 400, { error: err.message });
+        return json(res, err.status || 400, { error: err.message });
       }
     }
     if (method === 'GET' && path === '/api/auth/google/callback') {
@@ -384,112 +369,48 @@ async function route(req, res, url) {
       const state = url.searchParams.get('state');
       const error = url.searchParams.get('error');
 
-      const stateData = verifyOAuthState(state);
-      const intent = stateData?.intent || 'signin';
-
-      // 1. Google returned an authorization error or user cancelled
       if (error) {
-        let friendlyError = 'Google authorization was cancelled or access was denied.';
-        if (error === 'access_denied') {
-          friendlyError = intent === 'drive'
-            ? 'Access to Google Drive was cancelled. No permissions were granted.'
-            : 'Google sign-in was cancelled or access was denied.';
-        } else {
-          friendlyError = `Google error: ${error}`;
-        }
-        if (intent === 'drive') {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/settings?tab=connections&drive_error=${encodeURIComponent(friendlyError)}` });
-        } else {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(friendlyError)}` });
-        }
+        const friendlyError = error === 'access_denied'
+          ? 'Google sign-in was cancelled or access was denied.'
+          : `Google error: ${error}`;
+        res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(friendlyError)}` });
         res.end();
         return;
       }
 
-      // 2. Validate state token (anti-CSRF & tamper protection)
-      if (!stateData) {
-        const msg = 'Invalid or expired authorization request. Please try again.';
-        if (intent === 'drive') {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/settings?tab=connections&drive_error=${encodeURIComponent(msg)}` });
-        } else {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(msg)}` });
-        }
+      const stateData = verifyOAuthState(state);
+      if (!stateData || stateData.intent !== 'signin') {
+        res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Invalid or expired authorization request. Please try again.')}` });
         res.end();
         return;
       }
 
-      // 3. Validate presence of authorization code
       if (!code) {
-        const msg = 'Authorization code was not provided by Google.';
-        if (intent === 'drive') {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/settings?tab=connections&drive_error=${encodeURIComponent(msg)}` });
-        } else {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(msg)}` });
-        }
+        res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Authorization code was not provided by Google.')}` });
         res.end();
         return;
       }
 
-      // 4. Exchange authorization code with Google token endpoint
       let tokens;
       try {
         tokens = await exchangeCode(code);
       } catch (err) {
-        console.error('[Google OAuth] Token exchange error:', err?.message || err);
-        const msg = 'Failed to exchange authorization code with Google. Please try again.';
-        if (intent === 'drive') {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/settings?tab=connections&drive_error=${encodeURIComponent(msg)}` });
-        } else {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(msg)}` });
-        }
+        console.error('[Google Sign-In] Token exchange error:', err?.message || err);
+        res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Failed to exchange authorization code with Google. Please try again.')}` });
         res.end();
         return;
       }
 
-      // 5. Retrieve Google user identity
       let profile;
       try {
         profile = await fetchUserInfo(tokens.access_token);
       } catch (err) {
-        console.error('[Google OAuth] Userinfo fetch error:', err?.message || err);
-        const msg = 'Failed to retrieve profile details from Google. Please try again.';
-        if (intent === 'drive') {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/settings?tab=connections&drive_error=${encodeURIComponent(msg)}` });
-        } else {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent(msg)}` });
-        }
+        console.error('[Google Sign-In] Userinfo fetch error:', err?.message || err);
+        res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Failed to retrieve profile details from Google. Please try again.')}` });
         res.end();
         return;
       }
 
-      // 6. Handle Google Drive connection intent
-      if (intent === 'drive') {
-        const targetUserId = stateData.userId;
-        const user = targetUserId ? db.prepare('SELECT * FROM users WHERE id = ?').get(targetUserId) : null;
-        if (!user) {
-          res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Please sign in before connecting Google Drive.')}` });
-          res.end();
-          return;
-        }
-
-        saveConnection(targetUserId, tokens, profile);
-        insertActivity(targetUserId, 'drive_connected', 'Google Drive connected', `Linked to ${profile.email}`);
-
-        const redirectUrl = `${ALLOWED_ORIGIN}/settings?tab=connections&drive=connected`;
-        const html = `<!DOCTYPE html><html><body><script>
-          if (window.opener) {
-            window.opener.postMessage({ type: 'GOOGLE_DRIVE_CONNECTED', email: ${JSON.stringify(profile.email)} }, '*');
-            window.close();
-          } else {
-            window.location.href = ${JSON.stringify(redirectUrl)};
-          }
-        </script><p>Google Drive connected successfully. Redirecting...</p></body></html>`;
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(html);
-        return;
-      }
-
-      // 7. Handle Google Sign-In intent (Authenticate / Create FormFlow account)
       const email = profile.email?.trim().toLowerCase();
       if (!email) {
         res.writeHead(302, { Location: `${ALLOWED_ORIGIN}/login?error=${encodeURIComponent('Google account did not return a valid email address.')}` });
@@ -512,7 +433,6 @@ async function route(req, res, url) {
         insertActivity(user.id, 'login', 'User signed in', 'Signed in via Google');
       }
 
-      // Explicit separation: Google Drive remains NOT connected until authorized separately
       const token = createToken(user.id);
       const isHttps = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
       const cookieHeader = [
@@ -616,11 +536,11 @@ async function route(req, res, url) {
   if (path === '/api/documents/sync' && method === 'POST') {
     const rows = db.prepare('SELECT * FROM documents WHERE user_id = ?').all(user.id);
     const timestamp = new Date().toISOString();
-    insertActivity(user.id, 'sync_verified', 'Google Drive sync check', `Checked ${rows.length} documents; metadata up to date.`);
+    insertActivity(user.id, 'sync_verified', 'Local vault sync check', `Checked ${rows.length} documents; metadata up to date.`);
     return json(res, 200, {
       synced: rows.length,
       timestamp,
-      message: `Verified ${rows.length} documents against Google Drive metadata.`,
+      message: `Verified ${rows.length} documents in the local development vault.`,
     });
   }
 
@@ -844,73 +764,6 @@ async function route(req, res, url) {
     });
   }
 
-  if (path === '/api/drive/status' && method === 'GET') {
-    return json(res, 200, { drive: getConnectionStatus(user.id) });
-  }
-
-  if (path === '/api/drive/disconnect' && method === 'POST') {
-    disconnectDrive(user.id);
-    insertActivity(user.id, 'drive_disconnected', 'Google Drive disconnected', 'Connection removed by user');
-    return json(res, 200, { ok: true, drive: getConnectionStatus(user.id) });
-  }
-
-  if (path === '/api/drive/files' && method === 'GET') {
-    const files = await listDriveFiles(user.id);
-    return json(res, 200, { files });
-  }
-
-  if (path === '/api/drive/import' && method === 'POST') {
-    const body = await readBody(req);
-    const fileId = requireString(body.fileId, 'Drive file ID', 1, 200);
-    const category = requireString(body.category ?? 'Other documents', 'Category', 1, 80);
-    const subcategory = String(body.subcategory ?? '');
-    
-    // Ingest content from Google Drive
-    const { meta, text, buffer } = await downloadFileContent(user.id, fileId);
-    const fileName = meta.name || body.name || 'Drive Document';
-
-    const ingested = await ingestDocumentFile({
-      userId: user.id,
-      filename: fileName,
-      buffer: buffer || Buffer.from(text, 'utf8'),
-      category,
-      subcategory,
-      source: 'drive',
-      sourceFileId: fileId,
-    });
-
-    return json(res, 201, {
-      document: ingested.document,
-      result: ingested.result || null,
-      error: ingested.error || null,
-    });
-  }
-
-  if (path === '/api/ai/match-fields' && method === 'POST') {
-    const body = await readBody(req);
-    const fieldLabel = requireString(body.fieldLabel ?? '', 'Field label', 0, 200);
-    const fieldName = String(body.fieldName ?? '');
-    const candidates = Array.isArray(body.candidates) ? body.candidates : [];
-    const provider = createProvider();
-    let match = null;
-    if (typeof provider.matchField === 'function') {
-      match = await provider.matchField({ fieldLabel, fieldName, candidates });
-    }
-    return json(res, 200, { match });
-  }
-
-  if (path === '/api/ai/generate-answer' && method === 'POST') {
-    const body = await readBody(req);
-    const question = requireString(body.question, 'Question', 2, 1000);
-    const contextDocuments = String(body.contextDocuments ?? '');
-    const provider = createProvider();
-    if (typeof provider.generateAnswer !== 'function') {
-      throw Object.assign(new Error('Selected AI provider does not support answer generation.'), { status: 400 });
-    }
-    const answer = await provider.generateAnswer({ question, contextDocuments });
-    return json(res, 200, { answer });
-  }
-
   if (path === '/api/account' && method === 'DELETE') {
     const body = await readBody(req);
     const password = requireString(body.password, 'Password', 6, 200);
@@ -947,12 +800,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`FormFlow API listening on http://localhost:${PORT}`);
   console.log(`Allowed dashboard origin: ${ALLOWED_ORIGIN}`);
-  const hasKey = process.env.AI_API_KEY && !process.env.AI_API_KEY.includes('your_gemini_api_key');
-  if (hasKey) {
-    console.log(`AI provider: ${process.env.AI_PROVIDER || 'gemini'} active (${process.env.GEMINI_MODEL || 'gemini-1.5-flash'}).`);
-  } else {
-    console.log('AI provider: local deterministic rules (configure AI_API_KEY for Google Gemini extraction).');
-  }
+  console.log('Extraction: local deterministic rules only. External AI providers and Google Drive storage are disabled.');
 });
 
 export { server };

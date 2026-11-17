@@ -110,9 +110,9 @@ export const MAX_PAGINATION_GEOMETRY_CHARS = 300_000;
 export const MAX_PAGINATION_LINES_PER_BLOCK = 2_000;
 export const MAX_PAGINATION_COLUMNS = 16;
 
-export const MODEL_INFERENCE_TIMEOUT_MS = 120_000;
+export const MODEL_INFERENCE_TIMEOUT_MS = 180_000;
 export const MODEL_SELF_TEST_TIMEOUT_MS = 180_000;
-export const MODEL_MAX_OUTPUT_TOKENS = 320;
+export const MODEL_MAX_OUTPUT_TOKENS = 160;
 export const MODEL_MAX_CONTEXT_TOKENS = 3072;
 
 export const BACKUP_FORMAT = 'formflow-encrypted-backup';

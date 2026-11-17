@@ -6,10 +6,14 @@ import {
   OFFSCREEN_PARSER_PORT,
   OFFSCREEN_PARSER_PROTOCOL_VERSION,
   OFFSCREEN_PARSER_VERSION,
+  OFFSCREEN_MODEL_DISPOSE,
+  OFFSCREEN_MODEL_RESPONSE,
+  OFFSCREEN_MODEL_REQUEST,
   isOffscreenParserDocumentUrl,
   parseOffscreenErrorMessage,
   parseOffscreenProgressMessage,
   parseOffscreenResultMessage,
+  parseModelResponseEnvelope,
   type OffscreenParseRequest,
   type OffscreenParserFormat,
   type OffscreenParserResult,
@@ -33,6 +37,8 @@ interface PendingJob {
 let offscreenPort: chrome.runtime.Port | null = null;
 let creating: Promise<chrome.runtime.Port> | null = null;
 const pendingJobs = new Map<string, PendingJob>();
+let modelResponseHandler: ((response: unknown) => void) | null = null;
+let modelDisconnectHandler: (() => void) | null = null;
 let testDiagnostics: unknown = null;
 const portWaiters = new Set<{
   resolve: (port: chrome.runtime.Port) => void;
@@ -120,6 +126,15 @@ function sendCancel(requestId: string): void {
 
 function handlePortMessage(raw: unknown): void {
   if (!raw || typeof raw !== 'object') return;
+  if ((raw as { type?: unknown }).type === OFFSCREEN_MODEL_RESPONSE) {
+    try {
+      const envelope = parseModelResponseEnvelope(raw);
+      modelResponseHandler?.(envelope.response);
+    } catch {
+      // Invalid model transport messages are ignored; the request times out.
+    }
+    return;
+  }
   if (__FORMFLOW_TEST_HOOKS__ && (raw as { type?: unknown }).type === '__TEST_DIAGNOSTICS') {
     testDiagnostics = (raw as { diagnostics?: unknown }).diagnostics ?? null;
     return;
@@ -185,6 +200,7 @@ function attachOffscreenPort(port: chrome.runtime.Port): void {
     for (const job of [...pendingJobs.values()]) {
       rejectJob(job, parserUnavailable('The isolated parser document closed before returning a result.'));
     }
+    modelDisconnectHandler?.();
   });
   for (const waiter of [...portWaiters]) {
     waiter.resolve(port);
@@ -280,6 +296,43 @@ export function injectOffscreenWorkerResponseForTests(requestId: string, message
 export async function closeOffscreenForTests(): Promise<void> {
   if (!__FORMFLOW_TEST_HOOKS__) return;
   await chrome.offscreen.closeDocument().catch(() => undefined);
+}
+
+export function onOffscreenModelResponse(handler: ((response: unknown) => void) | null): void {
+  modelResponseHandler = handler;
+}
+
+export function onOffscreenModelDisconnect(handler: (() => void) | null): void {
+  modelDisconnectHandler = handler;
+}
+
+/**
+ * Background-only: route a strict model request through the isolated offscreen
+ * document. The offscreen document owns the model worker; the service worker
+ * never creates a Worker (MV3 service workers cannot).
+ */
+export async function sendOffscreenModelRequest(request: { requestId: string }): Promise<void> {
+  const port = await ensureOffscreenPort();
+  port.postMessage({
+    type: OFFSCREEN_MODEL_REQUEST,
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: request.requestId,
+    request,
+  });
+}
+
+/** Background-only: unload the offscreen model worker without closing the parser document. */
+export function disposeOffscreenModelWorker(): void {
+  if (!offscreenPort) return;
+  try {
+    offscreenPort.postMessage({
+      type: OFFSCREEN_MODEL_DISPOSE,
+      protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+      requestId: `model_dispose_${crypto.randomUUID()}`,
+    });
+  } catch {
+    // The document is already gone.
+  }
 }
 
 async function ensureOffscreenPort(): Promise<chrome.runtime.Port> {

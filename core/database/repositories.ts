@@ -152,11 +152,17 @@ export const vaultRepository = {
       const normalized = await dec<string>(row.normalizedValueEnc, aad(vault, 'value', row.id, 'normalizedValue'));
       const label = await decLabel(row, aad(vault, 'value', row.id, 'label'));
       const sourceDocName = documentNames.get(row.sourceDocumentId) ?? 'Local document';
+      const evidence = row.evidenceEnc
+        ? await dec<string>(row.evidenceEnc, aad(vault, 'value', row.id, 'evidence'))
+        : undefined;
       const source = {
         documentId: row.sourceDocumentId,
         documentName: sourceDocName,
         page: row.sourcePage,
         extractedAt: row.createdAt,
+        ...(evidence ? { evidence } : {}),
+        ...(row.sourceBlockId ? { blockId: row.sourceBlockId } : {}),
+        ...(row.modelVersion ? { modelVersion: row.modelVersion } : {}),
       };
       const fieldConflicts: FieldConflict[] = [];
       for (const conflict of openByKey.get(row.key) ?? []) {
@@ -237,6 +243,9 @@ export const vaultRepository = {
         verificationStatus: input.verificationStatus ?? 'extracted',
         sensitive: input.sensitive ?? SENSITIVE_KEYS.has(input.key),
         userModified: input.userModified ?? input.extractionMethod === 'manual',
+        ...(input.evidence ? { evidenceEnc: await enc(input.evidence.slice(0, 1_000), aad(vault, 'value', fieldId, 'evidence')) } : {}),
+        ...(input.sourceBlockId ? { sourceBlockId: input.sourceBlockId.slice(0, 200) } : {}),
+        ...(input.modelVersion ? { modelVersion: input.modelVersion.slice(0, 120) } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -259,6 +268,11 @@ export const vaultRepository = {
       const merged: ExtractedValueRecord = {
         ...existing,
         confidence: Math.max(existing.confidence, input.confidence),
+        ...(input.evidence && !existing.evidenceEnc
+          ? { evidenceEnc: await enc(input.evidence.slice(0, 1_000), aad(vault, 'value', existing.id, 'evidence')) }
+          : {}),
+        ...(input.sourceBlockId && !existing.sourceBlockId ? { sourceBlockId: input.sourceBlockId.slice(0, 200) } : {}),
+        ...(input.modelVersion ? { modelVersion: input.modelVersion.slice(0, 120) } : {}),
         updatedAt: now,
       };
       await db.put('extractedValues', merged);
@@ -275,8 +289,10 @@ export const vaultRepository = {
     }
 
     if (input.verificationStatus === 'user_verified' || input.extractionMethod === 'manual') {
+      // A manual replacement invalidates the previous extraction evidence.
+      const { evidenceEnc: _oldEvidence, sourceBlockId: _oldBlock, modelVersion: _oldModel, ...base } = existing;
       const updated: ExtractedValueRecord = {
-        ...existing,
+        ...base,
         valueEnc: await enc(input.value, aad(vault, 'value', existing.id, 'value')),
         normalizedValueEnc: await enc(normalized, aad(vault, 'value', existing.id, 'normalizedValue')),
         confidence: 100,
@@ -285,6 +301,11 @@ export const vaultRepository = {
         userModified: true,
         sourceDocumentId: input.source.documentId,
         sourcePage: input.sourcePage,
+        ...(input.evidence
+          ? { evidenceEnc: await enc(input.evidence.slice(0, 1_000), aad(vault, 'value', existing.id, 'evidence')) }
+          : {}),
+        ...(input.sourceBlockId ? { sourceBlockId: input.sourceBlockId.slice(0, 200) } : {}),
+        ...(input.modelVersion ? { modelVersion: input.modelVersion.slice(0, 120) } : {}),
         updatedAt: now,
       };
       await db.put('extractedValues', updated);
@@ -354,8 +375,9 @@ export const vaultRepository = {
     const db = await getDb();
     const row = await db.get('extractedValues', fieldId);
     if (!row) throw new FormFlowError('NOT_FOUND', 'Vault value not found.');
+    const { evidenceEnc: _oldEvidence, sourceBlockId: _oldBlock, modelVersion: _oldModel, ...base } = row;
     const updated: ExtractedValueRecord = {
-      ...row,
+      ...base,
       valueEnc: await enc(value, aad(vault, 'value', row.id, 'value')),
       normalizedValueEnc: await enc(normalizeValue(row.key, value), aad(vault, 'value', row.id, 'normalizedValue')),
       confidence: 100,
@@ -421,8 +443,9 @@ export const vaultRepository = {
         continue;
       }
       if (chosenNormalized === newNormalized) {
+        const { evidenceEnc: _oldEvidence, sourceBlockId: _oldBlock, modelVersion: _oldModel, ...base } = row;
         const updated: ExtractedValueRecord = {
-          ...row,
+          ...base,
           valueEnc: await enc(newValue, aad(vault, 'value', row.id, 'value')),
           normalizedValueEnc: await enc(newNormalized, aad(vault, 'value', row.id, 'normalizedValue')),
           sourceDocumentId: conflict.newSourceDocumentId,
@@ -1070,6 +1093,7 @@ export const settingsRepository = {
       compactMode: false,
       autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
       ocrLanguage: 'eng',
+      autoDownloadModel: true,
     };
   },
 

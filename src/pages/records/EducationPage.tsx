@@ -258,7 +258,7 @@ export function EducationPage() {
                 <Zap size={18} className="ff-primary" />
                 <div><div className="ff-h3">Chrome extension ready</div><div className="ff-body-sm ff-muted">{records.length} of {records.length} education nodes ready for form population.</div></div>
               </div>
-              <span className="ff-kbd">Alt+E</span>
+              <span className="ff-tag">Local</span>
             </div>
           </Card>
         </div>

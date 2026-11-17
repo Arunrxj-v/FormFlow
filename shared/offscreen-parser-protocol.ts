@@ -628,3 +628,82 @@ export function parserErrorFromUnknown(error: unknown): { code: string; message:
   }
   return { code: 'EXTRACTION_FAILED', message: 'Document parsing failed.' };
 }
+
+/* ------------------------------------------------------------------------- */
+/* Model worker transport over the same isolated offscreen document.          */
+/* ------------------------------------------------------------------------- */
+
+export const OFFSCREEN_MODEL_REQUEST = 'MODEL_REQUEST';
+export const OFFSCREEN_MODEL_RESPONSE = 'MODEL_RESPONSE';
+export const OFFSCREEN_MODEL_DISPOSE = 'MODEL_DISPOSE';
+
+export interface OffscreenModelRequestEnvelope {
+  type: typeof OFFSCREEN_MODEL_REQUEST;
+  protocol: typeof OFFSCREEN_PARSER_PROTOCOL_VERSION;
+  requestId: string;
+  request: unknown;
+}
+
+export interface OffscreenModelResponseEnvelope {
+  type: typeof OFFSCREEN_MODEL_RESPONSE;
+  protocol: typeof OFFSCREEN_PARSER_PROTOCOL_VERSION;
+  requestId: string;
+  response: unknown;
+}
+
+export interface OffscreenModelDisposeEnvelope {
+  type: typeof OFFSCREEN_MODEL_DISPOSE;
+  protocol: typeof OFFSCREEN_PARSER_PROTOCOL_VERSION;
+  requestId: string;
+}
+
+function modelRequestId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length < 3 || value.length > 160) {
+    throw new Error(`${label} request id is invalid.`);
+  }
+  return value;
+}
+
+export function parseModelRequestEnvelope(value: unknown): OffscreenModelRequestEnvelope {
+  if (!value || typeof value !== 'object') throw new Error('Malformed model transport request.');
+  const message = value as Record<string, unknown>;
+  if (message.protocol !== OFFSCREEN_PARSER_PROTOCOL_VERSION) throw new Error('Unsupported model transport protocol.');
+  if (message.type !== OFFSCREEN_MODEL_REQUEST) throw new Error('Unsupported model transport operation.');
+  if (!message.request || typeof message.request !== 'object' || Array.isArray(message.request)) {
+    throw new Error('Malformed model worker request.');
+  }
+  return {
+    type: OFFSCREEN_MODEL_REQUEST,
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: modelRequestId(message.requestId, 'Model transport'),
+    request: message.request,
+  };
+}
+
+export function parseModelResponseEnvelope(value: unknown): OffscreenModelResponseEnvelope {
+  if (!value || typeof value !== 'object') throw new Error('Malformed model transport response.');
+  const message = value as Record<string, unknown>;
+  if (message.protocol !== OFFSCREEN_PARSER_PROTOCOL_VERSION) throw new Error('Unsupported model transport protocol.');
+  if (message.type !== OFFSCREEN_MODEL_RESPONSE) throw new Error('Unsupported model transport response.');
+  if (!message.response || typeof message.response !== 'object' || Array.isArray(message.response)) {
+    throw new Error('Malformed model worker response.');
+  }
+  return {
+    type: OFFSCREEN_MODEL_RESPONSE,
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: modelRequestId(message.requestId, 'Model transport'),
+    response: message.response,
+  };
+}
+
+export function parseModelDisposeEnvelope(value: unknown): OffscreenModelDisposeEnvelope {
+  if (!value || typeof value !== 'object') throw new Error('Malformed model dispose request.');
+  const message = value as Record<string, unknown>;
+  if (message.protocol !== OFFSCREEN_PARSER_PROTOCOL_VERSION) throw new Error('Unsupported model transport protocol.');
+  if (message.type !== OFFSCREEN_MODEL_DISPOSE) throw new Error('Unsupported model dispose operation.');
+  return {
+    type: OFFSCREEN_MODEL_DISPOSE,
+    protocol: OFFSCREEN_PARSER_PROTOCOL_VERSION,
+    requestId: modelRequestId(message.requestId, 'Model dispose'),
+  };
+}

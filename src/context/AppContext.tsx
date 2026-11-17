@@ -17,9 +17,11 @@ import type { VaultStatus } from '@/services/vaultClientTypes';
 import type {
   ActivityItem,
   DocumentUploadProgress,
+  DocumentExtractionSummary,
   DocumentUploadResult,
-  DriveConnection,
   ExtensionConnection,
+  ModelSelfTestResult,
+  ModelStatusSnapshot,
   Preferences,
   User,
   VaultDocument,
@@ -46,7 +48,6 @@ interface AppContextValue {
   fields: VaultField[];
   activity: ActivityItem[];
   preferences: Preferences;
-  driveConnection: DriveConnection;
   extensionConnection: ExtensionConnection;
   createVault: (input: { name: string; passphrase: string }) => Promise<VaultRecord>;
   migratePlaintextVault: (passphrase: string) => Promise<VaultRecord | null>;
@@ -57,9 +58,7 @@ interface AppContextValue {
   signup: (name: string, email: string, password: string) => Promise<User>;
   logout: () => void;
   handleAuthSuccess: (token: string, initialUser?: User) => Promise<void>;
-  refreshDrive: () => Promise<DriveConnection>;
   updateProfile: (user: User) => void;
-  addDriveDocuments: (files: Array<{ id: string; name: string; category: DocumentCategoryLike; subcategory: string }>) => Promise<VaultDocument[]>;
   uploadDocuments: (
     files: File[],
     options?: { onProgress?: (event: DocumentUploadProgress) => void },
@@ -73,11 +72,18 @@ interface AppContextValue {
   updateField: (id: string, value: string) => Promise<void>;
   deleteField: (id: string) => Promise<void>;
   resolveConflict: (id: string, value: string) => Promise<void>;
+  verifyField: (id: string) => Promise<void>;
+  extractDocument: (id: string, useAi?: boolean) => Promise<DocumentExtractionSummary>;
+  modelStatus: ModelStatusSnapshot | null;
+  refreshModelStatus: () => Promise<ModelStatusSnapshot | null>;
+  installModel: () => Promise<void>;
+  cancelModelInstall: () => Promise<void>;
+  removeModel: () => Promise<void>;
+  selfTestModel: () => Promise<ModelSelfTestResult>;
+  cancelInference: () => Promise<void>;
   updatePreferences: (preferences: Preferences) => Promise<void>;
   refreshData: () => Promise<void>;
 }
-
-type DocumentCategoryLike = VaultDocument['category'];
 
 const AppContext = createContext<AppContextValue | null>(null);
 
@@ -93,17 +99,6 @@ function deriveUser(profile: Awaited<ReturnType<typeof profileService.getProfile
     accountType: profile.accountType,
   };
 }
-
-const disconnectedDrive: DriveConnection = {
-  connected: false,
-  accountEmail: '',
-  targetFolder: '',
-  storageUsed: '',
-  storageTotal: '',
-  lastSync: 'Not connected',
-  permissions: [],
-  isDemo: false,
-};
 
 const disconnectedExtension: ExtensionConnection = {
   installed: false,
@@ -127,6 +122,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [documents, setDocuments] = useState<VaultDocument[]>([]);
   const [fields, setFields] = useState<VaultField[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatusSnapshot | null>(null);
   const [preferences, setPreferences] = useState<Preferences>({
     confirmBeforeAutofill: true,
     requireSensitiveReview: true,
@@ -137,8 +133,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     compactMode: false,
     autoLockMinutes: 15,
     ocrLanguage: 'eng',
+    autoDownloadModel: true,
   });
-  const [drive] = useState<DriveConnection>(disconnectedDrive);
   const [extension] = useState<ExtensionConnection>(disconnectedExtension);
   const { toast } = useToast();
   const lockTimer = useRef<number | null>(null);
@@ -217,6 +213,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setAuthError(null);
       setServiceStatus('online');
       void vaultService.touch();
+      void vaultClient.modelStatus().then(setModelStatus).catch(() => undefined);
     } catch (error) {
       const code = (error as { code?: string }).code;
       clearSensitive();
@@ -251,6 +248,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // If the worker is still terminated, the vault locks and requires unlock.
     return vaultClient.keepAlive();
   }, []);
+
+  const refreshModelStatus = useCallback(async (): Promise<ModelStatusSnapshot | null> => {
+    try {
+      const status = await vaultClient.modelStatus();
+      setModelStatus(status);
+      return status;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (vaultState !== 'unlocked') return;
+    void refreshModelStatus();
+  }, [vaultState, refreshModelStatus]);
+
+  useEffect(() => {
+    if (!modelStatus) return;
+    if (!['downloading', 'verifying', 'initializing'].includes(modelStatus.status)) return;
+    const timer = window.setInterval(() => { void refreshModelStatus(); }, 1500);
+    return () => window.clearInterval(timer);
+  }, [modelStatus?.status, refreshModelStatus]);
 
   const createVault = useCallback(async (input: { name: string; passphrase: string }) => {
     const record = await vaultService.createVault(input);
@@ -316,16 +335,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await loadData();
   }, [loadData]);
 
-  const refreshDrive = useCallback(async () => disconnectedDrive, []);
-
   const updateProfile = useCallback((nextUser: User) => {
     void profileService.saveProfile({ name: nextUser.name, email: nextUser.email }).then(() => {
       setUser(nextUser);
       toast({ tone: 'success', title: 'Profile updated', message: 'Saved to your encrypted local vault.' });
     });
   }, [toast]);
-
-  const addDriveDocuments = useCallback(async () => [], []);
 
   const uploadDocuments = useCallback(async (
     files: File[],
@@ -380,6 +395,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: 'Documents stored securely',
         message: `${accepted.length} document(s) and their extracted text were encrypted in this vault.`,
       });
+      if (preferences.autoDownloadModel !== false && modelStatus?.status === 'not_installed') {
+        void vaultClient.installModel()
+          .then(() => refreshModelStatus())
+          .catch((error) => {
+            toast({
+              tone: 'error',
+              title: 'Local model download could not start',
+              message: error instanceof Error ? error.message : 'Open Settings → Local AI to retry.',
+            });
+          });
+      }
     }
     if (duplicates.length) {
       toast({
@@ -399,7 +425,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast({ tone: 'info', title: 'Import cancelled', message: 'No partial document or text was committed.' });
     }
     return { accepted, acceptedIndices, duplicates, rejected, cancelled };
-  }, [loadData, toast]);
+  }, [loadData, toast, modelStatus?.status, refreshModelStatus, preferences.autoDownloadModel]);
 
   const cancelDocumentUpload = useCallback(async (importId?: string) => {
     uploadCancelled.current = true;
@@ -470,6 +496,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toast({ tone: 'success', title: 'Conflict resolved', message: 'Preferred value selected.' });
   }, [loadData, toast]);
 
+  const verifyField = useCallback(async (id: string) => {
+    await vaultClient.verifyField(id);
+    await loadData();
+    toast({ tone: 'success', title: 'Value verified', message: 'This value is now user-verified.' });
+  }, [loadData, toast]);
+
+  const extractDocument = useCallback(async (id: string, useAi = true): Promise<DocumentExtractionSummary> => {
+    const summary = await vaultClient.extractDocument(id, useAi);
+    await loadData();
+    toast({
+      tone: summary.warnings.length ? 'info' : 'success',
+      title: 'Profile extraction complete',
+      message: `${summary.candidates} value(s) linked from this document${summary.conflicts ? ` · ${summary.conflicts} conflict(s) to review` : ''}${summary.aiUsed ? ' · local AI assisted' : ''}${summary.warnings.length ? ` · ${summary.warnings[0]!.slice(0, 240)}` : ''}.`,
+    });
+    return summary;
+  }, [loadData, toast]);
+
+  const installModel = useCallback(async () => {
+    try {
+      await vaultClient.installModel();
+      await refreshModelStatus();
+      toast({ tone: 'info', title: 'Local model download started', message: 'You can keep using the dashboard while it downloads.' });
+    } catch (error) {
+      toast({
+        tone: 'error',
+        title: 'Could not start the model download',
+        message: error instanceof Error ? error.message : 'Check local storage and retry from Settings → Local AI.',
+      });
+      throw error;
+    }
+  }, [refreshModelStatus, toast]);
+
+  const cancelModelInstall = useCallback(async () => {
+    await vaultClient.cancelModelInstall();
+    await refreshModelStatus();
+    toast({ tone: 'info', title: 'Model download cancelled', message: 'Partial files are cleaned up before the next attempt.' });
+  }, [refreshModelStatus, toast]);
+
+  const removeModel = useCallback(async () => {
+    await vaultClient.removeModel();
+    await refreshModelStatus();
+    toast({ tone: 'success', title: 'Local model removed', message: 'Your vault data was not changed.' });
+  }, [refreshModelStatus, toast]);
+
+  const selfTestModel = useCallback(async (): Promise<ModelSelfTestResult> => {
+    const result = await vaultClient.selfTestModel();
+    await refreshModelStatus();
+    return result;
+  }, [refreshModelStatus]);
+
+  const cancelInference = useCallback(async () => {
+    await vaultClient.cancelInference();
+    await refreshModelStatus();
+    toast({ tone: 'info', title: 'Local inference cancelled' });
+  }, [refreshModelStatus, toast]);
+
   const updatePreferences = useCallback(async (next: Preferences) => {
     const saved = await settingsService.updatePreferences(next);
     setPreferences(saved);
@@ -510,7 +592,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fields,
     activity,
     preferences,
-    driveConnection: drive,
     extensionConnection: extension,
     createVault,
     migratePlaintextVault,
@@ -521,9 +602,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     signup,
     logout,
     handleAuthSuccess,
-    refreshDrive,
     updateProfile,
-    addDriveDocuments,
     uploadDocuments,
     cancelDocumentUpload,
     retryDocument,
@@ -534,14 +613,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateField,
     deleteField,
     resolveConflict,
+    verifyField,
+    extractDocument,
+    modelStatus,
+    refreshModelStatus,
+    installModel,
+    cancelModelInstall,
+    removeModel,
+    selfTestModel,
+    cancelInference,
     updatePreferences,
     refreshData: loadData,
   }), [
     vault, vaultStatus, vaultState, user, authState, serviceStatus, authError, authLoading, dataLoading,
-    checkHealth, documents, fields, activity, preferences, drive, extension, createVault, migratePlaintextVault,
-    unlockVault, lockVault, changePassphrase, login, signup, logout, handleAuthSuccess, refreshDrive,
-    updateProfile, addDriveDocuments, uploadDocuments, cancelDocumentUpload, retryDocument, removeDocument, renameDocument,
-    unlinkDocument, addField, updateField, deleteField, resolveConflict, updatePreferences, loadData,
+    checkHealth, documents, fields, activity, preferences, extension, createVault, migratePlaintextVault,
+    unlockVault, lockVault, changePassphrase, login, signup, logout, handleAuthSuccess,
+    updateProfile, uploadDocuments, cancelDocumentUpload, retryDocument, removeDocument, renameDocument,
+    unlinkDocument, addField, updateField, deleteField, resolveConflict, verifyField, extractDocument,
+    modelStatus, refreshModelStatus, installModel, cancelModelInstall, removeModel, selfTestModel, cancelInference,
+    updatePreferences, loadData,
   ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -1,14 +1,24 @@
 # FormFlow
 
-> **Migration status:** Phase 4.1.4.2 DOCX rendering fidelity and complete image extraction is complete. The Chrome extension owns the canonical encrypted vault. The extension dashboard and popup share one IndexedDB vault under the extension origin, with per-record authenticated AES-256-GCM encryption, encrypted labels, filenames and vault display names, versioned migrations, background-only DEK authorization, atomic lock draining, a v3 authenticated backup header, atomic journaled restore, integrity checking, and hardened encrypted backup/import. A service-worker termination now locks the vault because the DEK is never stored in extension-readable storage. The localhost dashboard remains a development and migration surface. Local PDF, DOCX, and TXT text extraction runs in a hidden Chrome offscreen document and request-scoped workers outside the service-worker key boundary. Scanned and image-only PDF pages are rendered locally and recognized with bundled Tesseract.js assets. Phase 4.1.3 adds a versioned encrypted `DocumentStructure`; Phase 4.1.4 adds genuine automatic, browser-local DOCX physical pagination using a font-backed renderer, cross-page paragraph/table fragment mappings, and section-aware header/footer metadata. Existing explicit-break, Word-reported-break, and logical fallbacks remain. Phase 4.1.4.1 adds embedded/theme font evidence, structured image blocks, exact line/row/cell geometry, multi-column geometry, a Word-reference comparison harness, and clean React Router 7.18.5/esbuild 0.25.12 dependency audits. Phase 4.1.4.2 fixes nested-table and mixed-font pagination through general table-width and font-vertical-metric corrections, and adds structured images for table cells, nested cells, and header/footer source placements with inherited physical-page appearances. No document content leaves the browser. ONNX/model downloads, AI field extraction, and autofill intelligence remain future phases. See [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md), [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md), [`docs/PHASE_4_1_4_PAGINATION_VALIDATION.md`](docs/PHASE_4_1_4_PAGINATION_VALIDATION.md), [`docs/PHASE_4_1_4_PERFORMANCE.md`](docs/PHASE_4_1_4_PERFORMANCE.md), and [`docs/PHASE_4_1_4_1_WORD_REFERENCE.md`](docs/PHASE_4_1_4_1_WORD_REFERENCE.md).
+FormFlow is a local-first document intelligence and review-before-fill form assistant. It runs as a Chrome Manifest V3 extension with a React dashboard, an extension popup, a background service worker, an isolated offscreen document, request-scoped parser workers, and a local Qwen3-0.6B ONNX model.
 
-FormFlow is a personal document intelligence and form-filling platform. This repository contains:
+Documents, extracted text, the personal profile, conflicts, collections, history, and model metadata stay on the device. The vault is encrypted with AES-256-GCM using a PBKDF2-SHA256-wrapped data key. The service worker remains the only vault-key authority.
 
-- A React + TypeScript dashboard built from the supplied `Design FIles` references.
-- A shared design system and responsive application shell.
-- A local IndexedDB document vault, personal information vault, collections, activity history, and settings.
-- A real Manifest V3 Chrome extension with on-demand form detection, field classification, review, and autofill.
-- A Node.js + SQLite API that is retained for legacy data migration and development, but is no longer required by the migrated dashboard features.
+No user document or profile value is sent to an external AI, cloud OCR, or document-storage service. The only network request made by the local AI feature is the explicitly configured public model-asset download from Hugging Face.
+
+## Status
+
+Implemented end to end:
+
+- Encrypted local vault, atomic lock/unlock, passphrase rotation, integrity checks, and encrypted v3 backup/restore.
+- Local PDF, DOCX, and TXT ingestion, page-aware extraction, local OCR, and structured document layout.
+- First-run local model download with progress, SHA-256 verification, cancellation, retry, repair, removal, and self-test.
+- Local-only inference in an isolated offscreen-hosted worker, with WASM execution, bounded context/tokens/timeouts, idle unload, and cancellation.
+- Deterministic profile extraction plus grounded local-AI candidates with encrypted provenance.
+- Profile review, source evidence, verification state, conflict detection, and structured education/employment/address/skill records.
+- Extension field detection, deterministic matching, optional local-AI matching for ambiguous labels, review UI, explicit approval, safe autofill, and no auto-submit.
+
+See the consolidated completion report: [`docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md`](docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md).
 
 ## Quick start
 
@@ -19,193 +29,122 @@ npm run build:extension
 
 Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `extension/dist`. Open the extension dashboard at `chrome-extension://<extension-id>/dashboard.html`, create an encrypted vault, and upload documents from your device.
 
-For development of the React UI, `npm run dev` serves the same app at `http://localhost:5173`. The localhost origin is for development and encrypted-archive migration; production vault data belongs to the extension origin.
+The local AI model is offered on first run. By default it starts downloading after the first successful document upload; it can also be started manually from **Settings → Local AI**. The verified INT8 model is about 734 MiB and is not bundled in the extension ZIP.
 
-### Production build
+For UI development, `npm run dev` serves the dashboard at `http://localhost:5173`. The localhost dashboard can migrate/import encrypted archives but uses a direct development vault client; model download and inference require the installed extension build.
 
-```bash
-npm run build
-npm run build:extension
-# or both
-npm run build:all
-```
-
-### API server
+## Build
 
 ```bash
-npm run server
+npm run build             # TypeScript check + dashboard production build
+npm run build:extension   # Chrome extension build in extension/dist
+npm run build:all         # both
 ```
 
-The API listens on `http://localhost:8787` by default and creates `server/formflow.db` using Node's built-in SQLite driver. Copy `.env.example` to `.env` for configuration. Set `AUTH_SECRET` in production.
+The extension build packages the dashboard, popup, background worker, content script, offscreen parser, parser worker, model worker, Transformers.js, ONNX Runtime Web WASM assets, OCR assets, and DOCX layout fonts. Build-time checks verify required files, SHA-256 hashes for bundled runtime assets, manifest references, CSP, and parser/vault isolation.
 
-### Tests
+## Local AI
 
-```bash
-npm test
-```
-
-This runs the local vault, per-record AAD, migration fault injection, quota/boundary, atomic restore, integrity, lock-coordination, session, metadata-privacy and hostile-backup tests, the extension classifier and form-adapter tests, and the legacy API integration tests.
-
-Browser-level verification of the final build:
-
-```bash
-CHROME_PATH="/path/to/Chrome for Testing" node scripts/dev/e2e-phase3.mjs
-```
-
-The Chromium E2E creates an encrypted vault, uploads a PDF, verifies the dashboard and popup cannot read a DEK, inspects IndexedDB for v2 ciphertext and encrypted vault names, swaps authenticated ciphertexts to confirm rejection, drains an 8 MB upload against a lock, rejects generic crypto/database operations, rotates the passphrase, verifies CSP and stored-XSS handling, rejects malformed and header-tampered backups, checks the restore journal, imports v3 and genuine v1/v2 archives, checks popup/dashboard locking and service-worker termination, and verifies persistence across a browser restart. Separate runtime suites kill Chromium during migration after a committed batch, disable/re-enable the extension in place, interrupt an active upload, and verify HTTP/HTTPS/Google Forms content-script isolation.
-
-## Chrome extension
-
-1. Build the extension:
-
-```bash
-npm run build:extension
-```
-
-2. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `extension/dist`.
-3. Start the dashboard with `npm run dev`, sign in, and open **Extension → Open demo form** (`http://localhost:5173/demo-form`).
-4. Click the FormFlow toolbar icon. The popup scans only the active tab, classifies fields, matches them against the selected demo collection, and shows a review list.
-5. Approve fields and fill. The extension never clicks submit.
-
-The extension requests only `activeTab`, `scripting`, and `storage`. It has no broad host permissions and does not inject a persistent content script.
-
-## Implemented product areas
-
-### Dashboard
-
-- Sign up, login, forgot password, demo login, session handling.
-- Seven-step onboarding: welcome, Drive demo authorization, document selection, simulated processing, extracted-value review, extension setup, completion.
-- Overview with vault status, recent documents, recent activity, Drive/extension cards, and quick actions.
-- Document vault with search, category/status filters, list/grid views, upload, Drive picker, preview, rename, remove, retry, unlink, and metadata.
-- Personal information vault: personal profile, addresses, education, employment, skills/certifications.
-- Manual value creation, editing, deletion, source attribution, conflict resolution, and sensitive-field labeling.
-- Collections with document membership, notes, shared references, and retrieval preview.
-- Autofill history with filters, detail view, CSV export, and clear-history controls.
-- Settings for profile, connections, autofill safeguards, local data export/reset, and account deletion.
-- Demo application form with a working extension-style review panel, grounded long-answer drafting, autofill highlighting, and explicit submit.
-
-### Chrome extension
-
-- Popup UI with connected/disconnected, scanning, no-form, detected, review, complete, error, history, and settings states.
-- Deterministic field classification from labels, names, IDs, placeholders, ARIA labels, autocomplete, and input types.
-- Collection-scoped matching against the bundled demo vault.
-- Confidence bands, sensitive-field review, conflicting-value selection, inline editing, and skip/accept controls.
-- Native value setters and input/change/keyup events for React-controlled and dynamic fields.
-- Select option matching and graceful failure reporting.
-- Local extension history and settings.
-- No auto-submit.
-
-### API and database
-
-The API uses `node:http` and `node:sqlite` with no runtime framework dependencies.
-
-Entities:
-
-- `users`
-- `documents`
-- `fields`
-- `field_conflicts`
-- `collections`
-- `collection_documents`
-- `activity`
-- `preferences`
-- `form_sessions`
-- `ai_usage`
-
-Every document, field, collection, preference, and history query is scoped by the authenticated user ID. Foreign keys and cascading deletes are enabled.
-
-Key endpoints:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | `/api/auth/signup` | Create account |
-| POST | `/api/auth/login` | Password login |
-| POST | `/api/auth/demo` | Demo session |
-| GET | `/api/auth/me` | Current user |
-| GET/POST | `/api/documents` | List/create documents |
-| PATCH/DELETE | `/api/documents/:id` | Rename/remove document |
-| POST | `/api/documents/:id/process` | Run extraction pipeline |
-| GET | `/api/fields` | List vault values |
-| PATCH/DELETE | `/api/fields/:id` | Edit/remove value |
-| POST | `/api/fields/:id/resolve` | Resolve conflict |
-| GET/POST | `/api/collections` | List/create collections |
-| PATCH/DELETE | `/api/collections/:id` | Update/delete collection |
-| GET | `/api/activity` | Activity feed |
-| GET/POST | `/api/history` | Form sessions |
-| GET/PUT | `/api/preferences` | User preferences |
-| GET | `/api/extension/bootstrap` | Extension retrieval payload |
-| DELETE | `/api/account` | Password-confirmed, cascading account deletion |
-
-### AI pipeline
-
-`server/ai.mjs` implements a single modular extraction pipeline:
-
-1. Document text validation and size limits.
-2. Deterministic rule-based extraction by default.
-3. Optional OpenAI-compatible provider selected through environment variables.
-4. Structured fact normalization and validation.
-5. Confidence calculation with explicit caps.
-6. Source page/document attribution.
-7. Conflict detection that never overwrites user-verified values.
-8. Persistence and AI usage recording.
-
-Provider secrets are server-only. Document text is treated as untrusted data and the provider prompt explicitly instructs the model to ignore embedded instructions.
-
-## Real vs. legacy integrations
-
-| Area | Status |
+| Item | Value |
 |---|---|
-| React dashboard | Real, working at the extension origin and on localhost for development |
-| Local vault | Real encrypted IndexedDB under the extension origin |
-| Chrome extension | Real MV3 extension, locally built and browser-tested |
-| Form detection/classification/autofill | Real browser-side implementation |
-| Typed extension protocol | Real request/response router with trusted-sender checks |
-| SQLite API | Legacy and development only; not required by the extension vault |
-| Legacy password auth | Legacy API only; production access uses the local vault passphrase |
-| Google OAuth / Drive API | **Not connected.** Legacy source files remain but the extension vault workflow does not use them. |
-| PDF/DOCX/TXT text extraction | **Implemented locally in an isolated offscreen document.** Signature/content validation, page-aware extraction, encrypted persistence, scanned-PDF detection, and extraction status. |
-| Structured extraction | **Implemented deterministically in Phase 4.1.3.** Versioned sections, headings, paragraphs, lists, tables, reading order, page references, provenance, and OCR geometry are encrypted inside the existing extraction record. No LLM or semantic field extraction is used. |
-| DOCX pagination | **Phase 4.1.4.2:** automatic physical pagination runs locally in the parser worker with `@docx-editor.dev/core`, embedded/preferred fonts where admitted, packaged Carlito/Liberation substitutes with normalized typo vertical metrics, and HarfBuzz. Tables with automatic widths are normalized from their authored grid or available cell width; nested tables no longer collapse to content-minimum columns. Pages, cross-page fragments, exact line/row/cell boxes, body/table/header/footer image placements, section metadata, and multi-column geometry are recorded as `renderer_derived_physical`. Explicit-break, Word-reported-break, and logical fallbacks remain. A Word-PDF comparison harness exists; Word compatibility is not claimed without actual Word references. Output is not marked `verified_physical`. |
-| OCR | **Implemented locally for English scanned PDF pages.** PDF pages requiring OCR are rendered in the isolated offscreen document and processed by bundled Tesseract.js worker/core/language assets. Recognized text, line/word confidence, and bounding boxes are encrypted with the existing extraction record. No external OCR service is used. |
-| AI provider | **Not used in production.** Legacy server-side provider code remains; the extension does not call external AI. |
-| Dashboard → API wiring | **Not used.** The dashboard reads and writes the local vault. |
-| Extension → API auth | **Not used.** The popup reads the extension vault through controlled background messaging. |
+| Model | `onnx-community/Qwen3-0.6B-Instruct-ONNX` |
+| Revision | `54250909aca286a05b9d013c8af7a21859ee6ead` |
+| Artifact | INT8 `onnx/model_quantized.onnx` |
+| Runtime | ONNX Runtime Web / WASM (WebGPU detected but not used for the verified Q8 build) |
+| Total download | 769,882,900 bytes (~734 MiB) |
+| Storage | Extension-origin Cache Storage (`formflow-model-cache-v1`) |
+| Metadata | IndexedDB `modelMetadata` |
+| License | Apache-2.0 |
 
-## Security notes
+The model worker loads only from the verified local cache. It does not fall back to a remote provider or a remote model file. Model files are hashed during download and verified before loading; corrupt or incomplete assets are marked `corrupt`/`not_installed` and cannot be reported as ready.
 
-- Vault contents, document blobs, personal values, collections, history, and profile records are encrypted with AES-256-GCM.
-- PBKDF2-SHA256 derives a key-encryption key from the vault passphrase; a random data key is wrapped by it.
-- The passphrase and plaintext data key are never written to IndexedDB or `chrome.storage.local`.
-- The data key is held only in service-worker memory and is cleared on lock or service-worker termination.
-- PDF, DOCX, and TXT parsers run in a hidden offscreen document with no vault, database, encryption, storage, or vault-client imports. The offscreen document cannot invoke general background vault operations; it has only a narrow parser port. OCR runs in the same isolated environment using only locally bundled Tesseract.js assets.
-- The offscreen document and parser workers receive only document bytes and non-secret parser fields. They never receive the DEK, KEK, passphrase, AAD, or vault session.
-- Locking blocks dashboard access, profile reads, document access, export, and autofill.
-- Extension messages require a protocol version, request ID, known operation, and validated payload.
-- Only extension-owned pages are accepted as privileged senders; arbitrary webpages and content scripts cannot query the vault.
-- Content scripts receive only the specific values the user approved for the current page.
-- Autofill requires explicit approval for sensitive fields and never submits forms.
-- Google Drive, external AI, cloud storage, and remote synchronization are not part of the production vault workflow.
-- Losing the vault passphrase makes the vault unrecoverable; there is no recovery mechanism in this phase.
+The offscreen document owns the model worker because an MV3 service worker cannot create Web Workers. Only validated prompts and non-secret work requests cross the narrow offscreen port. The offscreen document has no vault key, passphrase, AAD, or IndexedDB access.
+
+Details: [`docs/LOCAL_MODEL.md`](docs/LOCAL_MODEL.md).
+
+## End-to-end workflow
+
+1. Create and unlock a local vault.
+2. Enter or import personal information.
+3. Upload PDF, DOCX, or TXT documents.
+4. Documents are parsed locally in the isolated offscreen environment.
+5. Deterministic extraction immediately links profile values with source page/block/evidence.
+6. The local model installs on first run (or from Settings).
+7. On demand, the model adds grounded candidates; deterministic values cannot be overridden.
+8. Review extracted values, source evidence, verification state, and conflicts.
+9. Open a supported form in Chrome.
+10. The popup detects fields and runs deterministic matching first.
+11. Ambiguous fields can be sent to the local model for matching; every AI suggestion requires review.
+12. Approve individual or multiple fields, then fill.
+13. FormFlow verifies that the page accepted each value and never clicks submit.
+
+Details: [`docs/USER_WORKFLOW.md`](docs/USER_WORKFLOW.md).
+
+## Security boundaries
+
+- AES-256-GCM with per-record authenticated AAD; PBKDF2-SHA256 at 600,000 iterations; random wrapped DEK.
+- The DEK exists only in service-worker memory and is cleared on lock, service-worker termination, or browser restart.
+- The offscreen document and parser/model workers never receive the DEK, KEK, passphrase, AAD, vault session, or direct vault authority.
+- Parser workers cannot create child workers and have a runtime IndexedDB guard.
+- Extension messages require a protocol version, request ID, known operation, validated payload, and trusted extension sender.
+- Autofill sends only the approved values for the active operation. It never submits forms, bypasses authentication/CAPTCHA, or scans unrelated page content.
+- Sensitive fields require explicit review. The page cannot read the vault.
+- Google Drive document storage and external AI provider calls were removed. Legacy OAuth sign-in code in the development server requests identity scopes only.
+
+See [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md).
+
+## Tests
+
+```bash
+npm test                  # typecheck + local/unit + extension + server tests
+npm run typecheck
+npm run test:local
+npm run test:extension
+npm run test:server
+```
+
+Browser verification (use a Chrome/Chromium binary that supports MV3 extensions):
+
+```bash
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase3.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase4-ingestion.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase4-interruption.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-recovery-crash.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-content-isolation.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-router-navigation.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase42-model.mjs
+```
+
+Parser fault-injection tests require a test-hooks build:
+
+```bash
+FORMFLOW_TEST_HOOKS=1 npm run build:extension
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase4-offscreen.mjs
+npm run build:extension   # restore the production build
+```
+
+The model E2E seeds the real Hugging Face model files into extension Cache Storage through a local fixture server, then exercises the real installer, SHA-256 verification, offscreen transport, WASM inference, offline inference, AI extraction, provenance, and AI field matching. It does not mock inference. It does not measure a live internet download.
+
+## Legacy development server
+
+`npm run server` starts an optional local Node/SQLite API used only for legacy archive migration and development. The production extension vault does not depend on it. External AI providers and Google Drive endpoints were removed. Configure the legacy server with `.env.example`.
+
+## Documentation
+
+- [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) — phase history and migration state.
+- [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md) — encryption, isolation, and AI boundaries.
+- [`docs/LOCAL_MODEL.md`](docs/LOCAL_MODEL.md) — model lifecycle, storage, integrity, and performance.
+- [`docs/USER_WORKFLOW.md`](docs/USER_WORKFLOW.md) — complete product workflow.
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — model, ingestion, and autofill recovery.
+- [`docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md`](docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md) — feature completion report and remaining defects.
+- [`docs/FORMFLOW_FINAL_STABILIZATION_REPORT.md`](docs/FORMFLOW_FINAL_STABILIZATION_REPORT.md) — stabilization, security review, regression results, and commit status.
 
 ## Known limitations
 
-- Structural metadata (record IDs, field keys, categories, statuses, sizes, MIME types, checksums, vault name) remains plaintext by design.
-- PDF, DOCX, and TXT text extraction is local, page-aware, and isolated in the offscreen parser. Local OCR is available for English scanned PDF pages; AI field extraction is not implemented.
-- Structured layout is deterministic and heuristic. It does not claim perfect table reconstruction, reading order, or semantic understanding; uncertain layout is reported with warnings and the original file remains authoritative.
-- DOCX physical pagination is renderer-derived, not independently verified against Microsoft Word. Automatic line/table layout runs locally with embedded fonts only when the renderer admits them, then exact/local faces, then metric-compatible Carlito/Liberation substitutes with normalized typo vertical metrics, then deterministic fallback. The 22-fixture LibreOffice corpus now matches page counts on all 22 fixtures and 1,108/1,117 block ranges; the only boundary differences are 9 body paragraphs in the header/footer-image fixture while its page count matches. See the reference-rendered corpus report for measured differences.
-- Structured DOCX image blocks cover body, table-cell, nested-table-cell, and header/footer source placements. Inherited header/footer images are one source block with repeated physical-page `appearances`, not one block per page. External/linked images are never fetched, and image bytes never enter `DocumentStructure`.
-- Line and cell boxes are exact renderer geometry. Column/page/section assignment and used-column heights can be approximate and are explicitly labeled. Large documents may truncate line/cell geometry while retaining top-level page mappings.
-- OCR supports English (`eng`) only in this phase. Additional languages require bundled, SHA-256-verified trained data.
-- OCR accuracy depends on scan quality, resolution, rotation, and layout. It does not reconstruct complex tables or guarantee exact character-level output.
-- Offscreen documents and parser workers share the extension origin. They have no vault authority and a runtime IndexedDB guard, but they are not a separate sandboxed origin.
-- DOCX `DocumentStructure.pages` remains a logical page for compatibility; physical page metadata is stored separately in `pagination` and `docxLayout`. If the local renderer fails, the explicit-break/reported-break/logical fallback is preserved.
-- Complex PDF/DOCX layout is normalized to text; the encrypted original file is retained for fidelity.
-- Encrypted backup import requires a target with no documents, values, or collections and an unmodified default profile; the archive's profile replaces the local profile.
-- The backup format is a JSON envelope with base64 document payloads and a 200 MB import limit.
-- Auto-lock runs in the dashboard and the extension alarm; perfect memory erasure is not possible in JavaScript.
-- The legacy Google Drive, backend auth, and AI source files remain in the repository but are not part of the extension vault workflow.
-- The localhost dashboard is a development and migration surface, not a production privileged client.
-
-## Design references
-
-The supplied `Design FIles` directory is treated as the visual source of truth and was not modified. The implementation follows the Precision Vault palette, Inter typography, compact information density, source attribution, and extension review patterns from those references.
+- The verified model is a 0.6B INT8 model. It can miss fields, especially on weak or unusual documents. Only source-grounded values are accepted, and every AI candidate requires review.
+- WASM inference on the target 8 GB Apple Silicon machine is usable for small focused extractions but slower than native CPU: approximately 27–67 seconds for the verified resume extraction in browser runs, depending on host load. Input context is bounded to 120,000 characters for profile extraction and 4,000 characters for AI context; output is capped at 160 new tokens.
+- WebGPU is detected and recorded, but the verified Q8 artifact runs on WASM. Q4F16 WebGPU remains an opt-in experiment and is not exposed as the default.
+- Automatic Word/Microsoft 365 compatibility remains unverified because genuine Word reference outputs are unavailable. `verified_physical` pagination is not claimed.
+- OCR supports bundled English (`eng`) assets only.
+- Model upgrade/migration across different model repositories is not implemented; the current model can be verified, repaired, reinstalled, or removed.
+- Legacy Google sign-in in the development server is not part of the extension product and does not grant document-storage access.

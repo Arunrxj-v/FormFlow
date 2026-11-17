@@ -29,7 +29,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { DocumentStructureView } from '@/components/documents/DocumentStructureView';
 import { useToast } from '@/context/ToastContext';
 import { documentService as localDocumentService } from '@/services/documentService';
-import type { DocumentTextResult, VaultDocument } from '@/services/types';
+import type { DocumentTextResult, VaultDocument, VaultField } from '@/services/types';
 
 interface DocumentInspectorProps {
   document: VaultDocument;
@@ -38,6 +38,9 @@ interface DocumentInspectorProps {
   onRename?: () => void;
   onUnlink: () => void;
   onOpenRecord: () => void;
+  linkedFields?: VaultField[];
+  onExtract?: () => Promise<unknown>;
+  onCancelExtract?: () => Promise<void>;
 }
 
 type TabType = 'preview' | 'structure' | 'facts' | 'history';
@@ -49,9 +52,13 @@ export function DocumentInspector({
   onRename,
   onUnlink,
   onOpenRecord,
+  linkedFields = [],
+  onExtract,
+  onCancelExtract,
 }: DocumentInspectorProps) {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<TabType>('preview');
+  const [extracting, setExtracting] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [downloading, setDownloading] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -130,6 +137,18 @@ export function DocumentInspector({
       await localDocumentService.openInBrowser(document.id);
     } catch (error) {
       toast({ tone: 'error', title: 'Preview failed', message: error instanceof Error ? error.message : 'Original file is unavailable.' });
+    }
+  };
+
+  const handleExtract = async () => {
+    if (!onExtract) return;
+    setExtracting(true);
+    try {
+      await onExtract();
+    } catch {
+      // The app-level toast reports the failure; keep the inspector usable.
+    } finally {
+      setExtracting(false);
     }
   };
 
@@ -383,6 +402,67 @@ export function DocumentInspector({
       {/* TAB 3: Facts & Entities */}
       {activeTab === 'facts' && (
         <div className="ff-scroll" style={{ maxHeight: 320, paddingRight: 2 }}>
+          <div className="ff-row ff-between ff-mb-8" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <div className="ff-body-sm ff-muted">
+              {linkedFields.length} profile value{linkedFields.length === 1 ? '' : 's'} linked to this document
+              {linkedFields.some((field) => field.extractionMethod === 'ai') ? ' · local AI assisted' : ''}
+            </div>
+            {onExtract ? (
+              <div className="ff-row ff-gap-6">
+                <Button variant="secondary" size="sm" icon={Sparkles} loading={extracting} onClick={() => void handleExtract()}>
+                  Extract profile values
+                </Button>
+                {extracting && onCancelExtract ? (
+                  <Button variant="ghost" size="sm" onClick={() => void onCancelExtract()}>Cancel</Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          {linkedFields.length > 0 ? (
+            <div className="ff-stack ff-gap-6 ff-mb-10">
+              <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>
+                Linked Vault Values ({linkedFields.length})
+              </span>
+              {linkedFields.map((field) => (
+                <div
+                  key={field.id}
+                  className="ff-row ff-between"
+                  style={{ padding: '6px 8px', borderRadius: 6, background: 'var(--ff-surface-low)', border: '1px solid var(--ff-border)' }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="ff-row ff-gap-4" style={{ flexWrap: 'wrap' }}>
+                      <span className="ff-label" style={{ fontSize: 10 }}>{field.label}</span>
+                      <Badge tone={field.verificationStatus === 'user_verified' ? 'success' : 'neutral'}>
+                        {field.verificationStatus === 'user_verified' ? 'Verified' : 'Extracted'}
+                      </Badge>
+                      {field.source.page ? <span className="ff-code" style={{ fontSize: 9 }}>p.{field.source.page}</span> : null}
+                      {field.extractionMethod === 'ai' ? <span className="ff-code" style={{ fontSize: 9 }}>local AI</span> : null}
+                      {field.conflicts?.length ? <Badge tone="warning">Conflict</Badge> : null}
+                    </div>
+                    <div className="ff-body-sm ff-truncate" style={{ fontWeight: 500, marginTop: 1 }} title={field.value}>{field.value}</div>
+                    {field.source.evidence ? (
+                      <div className="ff-body-sm ff-muted" style={{ fontSize: 10, fontStyle: 'italic', marginTop: 2 }}>
+                        “{field.source.evidence.length > 120 ? `${field.source.evidence.slice(0, 120)}…` : field.source.evidence}”
+                      </div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="ff-btn ff-btn--icon-sm"
+                    style={{ border: 0, background: 'transparent' }}
+                    onClick={() => copyFact(field.key, field.value)}
+                    title="Copy value"
+                  >
+                    {copiedKey === field.key ? <Check size={13} style={{ color: 'var(--ff-success)' }} /> : <Copy size={13} />}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="ff-note ff-mb-10">
+              No profile values are linked to this document yet. Extract now to run deterministic rules first, then the local AI model when it is installed.
+            </div>
+          )}
           {entities.length > 0 ? (
             <div className="ff-stack ff-gap-6">
               <span className="ff-uppercase" style={{ fontSize: 9, color: 'var(--ff-text-secondary)' }}>
@@ -422,9 +502,7 @@ export function DocumentInspector({
                 </div>
               ))}
             </div>
-          ) : (
-            <div className="ff-note">No structured facts are extracted in Phase 4.1. Text extraction results are shown below; field extraction belongs to a later phase.</div>
-          )}
+          ) : null}
 
           {warnings.length ? (
             <div className="ff-mt-10">

@@ -20,6 +20,7 @@ import {
 } from '../documents/validation';
 import type { DocumentParseResult, DocumentParser } from '../documents/parsers/types';
 import { sanitizeMetadata, sanitizeWarnings } from '../documents/text-utils';
+import { extractDocumentInformation } from './extraction-service';
 
 export type DocumentIngestionStage =
   | 'validating'
@@ -387,6 +388,12 @@ export async function ingestDocument(
       // The document and text are already committed. Activity is secondary.
     }
 
+    try {
+      await extractDocumentInformation(documentId);
+    } catch {
+      // Document import is complete; deterministic profile extraction is secondary.
+    }
+
     report(progress, 'completed', 100, result.ocrRequired
       ? 'Document stored. Some pages still require OCR.'
       : result.ocr?.status === 'completed'
@@ -462,6 +469,12 @@ export async function retryDocumentExtraction(
               : 'Text extracted locally.',
       },
     );
+    try {
+      await extractDocumentInformation(documentId);
+    } catch {
+      // Refreshed text is stored; profile extraction is secondary.
+    }
+
     report(progress, 'completed', 100, result.ocrRequired
       ? 'Extraction refreshed. Some pages still require OCR.'
       : result.ocr?.status === 'completed'

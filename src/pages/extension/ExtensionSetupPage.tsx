@@ -42,7 +42,7 @@ const steps = [
     icon: MousePointerClick,
     title: 'Review before you fill',
     body: 'Open any supported form, invoke the extension, review every suggested field, and approve the fill. The content script never receives the whole vault.',
-    code: 'Alt+Shift+F',
+    code: 'Toolbar icon',
   },
 ];
 
@@ -184,7 +184,7 @@ export function ExtensionSetupPage() {
               <div className="ff-info-pair"><span>Dashboard origin</span><span>{typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:' ? 'chrome-extension://' : 'localhost (development)'}</span></div>
               <div className="ff-info-pair"><span>Vault</span><span>{vaultStatus?.unlocked ? 'Unlocked' : 'Locked'}</span></div>
               <div className="ff-info-pair"><span>Encryption</span><span>{vaultStatus?.encrypted ? 'AES-256-GCM' : 'Not enabled'}</span></div>
-              <div className="ff-info-pair"><span>Shortcut</span><span className="ff-code">Alt + F</span></div>
+              <div className="ff-info-pair"><span>Open popup</span><span className="ff-code">Toolbar icon</span></div>
             </div>
             <div className="ff-note ff-mt-12">The popup and dashboard use the same extension-owned vault. Content scripts never receive the full vault.</div>
           </Card>
