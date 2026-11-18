@@ -59,6 +59,8 @@ const VERSION = chrome.runtime.getManifest().version;
 const AUTO_LOCK_ALARM = 'formflow-auto-lock';
 const activeDocumentImports = new Map<string, AbortController>();
 const documentProgressPorts = new Map<string, chrome.runtime.Port>();
+const SCAN_APPROVAL_TTL_MS = 10 * 60_000;
+const scanApprovals = new Map<string, { tabId: number; url: string; scanToken: string; expiresAt: number }>();
 
 /**
  * OCR language is chosen only from assets bundled and integrity-checked at
@@ -131,6 +133,7 @@ async function publishVaultState(state: 'locked' | 'unlocked' | 'locking'): Prom
 const operationCoordinator = new VaultOperationCoordinator({
   lockTimeoutMs: 60_000,
   onChange: (state) => {
+    if (state === 'locked') scanApprovals.clear();
     void publishVaultState(state);
     void refreshBadge();
   },
@@ -232,13 +235,43 @@ async function scanPage(): Promise<{ tab: chrome.tabs.Tab; scan: ScanPayload }> 
   return { tab, scan: response.data };
 }
 
-async function fillPage(fills: Array<{ index: number; value: string }>) {
+function issueScanApproval(tab: chrome.tabs.Tab, scan: ScanPayload): string | undefined {
+  if (!tab.id || !tab.url || !scan.scanToken) return undefined;
+  const token = `approval_${crypto.randomUUID()}`;
+  scanApprovals.set(token, {
+    tabId: tab.id,
+    url: tab.url,
+    scanToken: scan.scanToken,
+    expiresAt: Date.now() + SCAN_APPROVAL_TTL_MS,
+  });
+  for (const [key, value] of scanApprovals) {
+    if (value.expiresAt <= Date.now()) scanApprovals.delete(key);
+  }
+  return token;
+}
+
+function consumeScanApproval(token: string): { tabId: number; url: string; scanToken: string } {
+  const approval = scanApprovals.get(token);
+  scanApprovals.delete(token);
+  if (!approval) throw new Error('The scan approval is missing or was already used. Rescan the form.');
+  if (approval.expiresAt <= Date.now()) throw new Error('The scan approval expired. Rescan the form.');
+  return approval;
+}
+
+async function fillPage(fills: Array<{ index: number; value: string }>, approvalToken: string) {
+  const approval = consumeScanApproval(approvalToken);
   const tab = await activeTab();
+  if (!tab.id || tab.id !== approval.tabId) {
+    throw new Error('The active tab changed after scanning. Rescan the form.');
+  }
+  if (tab.url !== approval.url) {
+    throw new Error('The page changed after scanning. Rescan the form.');
+  }
   if (!isSupported(tab.url)) throw new Error('This page cannot be filled.');
-  await ensureContentScript(tab.id!);
+  await ensureContentScript(tab.id);
   const response = await sendTabMessage<{ ok: boolean; data: unknown; error?: string }>(
-    tab.id!,
-    { type: 'FORMFLOW_FILL', fills, requestId: `fill_${Date.now()}` },
+    tab.id,
+    { type: 'FORMFLOW_FILL', fills, scanToken: approval.scanToken, requestId: `fill_${Date.now()}` },
     6000,
   );
   if (!response?.ok) throw new Error(response?.error ?? 'The page did not accept the autofill request.');
@@ -855,6 +888,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return {
         tab: { id: tab.id, url: tab.url, title: tab.title },
         scan,
+        approvalToken: issueScanApproval(tab, scan),
         matches: buildSuggestions(await vaultRepository.listFields(), scan.fields, {
           allowLongAnswers: preferences.allowLongAnswers,
         }),
@@ -869,6 +903,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return {
         tab: { id: tab.id, url: tab.url, title: tab.title },
         scan,
+        approvalToken: issueScanApproval(tab, scan),
         matches: buildSuggestions(fields, scan.fields, {
           allowLongAnswers: preferences.allowLongAnswers,
         }),
@@ -933,11 +968,12 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     }
     case MESSAGE.FILL_ACTIVE_TAB: {
       await ensureUnlocked();
+      const approvalToken = requireString(payload, 'approvalToken', 1, 160);
       const fills = Array.isArray(payload.fills) ? payload.fills : [];
       const normalized = fills
         .filter((item): item is { index: number; value: string } => Boolean(item && typeof item === 'object' && Number.isInteger((item as { index?: unknown }).index) && typeof (item as { value?: unknown }).value === 'string'))
         .slice(0, 500);
-      return fillPage(normalized);
+      return fillPage(normalized, approvalToken);
     }
     case MESSAGE.RECORD_HISTORY: {
       await ensureUnlocked();

@@ -20,7 +20,7 @@ The stabilization pass found and fixed defect classes in:
 - Model install storage reservation and silent install failure feedback.
 - Tracked legacy personal upload fixtures in the current Git index.
 
-The production test suite passes: **213 tests, 213 pass, 0 fail**. Type checking, dashboard build, extension build, and production dependency audit pass. Chromium regression suites pass, including the real local-model workflow under normal-to-moderate host load.
+The production test suite passes: **216 tests, 216 pass, 0 fail**. Type checking, dashboard build, extension build, and production dependency audit pass. Chromium regression suites pass, including the real local-model workflow under normal-to-moderate host load.
 
 No external AI/Drive/telemetry path exists in the production client. Model inference is local after installation. No critical or high runtime defect remains in the reviewed scope.
 
@@ -115,13 +115,13 @@ All issues above except the historical Git exposure, dev-only Vite advisory, unv
 
 ### Automated suites
 
-- `npm test`: **213 tests, 213 pass, 0 fail**.
-  - Local/unit: 188 pass across 25 suites.
-  - Extension: 13 pass.
+- `npm test`: **216 tests, 216 pass, 0 fail**.
+  - Local/unit: 189 pass across 25 suites.
+  - Extension: 15 pass.
   - Server: 12 pass.
 - `npm run typecheck`: pass.
 - `npm run build`: pass (Vite large-chunk warning only).
-- `npm run build:extension`: pass — 111 files, 51,039.1 KB.
+- `npm run build:extension`: pass — 111 files, 51,041.0 KB.
 - `npm audit --omit=dev`: 0 vulnerabilities.
 - `npm audit`: 4 high dev-only findings (Vite/fdir/picomatch/tinyglobby).
 
@@ -159,7 +159,7 @@ Final model E2E run at host load ~20 (Apple Silicon, 8 GB target):
 | Candidates | 13 total, 2 accepted AI-method |
 | Offline inference | Passed |
 | Model download size | 769,882,900 bytes (~734 MiB) |
-| Extension build | 111 files, 51,039.1 KB (~49.8 MiB) |
+| Extension build | 111 files, 51,041.0 KB (~49.8 MiB) |
 | Dashboard build | 62 files, 3.7 MB |
 | Node Q8 CPU reference | 2.6 s load / 0.76 s inference |
 | Large single-line document extraction bound | 120,000 chars, 2,000-char line wrapping; pathological 8 MB input no longer hangs |
@@ -193,7 +193,7 @@ Earlier normal-load model runs measured 8.3 s self-test (4.7 s load, 3.6 s infer
 
 ## 11. Build sizes
 
-- Extension: 111 files, 51,039.1 KB. Largest assets include ONNX Runtime WASM (~26 MB), parser worker (4.6 MB), offscreen parser (1.7 MB), and Transformers.js (574 KB). Model weights are not bundled.
+- Extension: 111 files, 51,041.0 KB. Largest assets include ONNX Runtime WASM (~26 MB), parser worker (4.6 MB), offscreen parser (1.7 MB), and Transformers.js (574 KB). Model weights are not bundled.
 - Dashboard: 3.7 MB across 62 files; main JS chunk ~744 KB, PDF worker ~1.2 MB, PDF chunk ~501 KB, Mammoth ~305 KB. Vite warns about chunks >500 KB; no functional failure.
 - Extension background: ~286 KB; popup: ~174 KB; content script: ~20 KB; model worker: ~7.7 KB.
 

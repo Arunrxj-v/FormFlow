@@ -27,6 +27,8 @@ export interface ScanUploadFieldPayload {
 
 export interface ScanPayload {
   url: string;
+  /** Content-script instance token; fill must echo this exact scan. */
+  scanToken?: string;
   title: string;
   adapter?: string;
   isGoogleForms?: boolean;

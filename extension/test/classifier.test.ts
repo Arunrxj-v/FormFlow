@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   classifyField,
   generateGroundedAnswer,
+  optionMatches,
   kindToVaultKey,
   matchOption,
   extractBranchFromDegree,
@@ -32,6 +33,22 @@ test('classifies common form labels deterministically', () => {
   assert.equal(classifyField({ label: 'Passport number' }).sensitive, true);
   assert.equal(classifyField({ label: 'Registration number' }).kind, 'registrationNumber');
   assert.equal(classifyField({ label: 'Why are you interested in this role?' }).kind, 'longAnswer');
+});
+
+test('classifies fields even when the same token appears in label, name, and id', () => {
+  assert.equal(classifyField({ label: 'Country', name: 'country', id: 'country', type: 'select' }).kind, 'country');
+  assert.equal(classifyField({ label: 'City', name: 'city', id: 'city' }).kind, 'city');
+  assert.equal(classifyField({ label: 'State', name: 'state', id: 'state' }).kind, 'state');
+  assert.equal(classifyField({ label: 'Name', name: 'name', id: 'name' }).kind, 'fullName');
+});
+
+test('option matching does not treat a substring inside another word as a match', () => {
+  assert.equal(optionMatches('Male', 'Male'), true);
+  assert.equal(optionMatches('Female', 'Male'), false);
+  assert.equal(optionMatches('Female', 'Female'), true);
+  assert.equal(optionMatches('TypeScript', 'TypeScript'), true);
+  assert.equal(matchOption('Male', ['Female'], 'gender'), null);
+  assert.equal(matchOption('Male', ['Male', 'Female'], 'gender')?.match, 'Male');
 });
 
 test('unknown fields are not falsely matched', () => {

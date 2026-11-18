@@ -196,7 +196,7 @@ Final production-model E2E run (Chromium 156, Apple Silicon, 8 GB):
 | Extracted candidates | 13 total, 2 accepted AI-method |
 | Offline inference | Passed |
 | Model download size | 769,882,900 bytes |
-| Production extension build | 111 files, 51,039.1 KB (~49.8 MiB) |
+| Production extension build | 111 files, 51,041.0 KB (~49.8 MiB) |
 | Node CPU Q8 reference | 2.6 s load / 0.76 s inference |
 | Large single-line document extraction bound | 120,000 chars, overlong lines split at 2,000 chars; pathological 8 MB single-line input no longer hangs |
 
@@ -204,9 +204,9 @@ Timings vary with CPU load and first-time WASM compilation. The earlier unreliab
 
 ## 9. Test results
 
-- `npm test`: **213 tests, 213 pass, 0 fail** across 27 suites.
-  - Local/unit: 188 pass.
-  - Extension: 13 pass.
+- `npm test`: **216 tests, 216 pass, 0 fail** across 27 suites.
+  - Local/unit: 189 pass.
+  - Extension: 15 pass.
   - Server: 12 pass.
 - `npm run typecheck`: pass.
 - `npm run build`: pass (dashboard). Vite warns about large chunks; no failure.

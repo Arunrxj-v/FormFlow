@@ -105,6 +105,7 @@ export function Popup() {
   const [matches, setMatches] = useState<MatchSuggestion[]>([]);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
+  const [approvalToken, setApprovalToken] = useState<string | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
   const [overrides, setOverrides] = useState<Record<number, string>>({});
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -159,12 +160,14 @@ export function Popup() {
     setError('');
     setResult(null);
     setAiMessage('');
+    setApprovalToken(null);
     try {
-      const data = await send<{ tab: { url: string; title: string }; scan: ScanPayload; matches: MatchSuggestion[]; collections: Collection[] }>(
+      const data = await send<{ tab: { url: string; title: string }; scan: ScanPayload; approvalToken?: string; matches: MatchSuggestion[]; collections: Collection[] }>(
         MESSAGE.GET_FORM_SUGGESTIONS,
         { collectionId: nextCollectionId },
       );
       setScan(data.scan);
+      setApprovalToken(data.approvalToken ?? null);
       setMatches(data.matches);
       setTabTitle(data.tab.title || data.scan.title);
       setTabUrl(data.tab.url || data.scan.url);
@@ -176,6 +179,7 @@ export function Popup() {
       setScan(null);
       setMatches([]);
       setSelected([]);
+      setApprovalToken(null);
       setError(err instanceof Error ? err.message : 'Unable to scan this page.');
     } finally {
       setScanning(false);
@@ -331,6 +335,10 @@ export function Popup() {
       setError('Confirm that you reviewed the sensitive values before filling.');
       return;
     }
+    if (!approvalToken) {
+      setError('The scan approval is missing. Rescan the form before filling.');
+      return;
+    }
     setFilling(true);
     setError('');
     try {
@@ -339,7 +347,7 @@ export function Popup() {
         .map((match) => ({ index: match.index, value: valueFor(match).trim() }));
       const data = await send<{ result: { filled: number; failed: number; skipped: Array<{ index: number; reason: string }> } }>(
         MESSAGE.FILL_ACTIVE_TAB,
-        { fills },
+        { fills, approvalToken },
       );
       setResult(data.result);
       setView('complete');

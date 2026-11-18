@@ -7,6 +7,21 @@ declare global {
   }
 }
 
+let lastScanToken: string | null = null;
+let lastScanFingerprint = '';
+
+function formFingerprint(): string {
+  const controls = Array.from(document.querySelectorAll<HTMLElement>('input, textarea, select, [role="textbox"], [role="radio"], [role="checkbox"], [role="listbox"]'));
+  return controls.map((element) => [
+    element.tagName.toLowerCase(),
+    element.getAttribute('type') ?? '',
+    element.getAttribute('name') ?? '',
+    element.getAttribute('id') ?? '',
+    element.getAttribute('aria-label') ?? '',
+    element.getAttribute('placeholder') ?? '',
+  ].join(':')).join('|') + `|forms:${document.forms.length}`;
+}
+
 try {
   window.__formflowInjected = true;
   window.__formflowReady = true;
@@ -29,7 +44,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
         const scanData = defaultAdapterRegistry.scan(document);
-        sendResponse({ ok: true, data: scanData, requestId });
+        lastScanToken = crypto.randomUUID();
+        lastScanFingerprint = formFingerprint();
+        sendResponse({ ok: true, data: { ...scanData, scanToken: lastScanToken }, requestId });
       } catch (error) {
         sendResponse({
           ok: false,
@@ -45,7 +62,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'FORMFLOW_FILL' || message?.type === 'FILL') {
     (async () => {
       try {
+        if (typeof message.scanToken !== 'string' || !lastScanToken || message.scanToken !== lastScanToken) {
+          sendResponse({ ok: false, error: 'The page changed after scanning. Rescan the form before filling.', requestId });
+          return;
+        }
+        if (formFingerprint() !== lastScanFingerprint) {
+          sendResponse({ ok: false, error: 'The form changed after scanning. Rescan the form before filling.', requestId });
+          return;
+        }
         const fills: FillRequestItem[] = Array.isArray(message.fills) ? message.fills : [];
+        lastScanToken = null;
         const result = await defaultAdapterRegistry.fill(fills, document);
         sendResponse({ ok: true, data: result, requestId });
       } catch (error) {

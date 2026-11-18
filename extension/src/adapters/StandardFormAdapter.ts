@@ -1,4 +1,4 @@
-import { classifyField } from '../lib/classifier.ts';
+import { classifyField, optionMatches } from '../lib/classifier.ts';
 import type {
   DetectedField,
   DetectedUploadField,
@@ -113,7 +113,9 @@ export class StandardFormAdapter implements FormAdapter {
         ),
         currentValue: isRoleTextbox ? (element.textContent ?? '') : (input.value ?? ''),
         options: element.tagName.toLowerCase() === 'select'
-          ? Array.from(element.querySelectorAll('option')).map((option) => option.textContent?.trim() ?? '').filter(Boolean)
+          ? Array.from(element.querySelectorAll('option'))
+            .map((option) => option.textContent?.trim() ?? '')
+            .filter((option) => option && !/^(choose|select)$/i.test(option))
           : undefined,
         selector,
       });
@@ -180,10 +182,8 @@ export class StandardFormAdapter implements FormAdapter {
         || element.getAttribute('aria-label')
         || element.value
         || '').trim().toLowerCase();
-      const targets = value.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-      const matches = targets.some((target) => optionLabel === target
-        || optionLabel.includes(target)
-        || target.includes(optionLabel));
+      const targets = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+      const matches = targets.some((target) => optionMatches(optionLabel, target));
       if (!matches) return false;
       if (!element.checked) element.click();
       return element.checked;

@@ -1,4 +1,4 @@
-import { classifyField, type FieldKind } from '../lib/classifier.ts';
+import { classifyField, optionMatches, type FieldKind } from '../lib/classifier.ts';
 import type {
   DetectedField,
   FillRequestItem,
@@ -421,11 +421,7 @@ export class GoogleFormsAdapter implements FormAdapter {
     // 1. Radio Button Group
     const radios = Array.from(container.querySelectorAll<HTMLElement>('[role="radio"]'));
     if (radios.length > 0) {
-      const targetOpt = radios.find((r) => {
-        const optText = this.getOptionText(r).toLowerCase();
-        const v = value.toLowerCase().trim();
-        return optText === v || optText.includes(v) || v.includes(optText);
-      });
+      const targetOpt = radios.find((r) => optionMatches(this.getOptionText(r), value));
 
       if (!targetOpt) return false;
 
@@ -445,7 +441,7 @@ export class GoogleFormsAdapter implements FormAdapter {
 
       for (const cb of checkboxes) {
         const optText = this.getOptionText(cb).toLowerCase();
-        const shouldCheck = targetValues.some((tv) => optText === tv || optText.includes(tv) || tv.includes(optText));
+        const shouldCheck = targetValues.some((tv) => optionMatches(optText, tv));
         const isChecked = cb.getAttribute('aria-checked') === 'true';
 
         if (shouldCheck && !isChecked) {
@@ -485,11 +481,7 @@ export class GoogleFormsAdapter implements FormAdapter {
         options = Array.from(doc.querySelectorAll<HTMLElement>('[role="option"]'));
       }
 
-      const matchOpt = options.find((opt) => {
-        const text = (opt.getAttribute('data-value') || opt.textContent || '').trim().toLowerCase();
-        const v = value.toLowerCase().trim();
-        return text === v || text.includes(v) || v.includes(text);
-      });
+      const matchOpt = options.find((opt) => optionMatches(opt.getAttribute('data-value') || opt.textContent || '', value));
 
       if (matchOpt) {
         this.dispatchUserClick(matchOpt);

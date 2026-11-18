@@ -14,15 +14,15 @@ const rules: Array<{ kind: FieldKind; sensitive?: boolean; patterns: RegExp[]; w
   { kind: 'phone', patterns: [/\bphone\b/i, /mobile/i, /telephone/i, /contact number/i, /whatsapp/i], weight: 96 },
   { kind: 'firstName', patterns: [/first name/i, /given name/i, /\bfname\b/i], weight: 97 },
   { kind: 'lastName', patterns: [/last name/i, /family name/i, /surname/i, /\blname\b/i], weight: 97 },
-  { kind: 'fullName', patterns: [/full name/i, /^name$/i, /your name/i, /applicant name/i, /candidate name/i, /student name/i], weight: 95 },
+  { kind: 'fullName', patterns: [/full name/i, /your name/i, /applicant name/i, /candidate name/i, /student name/i], weight: 95 },
   { kind: 'dateOfBirth', sensitive: true, patterns: [/date of birth/i, /\bdob\b/i, /birth date/i, /birthday/i], weight: 98 },
   { kind: 'gender', patterns: [/\bgender\b/i, /\bsex\b/i], weight: 95 },
   { kind: 'nationality', patterns: [/nationality/i, /citizenship/i], weight: 96 },
   { kind: 'address', patterns: [/address line 1/i, /street address/i, /^address$/i, /residential address/i, /mailing address/i], weight: 94 },
-  { kind: 'city', patterns: [/^city$/i, /town/i, /district/i], weight: 94 },
-  { kind: 'state', patterns: [/^state$/i, /province/i, /region/i], weight: 92 },
+  { kind: 'city', patterns: [/\bcity\b/i, /\btown\b/i, /\bdistrict\b/i], weight: 94 },
+  { kind: 'state', patterns: [/\bstate\b/i, /\bprovince\b/i, /\bregion\b/i], weight: 92 },
   { kind: 'postalCode', patterns: [/postal code/i, /zip code/i, /\bzip\b/i, /pin code/i, /pincode/i], weight: 96 },
-  { kind: 'country', patterns: [/^country$/i, /country of residence/i, /nation/i], weight: 92 },
+  { kind: 'country', patterns: [/\bcountry\b/i, /\bnation\b/i], weight: 92 },
   { kind: 'branch', patterns: [/\bbranch\b/i, /\bmajor\b/i, /\bdepartment\b/i, /\bdiscipline\b/i, /field of study/i, /stream/i, /specialization/i], weight: 96 },
   { kind: 'semester', patterns: [/\bsemester\b/i, /\bsem\b/i, /year of study/i, /current term/i, /trimester/i], weight: 96 },
   { kind: 'registrationNumber', sensitive: true, patterns: [/registration number/i, /registration no/i, /roll number/i, /roll no/i, /enrolment/i, /enrollment/i, /student id/i, /matriculation/i], weight: 94 },
@@ -58,6 +58,9 @@ export function classifyField(input: {
 
   if (input.type === 'email') return { kind: 'email', confidence: 99, sensitive: false };
   if (input.type === 'tel') return { kind: 'phone', confidence: 99, sensitive: false };
+  if ((input.label ?? '').trim().toLowerCase() === 'name') {
+    return { kind: 'fullName', confidence: 95, sensitive: false };
+  }
 
   let best: { kind: FieldKind; confidence: number; sensitive: boolean } = { kind: 'unknown', confidence: 0, sensitive: false };
   for (const rule of rules) {
@@ -140,6 +143,23 @@ const ROMAN_NUMERALS: Record<string, number> = {
  * Compares a stored vault value against a list of options available on the form.
  * Returns the exact matching option string or null if ambiguous/not found.
  */
+export function normalizeOptionText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+export function optionMatches(optionText: string, storedValue: string): boolean {
+  const option = normalizeOptionText(optionText);
+  const target = normalizeOptionText(storedValue);
+  if (!option || !target) return false;
+  return option === target || option.replace(/\s+/g, '') === target.replace(/\s+/g, '');
+}
+
+function containsAsWords(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, 'i').test(haystack);
+}
+
 export function matchOption(
   storedValue: string,
   options: string[],
@@ -212,12 +232,12 @@ export function matchOption(
     const optWords = lowerOpt.split(/\s+/).filter((w) => w.length >= 3);
 
     // If option contains full target string or target contains full option string
-    if (lowerTarget.includes(lowerOpt) && lowerOpt.length >= 4) {
+    if (containsAsWords(lowerTarget, lowerOpt) && lowerOpt.length >= 4) {
       const score = lowerOpt.length / lowerTarget.length;
       if (!bestMatch || score > bestMatch.score) {
         bestMatch = { match: opt, score };
       }
-    } else if (lowerOpt.includes(lowerTarget) && lowerTarget.length >= 4) {
+    } else if (containsAsWords(lowerOpt, lowerTarget) && lowerTarget.length >= 4) {
       const score = lowerTarget.length / lowerOpt.length;
       if (!bestMatch || score > bestMatch.score) {
         bestMatch = { match: opt, score };
