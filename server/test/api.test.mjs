@@ -251,6 +251,27 @@ test('preferences and history round-trip', async () => {
   assert.ok(typeof sync.body.synced === 'number');
 });
 
+test('CORS allows only the configured dashboard origin', async () => {
+  const allowed = await fetch(`http://localhost:${port}/api/health`, {
+    headers: { origin: 'http://localhost:5173' },
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+
+  const rejected = await fetch(`http://localhost:${port}/api/health`, {
+    headers: { origin: 'https://evil.example' },
+  });
+  assert.equal(rejected.status, 403);
+  assert.equal(rejected.headers.get('access-control-allow-origin'), null);
+
+  const preflight = await fetch(`http://localhost:${port}/api/health`, {
+    method: 'OPTIONS',
+    headers: { origin: 'http://localhost:5173' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+});
+
 test('removed cloud routes are not available', async () => {
   for (const [path, method, body] of [
     ['/api/drive/status', 'GET', undefined],

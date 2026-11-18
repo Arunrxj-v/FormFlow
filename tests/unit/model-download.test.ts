@@ -103,7 +103,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input, init);
 }) as typeof fetch;
 
-const { downloadFile } = await import('../../ai/runtime/model-loader');
+const { downloadFile, modelLoader } = await import('../../ai/runtime/model-loader');
 
 test('a mid-stream failure persists verified bytes but never reports success', async () => {
   cacheStore.clear();
@@ -198,6 +198,16 @@ test('cancellation removes partial bytes', async () => {
     () => downloadFile(variant, 0, 0, () => undefined, controller.signal),
     /cancelled/i,
   );
+  assert.equal([...cacheStore.keys()].filter((key) => key.includes('formflow-model-part=')).length, 0);
+});
+
+test('failed installs can clear stale resumable chunks for the variant', async () => {
+  cacheStore.clear();
+  const q8File = 'onnx/model_quantized.onnx';
+  const q8Url = `https://huggingface.co/onnx-community/Qwen3-0.6B-Instruct-ONNX/resolve/54250909aca286a05b9d013c8af7a21859ee6ead/${q8File}`;
+  await memoryCache.put(`${q8Url}?formflow-model-part=0`, new Response('chunk', { headers: { 'content-length': '5' } }));
+  await memoryCache.put(`${q8Url}?formflow-model-part=1`, new Response('chunk', { headers: { 'content-length': '5' } }));
+  await modelLoader.clearIncomplete('q8');
   assert.equal([...cacheStore.keys()].filter((key) => key.includes('formflow-model-part=')).length, 0);
 });
 

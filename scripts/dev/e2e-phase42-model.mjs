@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 const MODEL_CACHE_NAME = 'formflow-model-cache-v1';
 const MODEL_REPOSITORY = 'onnx-community/Qwen3-0.6B-Instruct-ONNX';
@@ -30,6 +31,41 @@ const freshInstall = process.env.FORMFLOW_MODEL_E2E_FRESH === '1';
 let context;
 let server;
 let failures = 0;
+let rssTimer = null;
+let rssPeak = 0;
+let phasePeak = 0;
+
+function chromeRssMb() {
+  try {
+    const output = execFileSync('ps', ['-Ao', 'rss=,command='], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    let totalKb = 0;
+    for (const line of output.split('\n')) {
+      if (!line.includes(userDataDir)) continue;
+      const match = line.trim().match(/^(\d+)/);
+      if (match) totalKb += Number(match[1]);
+    }
+    return totalKb > 0 ? Math.round(totalKb / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+
+function startRssSampling() {
+  const sample = () => {
+    const value = chromeRssMb();
+    if (value === null) return;
+    rssPeak = Math.max(rssPeak, value);
+    phasePeak = Math.max(phasePeak, value);
+  };
+  sample();
+  rssTimer = setInterval(sample, 500);
+}
+
+function markPhase(label) {
+  const value = chromeRssMb();
+  console.log(`MEMORY ${label}: current ${value ?? 'unavailable'} MB; phase peak ${phasePeak} MB; run peak ${rssPeak} MB`);
+  phasePeak = value ?? 0;
+}
 
 const check = (label, condition, detail = '') => {
   console.log(`${condition ? 'PASS' : 'FAIL'} ${label}${detail ? ` :: ${String(detail).slice(0, 500)}` : ''}`);
@@ -103,6 +139,8 @@ try {
   if (!worker) worker = await context.waitForEvent('serviceworker', { timeout: 15000 });
   const id = new URL(worker.url()).host;
   const page = await context.newPage();
+  startRssSampling();
+  markPhase('after-browser-start');
   await page.goto(`chrome-extension://${id}/dashboard.html#/setup`, { waitUntil: 'load' });
   await page.waitForSelector('input[placeholder="e.g. Personal applications"]');
   await page.fill('input[placeholder="e.g. Personal applications"]', 'Phase 4.2 model vault');
@@ -111,6 +149,7 @@ try {
   await page.click('button:has-text("Create encrypted vault")');
   await page.waitForURL(/#\/dashboard$/);
   check('vault created', true);
+  markPhase('after-vault-creation');
 
   const resume = [
     'Full Name: Arun Raj',
@@ -192,6 +231,7 @@ try {
   }
   const installMs = Date.now() - installStart;
   check('model install verified and became ready', status?.status === 'installed' || status?.status === 'ready', `${status?.status} ${status?.record?.error ?? ''}`);
+  markPhase('after-model-install');
   console.log(`Model install + SHA-256 verification: ${(installMs / 1000).toFixed(1)}s`);
 
   const statusLatencyStart = Date.now();
@@ -203,6 +243,7 @@ try {
   const selfTestMs = Date.now() - selfTestStart;
   check('real local model self-test succeeded', selfTest?.ok === true && selfTest.data?.ok === true, selfTest?.data?.message ?? selfTest?.error);
   console.log(`Self-test: ${(selfTestMs / 1000).toFixed(1)}s; load ${selfTest?.data?.loadMs ?? '?'}ms; inference ${selfTest?.data?.latencyMs ?? '?'}ms`);
+  markPhase('after-self-test');
 
   await context.setOffline(true);
   const offlineInfer = await message(page, 'model_offline_infer', 'INFER', {
@@ -216,10 +257,12 @@ try {
   check('local inference works with the browser offline', offlineInfer?.ok === true && typeof offlineInfer.data?.text === 'string', offlineInfer?.error ?? offlineInfer?.data?.text?.slice(0, 120));
 
   const extractStart = Date.now();
+  phasePeak = 0;
   const extraction = await message(page, 'model_extract', 'EXTRACT_DOCUMENT', { documentId, useAi: true });
   const extractMs = Date.now() - extractStart;
   check('AI-assisted document extraction completed', extraction?.ok === true && extraction.data?.aiUsed === true, extraction?.error ?? JSON.stringify(extraction?.data?.warnings));
   console.log(`AI-assisted extraction: ${(extractMs / 1000).toFixed(1)}s; ${extraction?.data?.candidates ?? 0} candidates; ${extraction?.data?.ai ?? 0} AI candidates`);
+  markPhase('after-ai-extraction');
 
   const fields = await message(page, 'model_fields_after', 'LIST_FIELDS');
   const aiFields = fields?.data?.filter((field) => field.extractionMethod === 'ai') ?? [];
@@ -242,11 +285,15 @@ try {
   check('document extraction populated structured education records', profileRecords?.ok === true
     && profileRecords.data.some((record) => record.degree === 'B.Tech Computer Science' && record.documentId === documentId), JSON.stringify(profileRecords?.data));
 
-  await page.screenshot({ path: path.join(root, 'docs', 'phase-4-2-model-e2e.png'), fullPage: false }).catch(() => undefined);
+  // Keep diagnostic screenshots inside the disposable profile so they never
+  // become tracked documentation or release artifacts.
+  await page.screenshot({ path: path.join(userDataDir, 'phase-4-2-model-e2e.png'), fullPage: false }).catch(() => undefined);
 } catch (error) {
   console.error(error);
   failures += 1;
 } finally {
+  if (rssTimer) clearInterval(rssTimer);
+  console.log(`MEMORY overall peak: ${rssPeak} MB (sum of Chrome processes for this profile; not a per-worker heap)`);
   await context?.close().catch(() => undefined);
   await new Promise((resolve) => server?.close(resolve) ?? resolve());
   await rm(userDataDir, { recursive: true, force: true });

@@ -80,6 +80,9 @@ interface AppContextValue {
   cancelModelInstall: () => Promise<void>;
   removeModel: () => Promise<void>;
   selfTestModel: () => Promise<ModelSelfTestResult>;
+  upgradeModel: () => Promise<{ ok: boolean; message: string }>;
+  cancelModelUpgrade: () => Promise<{ cancelled: boolean }>;
+  rollbackModel: () => Promise<{ ok: boolean; message: string }>;
   cancelInference: () => Promise<void>;
   updatePreferences: (preferences: Preferences) => Promise<void>;
   refreshData: () => Promise<void>;
@@ -546,6 +549,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return result;
   }, [refreshModelStatus]);
 
+  const upgradeModel = useCallback(async () => {
+    const result = await vaultClient.upgradeModel();
+    await refreshModelStatus();
+    toast({
+      tone: result.ok ? 'success' : 'info',
+      title: result.ok ? 'Model upgraded' : 'Model upgrade unavailable',
+      message: result.message,
+    });
+    return { ok: result.ok, message: result.message };
+  }, [refreshModelStatus, toast]);
+
+  const cancelModelUpgrade = useCallback(async () => {
+    const result = await vaultClient.cancelModelUpgrade();
+    await refreshModelStatus();
+    return result;
+  }, [refreshModelStatus]);
+
+  const rollbackModel = useCallback(async () => {
+    const result = await vaultClient.rollbackModel();
+    await refreshModelStatus();
+    toast({
+      tone: result.ok ? 'success' : 'error',
+      title: result.ok ? 'Model rolled back' : 'Rollback unavailable',
+      message: result.message,
+    });
+    return { ok: result.ok, message: result.message };
+  }, [refreshModelStatus, toast]);
+
   const cancelInference = useCallback(async () => {
     await vaultClient.cancelInference();
     await refreshModelStatus();
@@ -621,6 +652,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cancelModelInstall,
     removeModel,
     selfTestModel,
+    upgradeModel,
+    cancelModelUpgrade,
+    rollbackModel,
     cancelInference,
     updatePreferences,
     refreshData: loadData,
@@ -630,7 +664,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     unlockVault, lockVault, changePassphrase, login, signup, logout, handleAuthSuccess,
     updateProfile, uploadDocuments, cancelDocumentUpload, retryDocument, removeDocument, renameDocument,
     unlinkDocument, addField, updateField, deleteField, resolveConflict, verifyField, extractDocument,
-    modelStatus, refreshModelStatus, installModel, cancelModelInstall, removeModel, selfTestModel, cancelInference,
+    modelStatus, refreshModelStatus, installModel, cancelModelInstall, removeModel, selfTestModel,
+    upgradeModel, cancelModelUpgrade, rollbackModel, cancelInference,
     updatePreferences, loadData,
   ]);
 

@@ -28,24 +28,43 @@ function fail(requestId: string, code: Extract<ModelWorkerResponse, { type: 'err
   post({ protocol: MODEL_WORKER_PROTOCOL_VERSION, type: 'error', requestId, code, message: message.slice(0, 1_000) });
 }
 
-async function configureTransformers(): Promise<any> {
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function configureTransformers(variantId: 'q8' | 'q4f16'): Promise<any> {
   const transformersUrl = new URL('transformers.min.js', scope.location.href).href;
   const transformers = await import(transformersUrl);
   const cache = await caches.open(MODEL_CACHE_NAME);
+  const variant = variantById(variantId);
   const revisionConfig = await cache.match(resolveModelUrl('config.json'));
   if (!revisionConfig) {
     const keys = await cache.keys();
     throw new Error(`Local model cache is not visible to the isolated model worker (${keys.length} cached request(s)).`);
   }
   // transformers.js 4.3.2 discovers text-generation files by reading
-  // config.json without forwarding the pipeline revision. Keep an alias of the
-  // same verified bytes at the main-revision key so discovery cannot fail.
+  // config.json without forwarding the pipeline revision. Re-hash the pinned
+  // revision files here and rebuild the main-revision aliases from those bytes
+  // rather than trusting an alias that may have been altered on disk.
   for (const alias of ['config.json', 'tokenizer_config.json']) {
-    const mainUrl = resolveModelUrl(alias, 'main');
-    if (!(await cache.match(mainUrl))) {
-      const revisionResponse = await cache.match(resolveModelUrl(alias));
-      if (revisionResponse) await cache.put(mainUrl, revisionResponse.clone());
+    const expected = variant.files.find((file) => file.path === alias);
+    const revisionResponse = await cache.match(resolveModelUrl(alias));
+    if (!expected || !revisionResponse) {
+      throw new Error(`The verified model file ${alias} is missing from the local cache.`);
     }
+    const bytes = await revisionResponse.clone().arrayBuffer();
+    if (bytes.byteLength !== expected.size) {
+      throw new Error(`The verified model file ${alias} has an unexpected size.`);
+    }
+    if (expected.sha256 && await sha256Hex(bytes) !== expected.sha256) {
+      throw new Error(`The verified model file ${alias} failed integrity verification.`);
+    }
+    const mainUrl = resolveModelUrl(alias, 'main');
+    await cache.delete(mainUrl);
+    await cache.put(mainUrl, new Response(bytes, {
+      headers: { 'content-type': revisionResponse.headers.get('content-type') ?? 'application/json' },
+    }));
   }
   transformers.env.allowRemoteModels = false;
   transformers.env.allowLocalModels = true;
@@ -83,7 +102,7 @@ async function loadModel(requestId: string, variantId: 'q8' | 'q4f16'): Promise<
     const started = performance.now();
     const variant = variantById(variantId);
     if (variant.runtime !== 'wasm') throw new Error('Only the verified WASM model artifact is supported in this build.');
-    const transformers = await configureTransformers();
+    const transformers = await configureTransformers(variant.id);
     if (generator) {
       try {
         await generator.dispose();
@@ -140,7 +159,7 @@ async function infer(request: Extract<ModelWorkerRequest, { type: 'infer' }>): P
   }
   const started = performance.now();
   let generatedTokens = 0;
-  const transformers = await configureTransformers();
+  const transformers = await configureTransformers('q8');
   const streamer = new transformers.TextStreamer(generator.tokenizer, {
     skip_prompt: true,
     skip_special_tokens: true,

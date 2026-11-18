@@ -46,7 +46,7 @@ const formHtml = (marker) => `<!doctype html>
 try {
   context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : process.env.CI ? { channel: 'chromium' } : {}),
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,

@@ -35,6 +35,15 @@ test('classifies common form labels deterministically', () => {
   assert.equal(classifyField({ label: 'Why are you interested in this role?' }).kind, 'longAnswer');
 });
 
+test('marks contact, address, birth date, and identification fields for extra review', () => {
+  assert.equal(classifyField({ label: 'Email address', type: 'email' }).sensitive, true);
+  assert.equal(classifyField({ label: 'Phone number', type: 'tel' }).sensitive, true);
+  assert.equal(classifyField({ label: 'Address line 1' }).sensitive, true);
+  assert.equal(classifyField({ label: 'Date of birth' }).sensitive, true);
+  assert.equal(classifyField({ label: 'Passport number' }).sensitive, true);
+  assert.equal(classifyField({ label: 'Full name' }).sensitive, false);
+});
+
 test('classifies fields even when the same token appears in label, name, and id', () => {
   assert.equal(classifyField({ label: 'Country', name: 'country', id: 'country', type: 'select' }).kind, 'country');
   assert.equal(classifyField({ label: 'City', name: 'city', id: 'city' }).kind, 'city');

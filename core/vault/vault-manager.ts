@@ -1,5 +1,5 @@
 import { FormFlowError, InvalidPasswordError, VaultLockedError } from '@shared/errors';
-import type { VaultMeta } from '@shared/types';
+import type { UnlockThrottleRecord, VaultMeta } from '@shared/types';
 import { ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS } from '@shared/constants';
 import { getDb, deleteDatabase } from '../database/database';
 import {
@@ -11,6 +11,20 @@ import {
 import { vaultSession } from './vault-session';
 
 const META_ID = 'meta';
+const UNLOCK_THROTTLE_ID = 'unlock-throttle' as const;
+const LOCKOUT_AFTER_ATTEMPTS = 3;
+const MAX_LOCKOUT_MS = 60_000;
+
+/**
+ * Progressive delay after repeated failures. The first two mistakes are not
+ * delayed; from the third failure the delay doubles up to one minute. The
+ * counter and lockout deadline are persisted in IndexedDB, so an MV3 worker
+ * restart, extension reload, or browser restart cannot reset the policy.
+ */
+export function lockoutDelayMsForAttempts(failedAttempts: number): number {
+  if (!Number.isFinite(failedAttempts) || failedAttempts < LOCKOUT_AFTER_ATTEMPTS) return 0;
+  return Math.min(MAX_LOCKOUT_MS, 1_000 * 2 ** Math.min(failedAttempts - LOCKOUT_AFTER_ATTEMPTS, 6));
+}
 
 export interface VaultStatus {
   exists: boolean;
@@ -25,8 +39,47 @@ export interface VaultStatus {
   iterations?: number;
 }
 
-class VaultManager {
-  private failedAttempts = 0;
+export class VaultManager {
+  private unlockQueue: Promise<void> = Promise.resolve();
+
+  private async readThrottle(): Promise<UnlockThrottleRecord> {
+    const db = await getDb();
+    const row = await db.get('securityState', UNLOCK_THROTTLE_ID);
+    if (!row) {
+      return { id: UNLOCK_THROTTLE_ID, failedAttempts: 0, lockedUntil: 0, updatedAt: new Date(0).toISOString() };
+    }
+    if (
+      row.id !== UNLOCK_THROTTLE_ID
+      || !Number.isInteger(row.failedAttempts)
+      || row.failedAttempts < 0
+      || row.failedAttempts > 10_000
+      || !Number.isFinite(row.lockedUntil)
+      || row.lockedUntil < 0
+      || typeof row.updatedAt !== 'string'
+    ) {
+      // Corrupt throttling metadata is treated as no lockout rather than a
+      // permanent lockout. A local attacker who can edit IndexedDB can bypass
+      // this control anyway; PBKDF2 remains the primary offline cost.
+      await db.delete('securityState', UNLOCK_THROTTLE_ID);
+      return { id: UNLOCK_THROTTLE_ID, failedAttempts: 0, lockedUntil: 0, updatedAt: new Date(0).toISOString() };
+    }
+    return row;
+  }
+
+  private async writeThrottle(failedAttempts: number, lockedUntil: number): Promise<void> {
+    const db = await getDb();
+    await db.put('securityState', {
+      id: UNLOCK_THROTTLE_ID,
+      failedAttempts,
+      lockedUntil,
+      updatedAt: new Date().toISOString(),
+    } satisfies UnlockThrottleRecord);
+  }
+
+  private async clearThrottle(): Promise<void> {
+    const db = await getDb();
+    await db.delete('securityState', UNLOCK_THROTTLE_ID);
+  }
 
   async getMeta(): Promise<VaultMeta | null> {
     const db = await getDb();
@@ -80,14 +133,31 @@ class VaultManager {
     await db.put('vaultMeta', meta);
     const raw = await unwrapDataKey(password, wrapped.salt, wrapped.iterations, wrapped.wrapped);
     await vaultSession.unlockWithDataKey(raw);
-    this.failedAttempts = 0;
+    await this.clearThrottle();
   }
 
   async unlock(password: string): Promise<void> {
+    // Serialize attempts so concurrent calls cannot race past the counter or
+    // leave two passphrase derivations competing for the same session.
+    const attempt = this.unlockQueue.then(
+      () => this.unlockOnce(password),
+      () => this.unlockOnce(password),
+    );
+    this.unlockQueue = attempt.then(() => undefined, () => undefined);
+    return attempt;
+  }
+
+  private async unlockOnce(password: string): Promise<void> {
     const meta = await this.getMeta();
     if (!meta) throw new FormFlowError('VAULT_NOT_FOUND', 'No local vault exists yet.');
-    if (this.failedAttempts > 0) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(2000, this.failedAttempts * 350)));
+    const throttle = await this.readThrottle();
+    const now = Date.now();
+    if (throttle.lockedUntil > now) {
+      const seconds = Math.max(1, Math.ceil((throttle.lockedUntil - now) / 1000));
+      throw new FormFlowError(
+        'VAULT_LOCKED_OUT',
+        `Too many failed unlock attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`,
+      );
     }
     try {
       const key = await unwrapDataKey(
@@ -97,9 +167,19 @@ class VaultManager {
         JSON.parse(meta.wrappedDataKey),
       );
       await vaultSession.unlockWithDataKey(key);
-      this.failedAttempts = 0;
+      await this.clearThrottle();
     } catch (error) {
-      this.failedAttempts += 1;
+      const failedAttempts = throttle.failedAttempts + 1;
+      const delay = lockoutDelayMsForAttempts(failedAttempts);
+      const lockedUntil = delay > 0 ? now + delay : 0;
+      await this.writeThrottle(failedAttempts, lockedUntil);
+      if (delay > 0) {
+        const seconds = Math.max(1, Math.ceil(delay / 1000));
+        throw new FormFlowError(
+          'VAULT_LOCKED_OUT',
+          `Too many failed unlock attempts. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`,
+        );
+      }
       if (error instanceof InvalidPasswordError || error instanceof FormFlowError) throw error;
       throw new InvalidPasswordError();
     }
@@ -142,7 +222,7 @@ class VaultManager {
     };
     const db = await getDb();
     await db.put('vaultMeta', updated);
-    this.failedAttempts = 0;
+    await this.clearThrottle();
   }
 
   async verifyPassword(password: string): Promise<boolean> {

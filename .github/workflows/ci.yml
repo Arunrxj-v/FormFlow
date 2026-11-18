@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:local
+      - run: npm run test:extension
+      - run: npm run test:server
+      - run: npm run build
+      - run: npm run build:extension
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+      - name: Package extension
+        run: npm run package:extension
+
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run build:extension
+      - name: Content and page isolation
+        run: node scripts/dev/e2e-content-isolation.mjs
+      - name: Router navigation
+        run: node scripts/dev/e2e-router-navigation.mjs
+      - name: Standard form, iframe, Shadow DOM, and approval binding
+        run: node scripts/dev/audit-standard-form.mjs
+      - name: Google Forms approval binding
+        run: node scripts/dev/audit-autofill-binding.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extension-package
+          path: release/
+          if-no-files-found: ignore
+
+  # Real-model validation is intentionally separate: it requires the pinned
+  # 734 MiB model fixture/cache and is run manually on a supported host.
+  model-validation:
+    if: github.event_name == 'workflow_dispatch' && vars.RUN_MODEL_VALIDATION == '1'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build:extension
+      - run: node scripts/dev/e2e-phase42-model.mjs
+
+  # Full-size live download / interrupt / resume validation. Manually gated:
+  # it transfers the real ~734 MiB model and must never run on normal CI.
+  live-download-validation:
+    if: github.event_name == 'workflow_dispatch' && vars.RUN_LIVE_MODEL_DOWNLOAD == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Full-size live download, resume and SHA-256 validation
+        run: node scripts/dev/validate-model-live-download.mjs

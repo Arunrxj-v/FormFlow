@@ -9,19 +9,22 @@ No claim of being vulnerability-free is made. This is a targeted source and runt
 
 | ID | Severity | Title | Status |
 |---|---|---|---|
-| F-01 | Critical | Personal documents remain in reachable Git history and remote branch | **Unresolved historical exposure**; current index cleaned |
+| F-01 | Critical | Personal documents remain in reachable Git history and a PUBLIC remote branch | **Confirmed public exposure; unresolved**; current index clean |
 | F-02 | High | Autofill approval was not bound to the scanned tab/page/document | Fixed and verified |
 | F-03 | Medium | Form could be mutated after scan without invalidating approval | Fixed and verified |
 | F-04 | Medium | Pending autofill approval survived a vault lock/unlock | Fixed and verified |
 | F-05 | Medium | Standard-form country/city/state classification failed when label/name/id repeated | Fixed and verified |
 | F-06 | Medium | Standard radio/checkbox fill could select an option without matching the approved value (including Male/Female substring collision) | Fixed and verified in browser groups |
-| F-07 | Low | Dev-only Vite/fdir/picomatch advisories | Unresolved; not in production output |
-| F-08 | Low | Backup passphrase accepts only 8 characters and has no strength check | Unresolved |
-| F-09 | Low | Unlock delay counter resets with service-worker restart | Unresolved; PBKDF2 is the primary cost |
-| F-10 | Low | Legacy server has a default development auth secret and in-memory rate limits | Unresolved; must not be exposed publicly |
-| F-11 | Low | Model main-revision aliases are not independently rehashed at load | Residual, trusted-extension boundary |
-| F-12 | Low | No live internet model-download test, CI configuration, or public-release packaging | Unverified / missing |
+| F-07 | Low | Dev-only Vite/fdir/picomatch advisories | Partially resolved: Vite 6.4.6; picomatch has no patch |
+| F-08 | Low | Backup passphrase accepts only 8 characters and has no strength check | Fixed for new backups; old archives still restore |
+| F-09 | Low | Unlock delay counter resets with service-worker restart | Fixed with persistent throttling |
+| F-10 | Low | Legacy server has a default development auth secret and in-memory rate limits | Hardened; still development-only |
+| F-11 | Low | Model main-revision aliases are not independently rehashed at load | Fixed; aliases rebuilt from verified bytes |
+| F-12 | Low | No live internet model-download test, CI configuration, or public-release packaging | Partially resolved; full live download still not run |
 | F-13 | Informational | No independent security audit or formal cryptographic verification | Accepted limitation |
+| F-14 | Medium | Scan-level sensitive classification could be downgraded by stored vault metadata | Fixed and browser-verified |
+| F-15 | Medium (functional/process) | Onboarding, search/filter, iframe/Shadow DOM, accessibility, and CI/release gaps | Implemented/verified; public release and full accessibility audit remain |
+| F-16 | Informational | WebGPU/Q4F16 inference is not enabled | Deliberately scoped to verified WASM; fallback tested |
 
 ---
 
@@ -33,14 +36,16 @@ No claim of being vulnerability-free is made. This is a targeted source and runt
 
 ### Description
 
-Three legacy uploaded PDFs (one degree document and two identity documents) were tracked in an early backend checkpoint. They were removed from the current index in `fc09d3c`, but the blobs remain reachable in:
+Three legacy uploaded PDFs (one small degree-style PDF and two identical identity-document blobs) were tracked in an early backend checkpoint. They were removed from the current index in `fc09d3c`, but the blobs remain reachable in:
 
 - local branch `main` (`9f9632f`)
-- `origin/migration/local-first`
-- old commits reachable from the current feature branch history
+- `origin/migration/local-first` (the GitHub default branch)
+- `security/phase-3.1.2`, `backup/pre-model-cache-cleanup`, and old feature history
 - any clone/fetch of those refs
 
-The files exist in the working tree under `server/storage/documents/`; `server/storage/` is ignored, so they are no longer tracked by the current branch tip. Their contents were not printed or copied into this report.
+The GitHub repository is **public** (`private: false`). During this audit, a raw GitHub URL for the identity PDF on `migration/local-first` returned HTTP 200 with `content-length: 2654171`. That confirms public retrieval. Local OCR classified the PDF as a government identity document; its contents were not printed or copied into this report.
+
+The files still exist in the local working tree under `server/storage/documents/`; `server/storage/` is ignored, so they are no longer tracked by the current branch tip. Ignoring them does not remove history or remote copies.
 
 ### Attack scenario / impact
 
@@ -53,11 +58,12 @@ Anyone with repository access or a clone can recover the personal PDFs from hist
 ### Remediation
 
 - Current-tree remediation applied: `git rm --cached -r server/storage/documents`, existing `.gitignore` entry for `server/storage/`.
-- Required external remediation: rewrite history with `git filter-repo` or BFG, force-push all affected refs after coordination, invalidate clones, and verify remote object removal. This audit did not rewrite history or force-push.
+- Required external remediation: make the repository private/delete it while assessing exposure; mirror-clone; rewrite with `git filter-repo`; force-push all refs/tags after coordination; invalidate clones/forks; ask GitHub Support to purge cached views; rotate/replace the exposed identity document.
+- A guarded manual script is provided at `scripts/security/purge-history.sh`. It refuses to run without `FORMFLOW_CONFIRM_HISTORY_REWRITE=YES` and does not push. This audit did not rewrite history or force-push.
 
 ### Retest / status
 
-Current tracked tree: no personal PDFs. Historical remote exposure remains. **Unresolved critical repository finding.**
+Current tracked tree: no personal PDFs. Public remote exposure remains. **Unresolved critical repository finding; owner action required immediately.**
 
 ---
 
@@ -101,7 +107,7 @@ A same-origin page with identical URL and identical form fingerprint could be in
 ### Retest
 
 `audit-autofill-binding.mjs`: PASS.  
-`audit-standard-form.mjs`: PASS, including lock invalidation, mutation rejection, cross-tab rejection, read-back, no-submit, and approved-only radio/checkbox selection.
+`audit-standard-form.mjs`: PASS, including lock invalidation, mutation rejection, cross-tab rejection, read-back, no-submit, approved-only radio/checkbox selection, same-origin iframe, open Shadow DOM, and sensitive-field flags.
 
 ---
 
@@ -192,9 +198,9 @@ Typecheck/extension tests pass. `audit-standard-form.mjs` verifies a real radio 
 **Severity:** Low for the shipped extension, residual supply-chain risk for development  
 **Affected component:** npm dev dependencies
 
-`npm audit --omit=dev` reports **0 vulnerabilities**. Full `npm audit` reports 4 high advisories through Vite 6.4.5 → fdir/tinyglobby → picomatch 4.0.7. These packages are build-time only and are not in `extension/dist` or the dashboard runtime. `npm audit fix` proposes removing packages rather than a safe patched version; no upgrade was made.
+Vite was updated to 6.4.6, which removes the Vite dev-server path-traversal advisories. `npm audit --omit=dev` reports **0 vulnerabilities**. Full `npm audit` still reports 4 high advisories through `picomatch <= 4.0.7` and its fdir/tinyglobby dependents. The advisory has **no patched npm version** (“Patched versions: None”). These packages are build-time only and are not in `extension/dist` or the dashboard runtime.
 
-**Recommendation:** upgrade Vite when a compatible patched release is available; verify production output remains free of dev dependencies.
+**Residual:** accepted dev-only ReDoS until picomatch publishes a fix. Verify production output remains free of dev dependencies.
 
 ---
 
@@ -203,9 +209,7 @@ Typecheck/extension tests pass. `audit-standard-form.mjs` verifies a real radio 
 **Severity:** Low  
 **Affected component:** `VaultMigrationPage`, backup export
 
-Vault creation requires at least 10 characters and rejects all-repeat/all-digit passwords. Backup export accepts an 8-character passphrase without a strength check. PBKDF2 at 600,000 iterations remains the primary offline-guessing cost.
-
-**Recommendation:** align backup passphrase validation with vault strength requirements or add a strength meter; no silent weakening was introduced.
+New backup exports now require at least 12 Unicode code points through a central `validateBackupPassphrase` policy. Import/restore does not apply the new minimum, so archives created with the old 8-character policy remain restorable. PBKDF2 at 600,000 iterations remains the primary offline-guessing cost. Tests cover empty/short/long/Unicode/wrong-passphrase and compatibility.
 
 ---
 
@@ -214,9 +218,7 @@ Vault creation requires at least 10 characters and rejects all-repeat/all-digit 
 **Severity:** Low  
 **Affected component:** `core/vault/vault-manager.ts`
 
-`failedAttempts` is in memory. A service-worker restart resets the progressive delay, so offline/local repeated unlock attempts are limited primarily by PBKDF2 and OS controls. No lockout is claimed.
-
-**Recommendation:** if stronger online throttling is required, persist attempt counters in a non-secret location with careful denial-of-service tradeoffs; not implemented to avoid locking users out.
+Fixed. Failed attempts and the lockout deadline are persisted in the `securityState` IndexedDB store, attempts are serialized, and the delay doubles from 1 s to a 60 s cap after the third failure. Success/passphrase change clears it; corrupt metadata fails open. Tests cover restart, concurrency, corruption, and clock-deadline behaviour. A local attacker who can edit browser storage can still bypass this; PBKDF2 remains the primary offline cost.
 
 ---
 
@@ -225,9 +227,7 @@ Vault creation requires at least 10 characters and rejects all-repeat/all-digit 
 **Severity:** Low/Medium only if exposed publicly  
 **Affected component:** `server/index.mjs`, `server/security.mjs`
 
-The legacy server is a localhost development/migration surface. It has a default `AUTH_SECRET` outside production, in-memory rate limiting, CORS restricted to `ALLOWED_ORIGIN`, JSON-body mutations, and signed OAuth state. Drive/AI routes are removed. It should not be exposed to the internet.
-
-**Recommendation:** require a strong `AUTH_SECRET` in all non-ephemeral deployments, use durable rate limiting if deployed, and keep the server bound to localhost/firewalled. No public deployment is claimed.
+Hardened. The server binds to `127.0.0.1` by default, sets CORS only for the exact configured origin, rejects other browser origins, adds security headers, limits uploads to 20/min, and requires a unique 32+ character `AUTH_SECRET` in production. It remains a development/migration surface; durable rate limiting and public deployment are not provided. Do not expose it publicly.
 
 ---
 
@@ -236,9 +236,7 @@ The legacy server is a localhost development/migration surface. It has a default
 **Severity:** Low (trusted extension-origin cache)  
 **Affected component:** `extension/src/model/model-worker.ts`, `ai/runtime/model-loader.ts`
 
-The pinned revision files are SHA-256 verified. Transformers.js 4.3.2 reads `config.json`/`tokenizer_config.json` from a `main` revision during pipeline discovery; FormFlow creates aliases from the verified bytes. The aliases are not separately hashed on every load. A compromised extension page (already within the trusted vault UI boundary) could alter public model config in Cache Storage.
-
-**Recommendation:** compare alias bytes to the revision files before worker load, or use a custom loader that avoids the main-revision quirk. Not required for the current threat model, but worth hardening.
+Fixed. The loader and model worker rebuild the `config.json`/`tokenizer_config.json` main-revision aliases from the pinned revision bytes on every install/verify/load, and the worker re-hashes those bytes against the registry before pipeline discovery. A tampered alias is replaced; a tampered revision file fails closed as `corrupt`. Failed/cancelled installs also clear partial chunks.
 
 ---
 
@@ -247,12 +245,12 @@ The pinned revision files are SHA-256 verified. Transformers.js 4.3.2 reads `con
 **Severity:** Low/informational  
 **Affected component:** release process
 
-- No CI workflow exists.
-- Live Hugging Face CDN download/resume was not exercised; controlled Range tests and a fresh real-file local-fixture install were.
-- WebGPU/Q4F16 inference is not validated.
-- Model repository upgrades are not implemented.
-- Microsoft Word reference pagination is unavailable.
-- No public-store package/signing/privacy policy/update channel is present.
+- CI (`.github/workflows/ci.yml`) and a reproducible package script were added. Store signing/submission is still absent.
+- Live Hugging Face redirects, range responses, invalid-range handling, and small-file SHA-256 values were verified. A full 734 MiB live download/resume was **not run**.
+- WebGPU/Q4F16 inference remains deliberately disabled; WASM fallback is verified.
+- Model repository upgrades are still not implemented.
+- Microsoft Word reference pagination is still unavailable.
+- A public-store package/signing/privacy-policy/update channel is still not configured.
 
 These are readiness gaps, not evidence of a runtime vulnerability.
 
@@ -266,6 +264,31 @@ These are readiness gaps, not evidence of a runtime vulnerability.
 This audit is source-based plus targeted execution. It cannot prove absence of vulnerabilities. No formal crypto review, penetration test, fuzzing campaign, or third-party assessment was performed.
 
 ---
+
+## F-14 — Sensitive match could be downgraded by stored metadata
+
+**Severity:** Medium  
+**Affected component:** `extension/src/lib/matcher.ts`
+
+`buildSuggestions` used `item?.sensitive ?? field.sensitive`. A stored vault field with `sensitive: false` could override a scanned form field that the classifier marked sensitive (for example email or phone). The matcher now uses `item?.sensitive || field.sensitive`, so either source can require the extra-review confirmation. Email, phone, address, birth date, registration number, and identification number are classified sensitive. A real-browser audit verifies all five flags and the popup confirmation path. Regression test: `tests/unit/ai-matcher.test.ts`.
+
+## F-15 — Functional/process gaps
+
+**Severity:** Medium (functional/process, not a runtime vulnerability)  
+**Affected component:** onboarding, search/filter, iframe/Shadow DOM, accessibility, CI/release
+
+- Multi-step onboarding was missing; a resumable local wizard is now implemented and browser-tested.
+- Document type filters and profile search/verification filters were incomplete; both are implemented and browser-tested.
+- Same-origin iframes and open Shadow DOM are now scanned/filled safely; cross-origin and closed roots remain explicitly unsupported.
+- Modal focus entry/trap/restore, Escape, live alerts, responsive overflow, and keyboard focus were improved and browser-tested. Full WCAG/screen-reader certification was not performed.
+- CI and a reproducible package script were added. Store signing/submission, privacy/legal review, and an independent security review remain missing.
+
+## F-16 — WebGPU/Q4F16 not enabled
+
+**Severity:** Informational  
+**Affected component:** local model runtime
+
+WebGPU capability is detected for diagnostics, but inference uses the verified Q8 WASM artifact. Enabling Q4F16 would require a separate model download, quantization/runtime validation, numerical comparison, device-loss handling, and fallback testing. A WebGPU-disabled run confirms truthful capability reporting and WASM fallback. Continuing with WASM is deliberate and documented in `docs/FORMFLOW_MODEL_RELIABILITY.md`.
 
 ## Security controls confirmed by review/tests
 
@@ -282,9 +305,9 @@ This audit is source-based plus targeted execution. It cannot prove absence of v
 
 ## Residual risks / next priorities
 
-1. **Repository history rewrite and remote purge for personal PDFs** — highest priority.
-2. Add iframe/Shadow DOM and accessibility coverage.
-3. Add live CDN/model-download integrity run in a controlled network environment.
-4. Add CI and a release/signing/privacy process before public distribution.
-5. Consider alias rehashing and backup passphrase strength.
-6. Obtain an external security review before public release.
+1. **Repository history rewrite and remote purge for personal PDFs** — highest priority; the repo is public.
+2. Run a full live 734 MiB model download/resume in a controlled network environment.
+3. Complete store signing/submission and a privacy/legal review before public distribution.
+4. Obtain an independent security/cryptographic review.
+5. Decide and validate WebGPU/Q4F16 or keep WASM-only.
+6. Extend accessibility testing (screen reader/WCAG) and physical disk-full/long-run memory tests.

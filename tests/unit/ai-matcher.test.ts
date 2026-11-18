@@ -86,6 +86,13 @@ test('AI matching only fills ambiguous fields and never overrides deterministic 
   assert.ok(outcome.suggestions[2]?.needsReview);
 });
 
+test('scan-level sensitive classification cannot be downgraded by vault metadata', () => {
+  const scan = [{ ...scanField(0, 'Email address', 'email'), sensitive: true }];
+  const suggestions = buildSuggestions(fields, scan);
+  assert.equal(suggestions[0]?.sensitive, true);
+  assert.equal(suggestions[0]?.value, 'arun@example.com');
+});
+
 test('AI matching rejects unknown keys and option mismatches', async () => {
   const scan = [
     scanField(0, 'Favourite colour of your pet', 'unknown'),

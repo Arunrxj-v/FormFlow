@@ -16,7 +16,7 @@ import type {
   VaultField,
   VaultProfile,
 } from '@shared/types';
-import { LEGACY_VAULT_SESSION_KEY, OCR_LANGUAGES, VAULT_STATE_KEY } from '@shared/constants';
+import { BACKUP_PASSPHRASE_MIN_LENGTH, LEGACY_VAULT_SESSION_KEY, OCR_LANGUAGES, VAULT_STATE_KEY } from '@shared/constants';
 import { activityRepository, collectionRepository, documentRepository, historyRepository, profileRecordRepository, settingsRepository, toVaultDocument, vaultRepository } from '../../core/database/repositories';
 import { FormFlowError } from '@shared/errors';
 import { vaultManager } from '../../core/vault/vault-manager';
@@ -481,6 +481,23 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
   switch (request.operation) {
     case MESSAGE.GET_STATE:
       return getState();
+    case MESSAGE.GET_SETUP_STATE:
+      return vaultService.getSetupState();
+    case MESSAGE.UPDATE_SETUP_STATE: {
+      await ensureUnlocked();
+      const patch: { completed?: boolean; currentStep?: number; vaultCreatedAt?: string } = {};
+      if (payload.completed !== undefined) {
+        if (typeof payload.completed !== 'boolean') throw new FormFlowError('VALIDATION_FAILED', 'Setup completion must be a boolean.');
+        patch.completed = payload.completed;
+      }
+      if (payload.currentStep !== undefined) {
+        const step = Number(payload.currentStep);
+        if (!Number.isInteger(step) || step < 0 || step > 8) throw new FormFlowError('VALIDATION_FAILED', 'Setup step is invalid.');
+        patch.currentStep = step;
+      }
+      await vaultService.updateSetupState(patch);
+      return vaultService.getSetupState();
+    }
     case MESSAGE.UPDATE_SETTINGS:
       return updateSettings(payload);
     case MESSAGE.VAULT_STATUS:
@@ -842,7 +859,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return data.stats;
     }
     case MESSAGE.EXPORT_VAULT: {
-      const passphrase = requireString(payload, 'passphrase', 8, 200);
+      const passphrase = requireString(payload, 'passphrase', BACKUP_PASSPHRASE_MIN_LENGTH, 200);
       const blob = await vaultExportService.exportEncrypted(passphrase);
       return {
         dataBase64: await blobToBase64(blob),
@@ -1017,6 +1034,14 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return modelManager.remove().then(() => ({ ok: true }));
     case MESSAGE.MODEL_SELF_TEST:
       return modelManager.selfTest();
+    case MESSAGE.MODEL_UPGRADE:
+      return modelManager.upgrade();
+    case MESSAGE.MODEL_UPGRADE_CANCEL:
+      return modelManager.cancelUpgrade();
+    case MESSAGE.MODEL_ROLLBACK:
+      return modelManager.rollback();
+    case MESSAGE.MODEL_PRUNE_PREVIOUS:
+      return modelManager.prunePrevious();
     case MESSAGE.INFER: {
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       if (messages.length === 0 || messages.length > 8) throw new FormFlowError('VALIDATION_FAILED', 'Inference messages are invalid.');
@@ -1051,6 +1076,8 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 const SESSION_STABLE_EXEMPT = new Set<string>([
+  'GET_SETUP_STATE',
+  'UPDATE_SETUP_STATE',
   'VAULT_STATUS',
   'VAULT_CREATE',
   'VAULT_UNLOCK',
@@ -1066,6 +1093,10 @@ const SESSION_STABLE_EXEMPT = new Set<string>([
   'MODEL_CANCEL',
   'MODEL_REMOVE',
   'MODEL_SELF_TEST',
+  'MODEL_UPGRADE',
+  'MODEL_UPGRADE_CANCEL',
+  'MODEL_ROLLBACK',
+  'MODEL_PRUNE_PREVIOUS',
   'INFER',
   'INFER_CANCEL',
   'GET_ENCRYPTION_STATUS',
@@ -1074,6 +1105,8 @@ const SESSION_STABLE_EXEMPT = new Set<string>([
 ]);
 
 const LEASE_KINDS: Record<string, VaultOperationKind> = {
+  [MESSAGE.GET_SETUP_STATE]: 'read',
+  [MESSAGE.UPDATE_SETUP_STATE]: 'mutation',
   [MESSAGE.VAULT_SUMMARY]: 'read',
   [MESSAGE.GET_PROFILE]: 'read',
   [MESSAGE.UPDATE_PROFILE]: 'mutation',

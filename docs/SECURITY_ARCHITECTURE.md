@@ -391,7 +391,7 @@ The extension build uses esbuild metafiles and fails if:
 
 ### Chrome compatibility
 
-The Offscreen API requires Chrome 109 and the `"offscreen"` permission. The manifest now requires Chrome 109 or newer. The tested browser is Google Chrome for Testing 156.0.8078.4. The offscreen document uses the `WORKERS` reason because it must spawn request-scoped parser workers.
+The Offscreen API requires Chrome 109 and the `"offscreen"` permission. The manifest requires Chrome 113 or newer. Tested browsers are Google Chrome for Testing 113.0.5672.0 (headed) and 159.0.8154.6 (headless). The offscreen document uses the `WORKERS` reason because it must spawn request-scoped parser workers.
 
 ## 7. Vault migrations
 

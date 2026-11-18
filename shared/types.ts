@@ -1050,6 +1050,13 @@ export interface SettingRow {
   updatedAt: string;
 }
 
+export interface UnlockThrottleRecord {
+  id: 'unlock-throttle';
+  failedAttempts: number;
+  lockedUntil: number;
+  updatedAt: string;
+}
+
 export interface VaultMeta {
   id: 'meta';
   version: 1;
@@ -1071,6 +1078,9 @@ export type ModelStatus = 'not_installed' | 'downloading' | 'verifying' | 'insta
 export interface InstalledModelRecord {
   id: string;
   modelId: string;
+  releaseId?: string;
+  manifestVersion?: number;
+  version?: string;
   revision: string;
   dtype: string;
   runtime: ModelRuntime;
@@ -1102,10 +1112,70 @@ export interface ModelCapabilities {
   deviceMemoryGb?: number;
 }
 
+export interface ModelUpgradeInfo {
+  available: boolean;
+  releaseId?: string;
+  version?: string;
+  reason?: string;
+  manifestVersion?: number;
+  checkedAt?: string;
+}
+
+export type ModelLifecyclePhase =
+  | 'idle'
+  | 'checking'
+  | 'downloading'
+  | 'verifying'
+  | 'self_testing'
+  | 'switching'
+  | 'completed'
+  | 'failed'
+  | 'rolled_back';
+
+export type ModelLifecycleStatus = 'idle' | 'in_progress' | 'completed' | 'failed' | 'rolled_back';
+
+/**
+ * Journaled lifecycle state. Exactly one record (`MODEL_LIFECYCLE_ID`) tracks
+ * the active release, the last known-good release retained for rollback, and
+ * the phase/status of any in-flight upgrade or rollback. It is written before
+ * each irreversible step so an interrupted upgrade can be recovered on the
+ * next startup.
+ */
+export interface ModelLifecycleState {
+  id: string;
+  activeReleaseId: string | null;
+  previousReleaseId: string | null;
+  operation: 'upgrade' | 'rollback' | null;
+  phase: ModelLifecyclePhase;
+  status: ModelLifecycleStatus;
+  targetReleaseId: string | null;
+  targetVersion?: string;
+  targetRevision?: string;
+  manifestVersion?: number;
+  failureReason?: string;
+  startedAt?: string;
+  updatedAt: string;
+  switchedAt?: string;
+  lastRollbackAt?: string;
+}
+
+export interface ModelRollbackStatus {
+  available: boolean;
+  previousReleaseId?: string | null;
+  lastRollbackAt?: string;
+  lastReason?: string;
+}
+
 export interface ModelStatusSnapshot {
   status: ModelStatus;
   ready: boolean;
   record: InstalledModelRecord | null;
+  previousRecord?: InstalledModelRecord | null;
+  lastInstallError?: string;
+  availableUpgrade?: ModelUpgradeInfo;
+  lifecycle?: ModelLifecycleState;
+  rollback?: ModelRollbackStatus;
+  failureDetails?: string;
   capabilities: ModelCapabilities;
   preferredVariant: 'q8' | 'q4f16';
   storage: StorageEstimate | null;

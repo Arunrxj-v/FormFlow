@@ -19,7 +19,7 @@ export const vaultService = {
     await vaultManager.create(input.passphrase);
     const record = await vaultRepository.create(input.name);
     await vaultProfileRepository.saveProfile({ name: record.name, email: '', accountType: 'Local' });
-    await settingsRepository.updateOnboarding({ completed: true, currentStep: 1, vaultCreatedAt: record.createdAt });
+    await settingsRepository.updateOnboarding({ completed: false, currentStep: 0, vaultCreatedAt: record.createdAt });
     await activityRepository.record('vault_created', 'Encrypted local vault created', `${record.name} · local IndexedDB storage.`);
     return record;
   },

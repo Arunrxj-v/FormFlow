@@ -1,15 +1,15 @@
 # Functional Test Report
 
 Audit date: 2026-11-18  
-Environment: macOS Apple Silicon (8 GB target), Chromium 156.0.8078.4 for Testing, Node v26.12.0, npm 11.20.0.  
-Extension build: `extension/dist`, production 111 files / 51,041.0 KB.  
+Environment: macOS Apple Silicon (8 GB target), Chrome for Testing 159.0.8154.6, Node v26.12.0, npm 11.20.0.  
+Extension build: `extension/dist`, production 111 files / 51,061.6 KB.  
 Model: real pinned Qwen3-0.6B INT8 files exercised through a controlled local fixture server.
 
 ## 1. Results overview
 
 | Area | Result | Evidence |
 |---|---|---|
-| Full automated suite | PASS: 216/216 | `/tmp/audit-npm-final.log` |
+| Full automated suite | PASS: 229/229 | `/tmp/audit-npm-final.log` |
 | Typecheck | PASS | `npm run typecheck` |
 | Dashboard build | PASS | `npm run build` |
 | Extension build | PASS | `npm run build:extension` |
@@ -27,7 +27,11 @@ Model: real pinned Qwen3-0.6B INT8 files exercised through a controlled local fi
 | Router navigation | PASS | `e2e-router-navigation.mjs` |
 | Real model install/inference/extraction/matching | PASS | `e2e-phase42-model.mjs` |
 | Google Forms approval binding | PASS | `audit-autofill-binding.mjs` |
-| Standard HTML form autofill | PASS (text/email/select/long-answer/radio/checkbox/read-back/cross-tab/mutation) | `audit-standard-form.mjs` |
+| Standard HTML form autofill | PASS (text/email/select/long-answer/radio/checkbox/read-back/cross-tab/mutation/iframe/open Shadow DOM/sensitive flags) | `audit-standard-form.mjs` |
+| Onboarding | PASS (fresh, resume, skip, complete, reopen) | `e2e-onboarding.mjs` |
+| UI search/filter/accessibility | PASS (1280/768, filters, modal focus, keyboard) | `audit-ui-accessibility.mjs` |
+| WebGPU fallback | PASS (WebGPU-disabled reports false, WASM remains) | `audit-webgpu-fallback.mjs` |
+| Chrome 113 compatibility | PASS (onboarding + standard form/iframe/shadow) | headed Chrome 113 |
 
 ## 2. End-to-end workflow
 
@@ -35,14 +39,14 @@ The intended workflow was exercised in segments rather than one monolithic scrip
 
 1. **Extension load** — production build loaded in Chromium; dashboard/popup accessible. PASS.
 2. **Vault creation** — passphrase-validated encrypted vault created. PASS.
-3. **Onboarding** — vault setup is the onboarding surface; first-run model download is triggered by first upload/settings. No multi-step wizard exists. PARTIAL.
-4. **Model install** — real pinned files installed; SHA-256 verified; fresh install and cached/repair paths exercised. PASS (live CDN not tested).
-5. **Model self-test** — real local WASM inference; 10.7 s total in final audit run. PASS.
+3. **Onboarding** — resumable multi-step guide (welcome, optional model, documents, review, ready), first-run dashboard card, skip/reopen. PASS.
+4. **Model install** — real pinned files installed; SHA-256 verified; fresh install and cached/repair paths exercised. PASS (live small files/range verified; full 734 MiB live download not run).
+5. **Model self-test** — real local WASM inference; 8.3 s total in final audit run (4.85 s load, 3.42 s inference). PASS.
 6. **Document import** — PDF, scanned PDF, DOCX, TXT, mixed/OCR, corrupted/password inputs tested. PASS.
 7. **OCR** — clear, rotated, partial, low-quality, missing language, timeout, cancellation, crash/restart. PASS with test hooks for fault injection.
 8. **Structured extraction** — PDF/DOCX structure, pagination, images, tables, validation limits. PASS.
 9. **Deterministic profile extraction** — runs automatically during import; source evidence persisted. PASS.
-10. **AI-assisted extraction** — real model produced grounded candidates; deterministic precedence preserved. PASS for representative resume.
+10. **AI-assisted extraction** — real model produced 13 candidates (2 AI-method) in 29.5 s; deterministic precedence preserved. PASS for representative resume.
 11. **Profile review/edit/verify/conflict** — unit/integration tested; UI source-reviewed; phase3 UI flows for values/backups. PASS/partial browser coverage.
 12. **Form detection** — Google Forms and standard HTML forms. PASS.
 13. **Matching** — deterministic first; local AI for empty ambiguous fields; source/review flags. PASS.
@@ -97,7 +101,7 @@ The intended workflow was exercised in segments rather than one monolithic scrip
 - Read-back verification: a phone page that strips digits reports failure, not success.
 - No submit observed in Google/standard audit.
 - Standard radio/checkbox groups are browser-tested: only the approved gender/skill is selected; substring collisions are rejected.
-- Iframes and Shadow DOM are not fully tested.
+- Same-origin iframes and open Shadow DOM are browser-tested; cross-origin/closed roots are explicitly unsupported.
 
 ### Backup/recovery
 
@@ -111,7 +115,7 @@ The intended workflow was exercised in segments rather than one monolithic scrip
 - Inert controls previously identified were removed; `allowLongAnswers` now affects matching.
 - Extension setup page uses a preview/demo; shortcut claims corrected.
 - Accessibility/responsive behavior not systematically tested.
-- No CI workflow; no public release packaging.
+- CI workflow and local packaging were added; store signing/submission is still missing.
 
 ## 4. Defects found and fixed during audit
 
@@ -129,7 +133,7 @@ The intended workflow was exercised in segments rather than one monolithic scrip
 - First OCR run used the production build and failed timing/cancel/crash injection checks because those tests require test hooks. Rebuilt with `FORMFLOW_TEST_HOOKS=1`; OCR suite passed all checks. Production was rebuilt afterward.
 - First migration-crash run used the production build and could not seed the v1 fixture; rerun with test hooks passed. Production was rebuilt afterward.
 - One full `npm test` run under severe host load failed because the legacy server health check timed out; the immediate rerun passed 12/12 server tests. Recorded as test-harness flakiness, not a product failure.
-- A 213-test baseline was expanded to 216 tests after adding prompt-injection, classifier, option-matching, and audit regression tests.
+- The suite expanded from 213 baseline tests to 229 after prompt-injection, classifier, option-matching, throttling, backup-policy, model-timeout, alias/chunk-cleanup, sensitivity, CORS, and audit regressions.
 
 ## 6. Untested / not fully verified
 
@@ -137,7 +141,7 @@ The intended workflow was exercised in segments rather than one monolithic scrip
 - WebGPU/Q4F16 inference.
 - Model repository upgrades.
 - Microsoft Word reference validation.
-- Iframe/Shadow DOM form handling.
+- Closed Shadow DOM and cross-origin frames remain unsupported by design.
 - Accessibility, keyboard-only use, screen readers, responsive layouts.
 - Peak browser/worker memory and long-run leak growth.
 - Physical disk-full and browser quota exhaustion.

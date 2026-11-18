@@ -419,7 +419,7 @@ async function main() {
       build: {
         outDir: dashboardOut,
         emptyOutDir: true,
-        target: 'chrome109',
+        target: 'chrome113',
         sourcemap: false,
         copyPublicDir: false,
         rollupOptions: {

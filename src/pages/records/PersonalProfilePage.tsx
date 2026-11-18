@@ -5,7 +5,7 @@ import { PageHeader } from '@/components/ui/PageHeader';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { ConfirmDialog, Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
+import { Input, SearchInput } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { FieldTable } from '@/components/records/FieldTable';
 import { FieldEditorDialog } from '@/components/records/FieldEditorDialog';
@@ -22,11 +22,22 @@ export function PersonalProfilePage() {
   const [addOpen, setAddOpen] = useState(false);
   const [newField, setNewField] = useState({ label: '', key: '', value: '', category: 'personal' as VaultField['category'] });
   const [adding, setAdding] = useState(false);
+  const [profileQuery, setProfileQuery] = useState('');
+  const [verification, setVerification] = useState<'all' | 'verified' | 'unverified'>('all');
 
-  const personal = fields.filter((field) => field.category === 'personal');
-  const contact = fields.filter((field) => field.category === 'contact');
-  const identity = fields.filter((field) => field.category === 'identification');
+  const matchesFilters = (field: VaultField) => {
+    const query = profileQuery.trim().toLowerCase();
+    if (query && !`${field.label} ${field.key} ${field.value} ${field.source.documentName}`.toLowerCase().includes(query)) return false;
+    const verified = field.verificationStatus === 'user_verified';
+    if (verification === 'verified' && !verified) return false;
+    if (verification === 'unverified' && verified) return false;
+    return true;
+  };
+  const personal = fields.filter((field) => field.category === 'personal').filter(matchesFilters);
+  const contact = fields.filter((field) => field.category === 'contact').filter(matchesFilters);
+  const identity = fields.filter((field) => field.category === 'identification').filter(matchesFilters);
   const conflicts = fields.filter((field) => field.conflicts?.length);
+  const filtersActive = Boolean(profileQuery.trim()) || verification !== 'all';
   const totalFields = personal.length + contact.length;
   const expectedProfileKeys = [
     'personal.fullName',
@@ -93,6 +104,42 @@ export function PersonalProfilePage() {
           </>
         }
       />
+
+      <div className="ff-card" style={{ padding: 12, marginBottom: 12 }}>
+        <div className="ff-row ff-gap-8" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <SearchInput
+              value={profileQuery}
+              onChange={(event) => setProfileQuery(event.target.value)}
+              placeholder="Search profile labels, values, or source documents…"
+              aria-label="Search profile values"
+            />
+          </div>
+          <select
+            className="ff-select"
+            style={{ width: 170 }}
+            value={verification}
+            onChange={(event) => setVerification(event.target.value as 'all' | 'verified' | 'unverified')}
+            aria-label="Filter by verification status"
+          >
+            <option value="all">All verification states</option>
+            <option value="verified">User verified</option>
+            <option value="unverified">Needs verification</option>
+          </select>
+          <Button
+            variant="ghost"
+            disabled={!filtersActive}
+            onClick={() => { setProfileQuery(''); setVerification('all'); }}
+          >
+            Reset filters
+          </Button>
+        </div>
+        {filtersActive ? (
+          <div className="ff-body-sm ff-muted ff-mt-8" role="status">
+            {personal.length + contact.length + identity.length} matching value{personal.length + contact.length + identity.length === 1 ? '' : 's'} shown.
+          </div>
+        ) : null}
+      </div>
 
       <div className="ff-record-layout">
         <div className="ff-record-stack">

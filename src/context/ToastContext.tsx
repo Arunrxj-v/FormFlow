@@ -42,7 +42,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="ff-toast-stack" aria-live="polite">
         {toasts.map((item) => (
-          <div key={item.id} className={`ff-toast ff-toast--${item.tone}`} role="status">
+          <div key={item.id} className={`ff-toast ff-toast--${item.tone}`} role={item.tone === 'error' ? 'alert' : 'status'}>
             <div className="ff-toast__icon">
               <Icon tone={item.tone} />
             </div>

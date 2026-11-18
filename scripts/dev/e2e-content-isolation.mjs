@@ -105,8 +105,8 @@ async function inspect(page, label) {
 
 try {
   context = await chromium.launchPersistentContext(userDataDir, {
-    headless: true,
-    ...(executablePath ? { executablePath } : {}),
+    headless: process.env.FF_HEADED !== '1',
+    ...(executablePath ? { executablePath } : process.env.CI ? { channel: 'chromium' } : {}),
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,

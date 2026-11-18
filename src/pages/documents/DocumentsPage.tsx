@@ -89,6 +89,7 @@ export function DocumentsPage() {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | DocumentCategory>('all');
   const [status, setStatus] = useState<'all' | DocumentStatus>('all');
+  const [fileType, setFileType] = useState<'all' | 'pdf' | 'docx' | 'txt'>('all');
   const [sort, setSort] = useState<SortKey>('modified');
   const [view, setView] = useState<ViewMode>('list');
   const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('doc'));
@@ -142,13 +143,14 @@ export function DocumentsPage() {
     return documents
       .filter((doc) => (category === 'all' ? true : doc.category === category))
       .filter((doc) => (status === 'all' ? true : doc.status === status))
+      .filter((doc) => (fileType === 'all' ? true : doc.fileType === fileType))
       .filter((doc) => !normalized || `${doc.name} ${doc.category} ${doc.subcategory}`.toLowerCase().includes(normalized))
       .sort((a, b) => {
         if (sort === 'name') return a.name.localeCompare(b.name);
         if (sort === 'size') return b.sizeBytes - a.sizeBytes;
         return new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime();
       });
-  }, [documents, category, status, query, sort]);
+  }, [documents, category, status, fileType, query, sort]);
 
   const selected = documents.find((doc) => doc.id === selectedId) ?? filtered[0] ?? null;
   const counts = useMemo(() => {
@@ -214,6 +216,12 @@ export function DocumentsPage() {
           <select className="ff-select" style={{ width: 150 }} value={status} onChange={(event) => setStatus(event.target.value as 'all' | DocumentStatus)} aria-label="Filter by status">
             {statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
+          <select className="ff-select" style={{ width: 120 }} value={fileType} onChange={(event) => setFileType(event.target.value as 'all' | 'pdf' | 'docx' | 'txt')} aria-label="Filter by file type">
+            <option value="all">All file types</option>
+            <option value="pdf">PDF</option>
+            <option value="docx">DOCX</option>
+            <option value="txt">TXT</option>
+          </select>
           <select className="ff-select" style={{ width: 150 }} value={sort} onChange={(event) => setSort(event.target.value as SortKey)} aria-label="Sort documents">
             <option value="modified">Newest first</option>
             <option value="name">Name A–Z</option>
@@ -254,7 +262,7 @@ export function DocumentsPage() {
               <span className="ff-h3">{category === 'all' ? 'All documents' : `${category} documents`}</span>
               <span className="ff-body-sm ff-muted">· {filtered.length} shown</span>
             </div>
-            <button type="button" className="ff-link-button" style={{ color: 'var(--ff-primary)', fontWeight: 600 }} onClick={() => { setCategory('all'); setStatus('all'); setQuery(''); }}>Show all</button>
+            <button type="button" className="ff-link-button" style={{ color: 'var(--ff-primary)', fontWeight: 600 }} onClick={() => { setCategory('all'); setStatus('all'); setFileType('all'); setQuery(''); }}>Reset filters</button>
           </div>
 
           {dataLoading ? (

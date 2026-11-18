@@ -20,7 +20,7 @@
 - Run **Run local self-test**. It verifies the cache, loads the worker, and performs a real local generation.
 - A self-test failure returns the actual model/runtime error. Common causes:
   - Corrupt cache: remove and reinstall.
-  - Offscreen document creation blocked: Chrome 109+ is required.
+  - Offscreen document creation blocked: Chrome 113+ is required.
   - WASM loading blocked: the extension CSP must contain `'wasm-unsafe-eval'` and `worker-src 'self'`.
   - Out of memory: remove the model, close other tabs, and retry. The worker is unloaded after 120 seconds idle.
 - AI extraction errors do not block deterministic extraction; deterministic values remain available.

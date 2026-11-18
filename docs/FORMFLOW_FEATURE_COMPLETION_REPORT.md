@@ -1,5 +1,8 @@
 # FormFlow Feature Completion Report
 
+> **Post-audit update (2026-11-18):** This report is historical. The subsequent remediation pass (backup policy, persistent unlock throttling, server hardening, model alias rehashing, sensitive matching, onboarding, iframe/Shadow DOM, accessibility, CI, packaging) is documented in `docs/FORMFLOW_REMAINING_ISSUES_REMEDIATION_REPORT.md`. Test counts below have been updated to the final 229-test run where applicable.
+
+
 Date: 2026-11-17
 Branch: `feature/phase-4-document-ingestion`
 Base commit: `cbf3de9` (working tree intentionally left uncommitted)
@@ -181,7 +184,7 @@ Security checks retained:
 
 ## 8. Performance measurements
 
-Final production-model E2E run (Chromium 156, Apple Silicon, 8 GB):
+Final production-model E2E run (Chrome 159, Apple Silicon, 8 GB):
 
 | Measurement | Result |
 |---|---|
@@ -196,7 +199,7 @@ Final production-model E2E run (Chromium 156, Apple Silicon, 8 GB):
 | Extracted candidates | 13 total, 2 accepted AI-method |
 | Offline inference | Passed |
 | Model download size | 769,882,900 bytes |
-| Production extension build | 111 files, 51,041.0 KB (~49.8 MiB) |
+| Production extension build | 111 files, 51,061.6 KB (~49.8 MiB) |
 | Node CPU Q8 reference | 2.6 s load / 0.76 s inference |
 | Large single-line document extraction bound | 120,000 chars, overlong lines split at 2,000 chars; pathological 8 MB single-line input no longer hangs |
 
@@ -204,10 +207,10 @@ Timings vary with CPU load and first-time WASM compilation. The earlier unreliab
 
 ## 9. Test results
 
-- `npm test`: **216 tests, 216 pass, 0 fail** across 27 suites.
-  - Local/unit: 189 pass.
-  - Extension: 15 pass.
-  - Server: 12 pass.
+- `npm test`: **229 tests, 229 pass, 0 fail** across 27 suites.
+  - Local/unit: 200 pass.
+  - Extension: 16 pass.
+  - Server: 13 pass.
 - `npm run typecheck`: pass.
 - `npm run build`: pass (dashboard). Vite warns about large chunks; no failure.
 - `npm run build:extension`: pass, 111 files / 51,030.0 KB.

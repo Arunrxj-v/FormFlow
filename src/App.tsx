@@ -17,6 +17,7 @@ import { DemoFormPage } from '@/pages/demo/DemoFormPage';
 import { VaultSetupPage } from '@/pages/vault/VaultSetupPage';
 import { VaultUnlockPage } from '@/pages/vault/VaultUnlockPage';
 import { VaultMigrationPage } from '@/pages/vault/VaultMigrationPage';
+import { OnboardingPage } from '@/pages/onboarding/OnboardingPage';
 import type { ReactNode } from 'react';
 
 function Protected({ children }: { children: ReactNode }) {
@@ -40,6 +41,7 @@ function AppRoutes() {
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/setup" element={<PublicOnly><VaultSetupPage /></PublicOnly>} />
       <Route path="/unlock" element={<PublicOnly><VaultUnlockPage /></PublicOnly>} />
+      <Route path="/onboarding" element={<Protected><OnboardingPage /></Protected>} />
       <Route element={<Protected><AppShell /></Protected>}>
         <Route path="/dashboard" element={<OverviewPage />} />
         <Route path="/documents" element={<DocumentsPage />} />

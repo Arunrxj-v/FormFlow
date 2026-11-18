@@ -17,8 +17,12 @@ Implemented end to end:
 - Deterministic profile extraction plus grounded local-AI candidates with encrypted provenance.
 - Profile review, source evidence, verification state, conflict detection, and structured education/employment/address/skill records.
 - Extension field detection, deterministic matching, optional local-AI matching for ambiguous labels, review UI, explicit approval, safe autofill, and no auto-submit.
+- Resumable first-run onboarding, document/profile search and filters, same-origin iframe and open Shadow DOM form support, and accessible dialog focus handling.
+- Reproducible extension packaging and a CI workflow (typecheck, tests, production builds, audits, browser smoke).
 
-See the consolidated completion report: [`docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md`](docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md).
+See the consolidated completion report: [`docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md`](docs/FORMFLOW_FEATURE_COMPLETION_REPORT.md), the remediation report: [`docs/FORMFLOW_REMAINING_ISSUES_REMEDIATION_REPORT.md`](docs/FORMFLOW_REMAINING_ISSUES_REMEDIATION_REPORT.md), privacy: [`docs/PRIVACY.md`](docs/PRIVACY.md), and release process: [`docs/FORMFLOW_RELEASE_PROCESS.md`](docs/FORMFLOW_RELEASE_PROCESS.md).
+
+**Security notice:** the public GitHub history still contains personal identity PDFs. See [`docs/FORMFLOW_SECURITY_HARDENING.md`](docs/FORMFLOW_SECURITY_HARDENING.md) before sharing or cloning this repository.
 
 ## Quick start
 
@@ -27,7 +31,7 @@ npm install
 npm run build:extension
 ```
 
-Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `extension/dist`. Open the extension dashboard at `chrome-extension://<extension-id>/dashboard.html`, create an encrypted vault, and upload documents from your device.
+Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `extension/dist` in Chrome 113 or newer. Open the extension dashboard at `chrome-extension://<extension-id>/dashboard.html`, create an encrypted vault, and follow the resumable first-run guide. The guide can be skipped and reopened from Settings.
 
 The local AI model is offered on first run. By default it starts downloading after the first successful document upload; it can also be started manually from **Settings → Local AI**. The verified INT8 model is about 734 MiB and is not bundled in the extension ZIP.
 
@@ -39,6 +43,7 @@ For UI development, `npm run dev` serves the dashboard at `http://localhost:5173
 npm run build             # TypeScript check + dashboard production build
 npm run build:extension   # Chrome extension build in extension/dist
 npm run build:all         # both
+npm run package:extension # build + verify + ZIP/SHA-256 in release/
 ```
 
 The extension build packages the dashboard, popup, background worker, content script, offscreen parser, parser worker, model worker, Transformers.js, ONNX Runtime Web WASM assets, OCR assets, and DOCX layout fonts. Build-time checks verify required files, SHA-256 hashes for bundled runtime assets, manifest references, CSP, and parser/vault isolation.
@@ -113,6 +118,11 @@ CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-recovery-c
 CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-content-isolation.mjs
 CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-router-navigation.mjs
 CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-phase42-model.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/e2e-onboarding.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/audit-standard-form.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/audit-autofill-binding.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/audit-ui-accessibility.mjs
+CHROME_PATH="/path/to/Google Chrome for Testing" node scripts/dev/audit-webgpu-fallback.mjs
 ```
 
 Parser fault-injection tests require a test-hooks build:

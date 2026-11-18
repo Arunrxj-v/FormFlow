@@ -62,6 +62,9 @@ export function ModelSettingsCard() {
     cancelModelInstall,
     removeModel,
     selfTestModel,
+    upgradeModel,
+    cancelModelUpgrade,
+    rollbackModel,
     cancelInference,
   } = useApp();
   const [busy, setBusy] = useState<string | null>(null);
@@ -104,11 +107,19 @@ export function ModelSettingsCard() {
             <div className="ff-info-pair"><span>Quantization</span><span>{record?.dtype === 'q8' ? 'INT8 / Q8' : (record?.dtype ?? 'INT8 / Q8')}</span></div>
             <div className="ff-info-pair"><span>Runtime</span><span>WASM (CPU) · local only</span></div>
             <div className="ff-info-pair"><span>Download size</span><span>{mb(expected)}</span></div>
+            <div className="ff-info-pair"><span>Free space recommended</span><span>{mb(expected * 2 + 128 * BYTES_PER_MB)}</span></div>
             <div className="ff-info-pair"><span>Downloaded</span><span>{mb(downloaded)} · {Math.round(percent)}%</span></div>
             <div className="ff-info-pair"><span>Revision</span><span className="ff-code">{record?.revision?.slice(0, 12) ?? '54250909aca2'}</span></div>
             <div className="ff-info-pair"><span>Installed</span><span>{record?.installedAt ? new Date(record.installedAt).toLocaleString() : 'Not installed'}</span></div>
             <div className="ff-info-pair"><span>Last verified</span><span>{record?.lastVerifiedAt ? new Date(record.lastVerifiedAt).toLocaleString() : '—'}</span></div>
             <div className="ff-info-pair"><span>Last initialized</span><span>{record?.lastInitializedAt ? new Date(record.lastInitializedAt).toLocaleString() : 'Loads on first use'}</span></div>
+            <div className="ff-info-pair"><span>Version</span><span>{record?.version ?? '0.6.0-int8-r1'}</span></div>
+            <div className="ff-info-pair"><span>Release</span><span className="ff-code">{record?.releaseId ?? 'qwen3-0.6b-int8-2026-11'}</span></div>
+            <div className="ff-info-pair"><span>Manifest version</span><span>{record?.manifestVersion ?? 1}</span></div>
+            <div className="ff-info-pair"><span>Verification</span><span>{record?.lastVerifiedAt ? 'SHA-256 verified' : 'Pending'}</span></div>
+            <div className="ff-info-pair"><span>Active release</span><span className="ff-code">{modelStatus?.lifecycle?.activeReleaseId ?? '—'}</span></div>
+            <div className="ff-info-pair"><span>Rollback available</span><span>{modelStatus?.rollback?.available ? `Yes · ${modelStatus.rollback.previousReleaseId ?? 'previous verified model'}` : 'No'}</span></div>
+            <div className="ff-info-pair"><span>Upgrade</span><span>{modelStatus?.availableUpgrade?.available ? `Available · ${modelStatus.availableUpgrade.version ?? ''}` : (modelStatus?.availableUpgrade?.reason ?? 'Checking…')}</span></div>
           </div>
 
           {active || (record && !installed) ? (
@@ -127,7 +138,11 @@ export function ModelSettingsCard() {
           ) : null}
           {modelStatus?.message ? <div className="ff-note ff-mt-16">{modelStatus.message}</div> : null}
           {record?.error ? <div className="ff-note ff-mt-12" style={{ color: 'var(--ff-danger)', borderColor: 'var(--ff-danger)' }}>{record.error}</div> : null}
-          {error ? <div className="ff-note ff-mt-12" style={{ color: 'var(--ff-danger)', borderColor: 'var(--ff-danger)' }}>{error}</div> : null}
+          {modelStatus?.failureDetails ? <div className="ff-note ff-mt-12" style={{ color: 'var(--ff-danger)', borderColor: 'var(--ff-danger)' }}>{modelStatus.failureDetails}</div> : null}
+          {modelStatus?.lifecycle && ['checking', 'downloading', 'verifying', 'self_testing', 'switching'].includes(modelStatus.lifecycle.phase) ? (
+            <div className="ff-note ff-mt-12" role="status">Model upgrade in progress · {modelStatus.lifecycle.phase.replace('_', ' ')}.</div>
+          ) : null}
+          {error ? <div className="ff-note ff-mt-12" style={{ color: 'var(--ff-danger)', borderColor: 'var(--ff-danger)' }} role="alert">{error}</div> : null}
 
           <div className="ff-setting-row ff-mt-16">
             <div>
@@ -175,6 +190,36 @@ export function ModelSettingsCard() {
             ) : null}
           </div>
 
+          {installed ? (
+            <div className="ff-row ff-gap-8 ff-mt-8" style={{ flexWrap: 'wrap' }}>
+              <Button
+                icon={RefreshCw}
+                loading={busy === 'upgrade'}
+                onClick={() => void run('upgrade', async () => {
+                  const result = await upgradeModel();
+                  setError(result.ok ? null : result.message);
+                })}
+              >
+                Check for upgrade
+              </Button>
+              {modelStatus?.lifecycle && ['checking', 'downloading', 'verifying', 'self_testing', 'switching'].includes(modelStatus.lifecycle.phase) ? (
+                <Button icon={XCircle} onClick={() => void run('upgrade-cancel', cancelModelUpgrade)}>Cancel upgrade</Button>
+              ) : null}
+              {modelStatus?.rollback?.available ? (
+                <Button
+                  icon={RefreshCw}
+                  loading={busy === 'rollback'}
+                  onClick={() => void run('rollback', async () => {
+                    const result = await rollbackModel();
+                    setError(result.ok ? null : result.message);
+                  })}
+                >
+                  Roll back to previous model
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
           {test ? (
             <div className="ff-note ff-mt-16" style={{ borderColor: test.ok ? 'var(--ff-success)' : 'var(--ff-danger)' }}>
               <strong>{test.ok ? 'Local inference verified' : 'Self-test failed'}.</strong>{' '}
@@ -200,8 +245,8 @@ export function ModelSettingsCard() {
             <Cpu size={15} className="ff-muted" style={{ marginTop: 2 }} />
             <span className="ff-body-sm ff-muted">
               Inference runs in a dedicated extension worker. Model files are verified with SHA-256 before use,
-              loaded only from the local cache, and unloaded when idle. The verified Q8 artifact is used on CPU/WASM;
-              WebGPU float16 variants remain opt-in experiments.
+              loaded only from the local cache, and unloaded when idle. The verified Q8 artifact is used on CPU/WASM.
+              WebGPU is detected for diagnostics only; the Q4F16 WebGPU path is not enabled in this build.
             </span>
           </div>
           <div className="ff-row ff-gap-8 ff-mt-8" style={{ alignItems: 'flex-start' }}>

@@ -188,7 +188,7 @@ export function SettingsPage() {
       />
 
       <div className="ff-settings-layout">
-        <aside className="ff-settings-nav">
+        <aside className="ff-settings-nav" aria-label="Settings sections">
           <Tabs items={tabs} value={tab} onChange={setTab} ariaLabel="Settings sections" />
           <div className="ff-note" style={{ marginTop: 16 }}>
             <ShieldCheck size={14} style={{ verticalAlign: -2, marginRight: 4, color: 'var(--ff-success)' }} />
@@ -197,6 +197,19 @@ export function SettingsPage() {
         </aside>
 
         <div className="ff-settings-content">
+          <Card className="ff-section-card" style={{ marginBottom: 12 }}>
+            <div className="ff-row ff-between ff-gap-12" style={{ flexWrap: 'wrap' }}>
+              <div className="ff-row ff-gap-8">
+                <Sparkles size={16} className="ff-primary" />
+                <div>
+                  <div className="ff-h3">Setup guide</div>
+                  <div className="ff-body-sm ff-muted">Reopen the first-run walkthrough for the local model, documents, and review flow.</div>
+                </div>
+              </div>
+              <Button onClick={() => navigate('/onboarding?restart=1')}>Open setup guide</Button>
+            </div>
+          </Card>
+
           {tab === 'profile' ? (
             <>
               <Card>

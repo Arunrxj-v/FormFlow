@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream, statSync } from 'node:fs';
 import busboy from 'busboy';
 import { db, defaultPreferences } from './db.mjs';
-import { createToken, hashPassword, verifyPassword, verifyToken, createOAuthState, verifyOAuthState, assertProductionSecret, isProduction } from './security.mjs';
+import { createToken, hashPassword, verifyPassword, verifyToken, createOAuthState, verifyOAuthState, assertProductionSecret, isProduction, isDevelopmentSecret } from './security.mjs';
 import { processDocument } from './ai.mjs';
 import {
   saveDocumentFile,
@@ -17,10 +17,21 @@ import { extractDocumentText } from './extractor.mjs';
 import { generateAuthUrl, exchangeCode, fetchUserInfo } from './google-auth.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || '127.0.0.1';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || process.env.APP_ORIGIN || 'http://localhost:5173';
 const MAX_BODY = 2 * 1024 * 1024;
 
 assertProductionSecret();
+
+if (!/^https?:\/\/[^/\s]+(?::\d+)?$/i.test(ALLOWED_ORIGIN) || ALLOWED_ORIGIN === '*') {
+  throw new Error('ALLOWED_ORIGIN must be one explicit http(s) origin, not a wildcard.');
+}
+if (isDevelopmentSecret() && !isProduction()) {
+  console.warn('[FormFlow] Development auth secret in use. Set AUTH_SECRET before exposing this server to any network.');
+}
+if (!/^(127\.0\.0\.1|localhost|::1)$/.test(HOST) && !isProduction()) {
+  console.warn(`[FormFlow] Development server is bound to ${HOST}. Keep it on a trusted network and never expose it publicly.`);
+}
 
 const buckets = new Map();
 function rateLimit(key, limit = 120, windowMs = 60_000) {
@@ -47,12 +58,24 @@ function json(res, status, payload) {
   res.end(body);
 }
 
-function cors(res) {
-  res.setHeader('access-control-allow-origin', ALLOWED_ORIGIN);
+function cors(req, res) {
+  res.setHeader('vary', 'origin');
+  const origin = req.headers.origin;
+  // Non-browser clients (curl, server tests) do not send Origin. Browsers do,
+  // and only the configured dashboard origin may receive CORS permission.
+  if (origin && origin !== ALLOWED_ORIGIN) return false;
+  if (origin) res.setHeader('access-control-allow-origin', ALLOWED_ORIGIN);
   res.setHeader('access-control-allow-credentials', 'true');
   res.setHeader('access-control-allow-headers', 'authorization, content-type');
   res.setHeader('access-control-allow-methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
-  res.setHeader('vary', 'origin');
+  return true;
+}
+
+function securityHeaders(res) {
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('x-frame-options', 'DENY');
+  res.setHeader('referrer-policy', 'no-referrer');
+  res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
 }
 
 async function readBody(req) {
@@ -778,7 +801,10 @@ async function route(req, res, url) {
 }
 
 const server = http.createServer(async (req, res) => {
-  cors(res);
+  securityHeaders(res);
+  if (!cors(req, res)) {
+    return json(res, 403, { error: 'This origin is not allowed to access the FormFlow development API.' });
+  }
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -787,7 +813,12 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     if (!rateLimit(`ip:${req.socket.remoteAddress || 'local'}`, 240)) {
+      res.setHeader('retry-after', '60');
       return json(res, 429, { error: 'Too many requests. Try again shortly.' });
+    }
+    if (url.pathname === '/api/documents/upload' && !rateLimit(`upload:${req.socket.remoteAddress || 'local'}`, 20)) {
+      res.setHeader('retry-after', '60');
+      return json(res, 429, { error: 'Too many upload requests. Try again shortly.' });
     }
     await route(req, res, url);
   } catch (error) {
@@ -797,10 +828,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`FormFlow API listening on http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`FormFlow API listening on http://${HOST}:${PORT}`);
   console.log(`Allowed dashboard origin: ${ALLOWED_ORIGIN}`);
-  console.log('Extraction: local deterministic rules only. External AI providers and Google Drive storage are disabled.');
+  console.log('Development/migration server only. Extraction is local deterministic rules; external AI and Google Drive storage are disabled.');
 });
 
 export { server };

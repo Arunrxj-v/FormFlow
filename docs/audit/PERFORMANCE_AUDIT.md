@@ -1,19 +1,19 @@
 # Performance Audit
 
 Audit date: 2026-11-18  
-Environment: macOS Apple Silicon, 8 GB target, Chromium 156.0.8078.4 for Testing, Node v26.12.0.  
+Environment: macOS Apple Silicon, 8 GB target, Chrome for Testing 159.0.8154.6, Node v26.12.0.  
 Host load varied significantly during the audit; timing-sensitive runs are labeled where load was abnormal.
 
 ## 1. Build and package sizes
 
 | Measurement | Result |
 |---|---|
-| Dashboard production build time | 5.66 s (one measured run; a loaded-host run took longer) |
+| Dashboard production build time | 4.41 s (final run) |
 | Dashboard output | 62 files, 3.7 MB |
-| Dashboard main JS | ~747.5 KB (gzip ~207.9 KB) |
+| Dashboard main JS | ~765.1 KB (gzip ~211.9 KB) |
 | PDF worker asset | ~1.245 MB (gzip ~389 KB) |
 | Mammoth chunk | ~305 KB |
-| Extension production build | 111 files, 51,041.0 KB (~49.8 MiB) |
+| Extension production build | 111 files, 51,061.6 KB (~49.9 MiB) |
 | Extension background | ~286 KB (before final audit changes; final build ~similar) |
 | Popup | ~174 KB |
 | Content script | ~20 KB |
@@ -25,7 +25,7 @@ Host load varied significantly during the audit; timing-sensitive runs are label
 | Bundled OCR assets | ~? (Tesseract worker/core/language; included in 51 MB total) |
 | Model weights | Not bundled |
 | `.model-cache` local test cache | 1.8 GB (ignored) |
-| `server/storage` working files | ~5.1 MB (ignored; includes historical personal PDFs) |
+| `server/storage` working files | ~5.1 MB (ignored; legacy local files; not packaged) |
 
 Large chunks remain above Vite's 500 KB warning threshold. This is a build warning, not a runtime failure. The extension package is dominated by ONNX Runtime WASM and parser/OCR/font assets, which are intentional local-only dependencies.
 
@@ -36,13 +36,13 @@ Final audit model E2E (real pinned files through local fixture; host load modera
 | Measurement | Result |
 |---|---|
 | Model download size | 769,882,900 bytes (~734 MiB) |
-| Seeded/cached install + SHA-256 verification | 15.8 s |
+| Seeded/cached install + SHA-256 verification | 15.0 s |
 | Fresh empty-cache install through real installer | 157 s (prior run on heavily loaded host; real 734 MiB local transfer) |
-| Model status response | 8 ms |
-| Self-test total | 10.7 s |
-| Self-test load | 6.1 s |
-| Self-test inference (32 tokens) | 4.5 s |
-| AI-assisted resume extraction | 34.2 s |
+| Model status response | 33 ms |
+| Self-test total | 8.3 s |
+| Self-test load | 4.85 s |
+| Self-test inference (32 tokens) | 3.42 s |
+| AI-assisted resume extraction | 29.5 s |
 | Extraction result | 13 candidates; 2 accepted AI-method; 5 raw AI proposals |
 | Offline inference | Passed |
 | Node native Q8 reference | 2.6 s load / 0.76 s inference (prior reference) |
@@ -53,7 +53,7 @@ Observed model timing variability:
 - Severely contended host (load average 30–90): self-test up to 197.8 s total; one extraction exceeded the 180 s inference timeout.
 - Fresh install peaks around 2× model disk usage transiently due to resumable chunks + final assembly.
 
-Do not treat these as hardware guarantees. No direct peak RSS measurement was available.
+Do not treat these as hardware guarantees. Process-sum RSS was measured in the final run; per-worker heap was not.
 
 ## 3. Document processing and OCR
 
@@ -81,14 +81,21 @@ No claim of sub-second autofill latency is made.
 
 ## 5. Memory and CPU
 
-- No reliable browser-process peak-RSS instrumentation was available. No OOM occurred in Chromium runs on the 8 GB machine.
-- Model is ~734 MiB on disk; ONNX Runtime/WASM memory is additional and not measured.
-- The model worker is unloaded after 120 seconds idle; model cache is not loaded into the parser worker.
-- Parser workers are capped at 2 concurrent; model worker is single-instance.
-- Long-run repeated-inference or repeated-OCR memory growth was not tested.
-- CPU usage was not instrumented; host load materially affected model inference.
+Process-sum RSS (sum of all Chrome processes for the disposable profile; includes browser UI/GPU/renderers/workers), not per-worker heap:
 
-**Explicit limitation:** peak memory and sustained memory growth remain unverified. The model file size must not be interpreted as peak RAM.
+| Phase | Result |
+|---|---|
+| Browser + extension start | ~748 MiB |
+| After vault creation | ~816 MiB |
+| After 4.08 MiB TXT import | ~1,060 MiB |
+| Backup export peak | ~1,248 MiB |
+| After three lock/unlock cycles | ~1,100 MiB |
+| Model self-test phase peak | ~1,711 MiB |
+| AI extraction phase peak / overall model-run peak | ~1,747 MiB |
+
+No OOM occurred on the 8 GB machine. The model is ~734 MiB on disk; ONNX Runtime/WASM memory is additional. The model worker unloads after 120 s idle. Parser workers are capped at 2; the model worker is single-instance. Long-run repeated-inference/OCR leak growth, per-worker heap, and peak allocation remain unmeasured. CPU usage was not instrumented; host load materially affected inference.
+
+**Explicit limitation:** process-sum RSS is not peak worker memory, and the model file size must not be interpreted as peak RAM.
 
 ## 6. Storage usage
 
@@ -110,11 +117,11 @@ No claim of sub-second autofill latency is made.
 
 | Severity | Finding | Status |
 |---|---|---|
-| Medium | WASM inference is slow and environment-sensitive; one loaded-host extraction exceeded the 180 s timeout. | Limitation; no safe speed fix without validated WebGPU/upgrade |
+| Medium | WASM inference is slow and environment-sensitive; a prior loaded-host run exceeded the old fixed 180 s timeout. | Timeout now scales 300–600 s; load split from generation; WASM remains the verified backend |
 | Medium | Fresh model install requires large transient storage and can take minutes. | Documented; storage check reserves 2× + 128 MB |
 | Low | Dashboard/extension includes all Inter font subsets (~960 KB of assets). | Not changed; cosmetic/performance only |
 | Low | Main JS/PDF chunks exceed 500 KB warning. | Not changed; code-splitting would be a build optimization |
-| Low | No peak-memory or sustained-leak measurement. | Unverified |
+| Low | Process-sum RSS measured; per-worker heap and sustained-leak growth not measured. | Partially verified |
 
 ## 9. Conclusion
 

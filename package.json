@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:extension": "node scripts/build-extension.mjs",
+    "package:extension": "npm run build:extension && node scripts/package-extension.mjs",
     "build:all": "npm run build && npm run build:extension",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
@@ -19,6 +20,8 @@
     "validate:docx-degraded": "node scripts/dev/e2e-docx-degraded.mjs",
     "validate:docx-fidelity": "node scripts/dev/e2e-docx-fidelity.mjs",
     "validate:router-navigation": "node scripts/dev/e2e-router-navigation.mjs",
+    "validate:model-live-download": "node scripts/dev/validate-model-live-download.mjs",
+    "validate:docx-word": "REFERENCE_APP=word node scripts/dev/validate-docx-pagination.mjs",
     "benchmark:docx-pagination": "node scripts/dev/benchmark-docx-pagination.mjs"
   },
   "dependencies": {
@@ -52,6 +55,6 @@
     "fake-indexeddb": "^6.2.8",
     "playwright": "^1.65.1",
     "typescript": "~5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.4.6"
   }
 }

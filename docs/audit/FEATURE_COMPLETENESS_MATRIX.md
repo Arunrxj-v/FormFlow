@@ -21,7 +21,7 @@ Status meanings:
 
 | Feature | Expected behaviour | Implementation / entry points | UI integration | Persistence | Tests and evidence | Status |
 |---|---|---|---|---|---|---|
-| Chrome MV3 extension install | Load unpacked extension and open dashboard/popup | `extension/manifest.json`, `scripts/build-extension.mjs` | `chrome://extensions` | Extension origin | Production build 111 files/51,041.0 KB; phase3/content-isolation E2E load extension | IMPLEMENTED AND VERIFIED |
+| Chrome MV3 extension install | Load unpacked extension and open dashboard/popup | `extension/manifest.json`, `scripts/build-extension.mjs` | `chrome://extensions` | Extension origin | Production build 111 files/51,061.6 KB; phase3/content-isolation E2E load extension | IMPLEMENTED AND VERIFIED |
 | Dashboard React app | Local dashboard routes and vault data | `src/App.tsx`, `src/pages/**` | Dashboard hash routes | IndexedDB | Router E2E; phase3/phase4/model E2E | IMPLEMENTED AND VERIFIED |
 | Popup | Scan/review/fill and profile/history/settings views | `extension/src/popup/Popup.tsx` | Toolbar popup | Background vault | Phase3 popup checks; Google/standard autofill audits | IMPLEMENTED AND VERIFIED |
 | Background service worker | Message router, vault session, imports, model lifecycle, tab operations | `extension/src/background.ts` | Internal | IndexedDB / memory session | Phase3, phase4, model E2E, unit tests | IMPLEMENTED AND VERIFIED |
@@ -30,15 +30,15 @@ Status meanings:
 | Local model worker | Cached-only local inference, no vault access | `extension/src/model/model-worker.ts`, `model-manager.ts` | Internal | Cache Storage / IndexedDB metadata | Real model E2E; model unit tests; build isolation | IMPLEMENTED AND VERIFIED |
 | Content script isolation | Only extension-controlled scan/fill; page cannot access extension APIs | `extension/src/content.ts` | Google Forms + on-demand standard pages | None | Content-isolation E2E; Google/standard autofill audits | IMPLEMENTED AND VERIFIED |
 | CSP and build checks | Local scripts/workers/WASM only; no remote code | `extension/manifest.json`, build script | N/A | N/A | Production build; phase3 CSP checks | IMPLEMENTED AND VERIFIED |
-| Browser compatibility | Chrome/Chromium 109+ target | Manifest `minimum_chrome_version`, esbuild target | N/A | N/A | Chromium 156 test runs | IMPLEMENTED BUT NOT FULLY VERIFIED (other browsers untested) |
-| CI configuration | Automated tests/builds on change | — | N/A | N/A | No CI workflow found | MISSING |
+| Browser compatibility | Chrome/Chromium 113+ target | Manifest `minimum_chrome_version`, esbuild target | N/A | N/A | Chrome 113 headed + Chrome 159 headless runs; Edge/Firefox/Safari untested | IMPLEMENTED AND VERIFIED (Chromium scope) |
+| CI configuration | Automated tests/builds on change | `.github/workflows/ci.yml` | N/A | N/A | Workflow present (verify + browser smoke + manual model job); not yet run on GitHub | IMPLEMENTED BUT NOT FULLY VERIFIED |
 
 ## Onboarding, vault, and session
 
 | Feature | Expected behaviour | Implementation / entry points | UI integration | Persistence | Tests and evidence | Status |
 |---|---|---|---|---|---|---|
 | First launch | Guide user to vault setup | `src/pages/vault/VaultSetupPage.tsx`, `App.tsx` | Setup screen | IndexedDB vault row/meta | Phase3/model E2E create vault | IMPLEMENTED AND VERIFIED |
-| Multi-step onboarding | Welcome, documents, model, extension, completion | Removed direct onboarding route; setup + dashboard model/extension cards | Dashboard cards | Onboarding setting exists but no wizard | Code inspection; no standalone onboarding E2E | PARTIALLY IMPLEMENTED (simplified) |
+| Multi-step onboarding | Welcome, optional model, documents, review, completion; resumable/skippable | `src/pages/onboarding/OnboardingPage.tsx`, setup-state messages | `/onboarding`, dashboard card, Settings reopen | Onboarding settings record | `e2e-onboarding.mjs` fresh/resume/skip/reopen; Chrome 113/159 | IMPLEMENTED AND VERIFIED |
 | Vault creation/passphrase | Create encrypted vault, validate weak passphrase | `core/vault/vault-manager.ts`, `VaultSetupPage` | Setup form | `vaultMeta`, `vaults` | Phase3; crypto/unit tests | IMPLEMENTED AND VERIFIED |
 | Unlock / wrong passphrase / repeat attempts | Correct passphrase only; delay repeated failures | `vault-manager.unlock` | Unlock page/popup | Memory DEK | Phase3; local-vault tests | IMPLEMENTED AND VERIFIED (delay resets on worker restart) |
 | Lock / session expiry | Clear DEK and block data; generation invalidation | `vault-session.ts`, `operation-coordinator`, background leases | Dashboard/popup | Memory only | Phase3, reload, offscreen, model E2E | IMPLEMENTED AND VERIFIED |
@@ -100,7 +100,7 @@ Status meanings:
 | Self-test | Real local generation + latency | model manager | Model settings | Metadata | Model E2E | IMPLEMENTED AND VERIFIED |
 | Offline inference | Works after install | model worker | Transparent | Cache | Model E2E `context.setOffline` | IMPLEMENTED AND VERIFIED |
 | Idle unload/remove | Free memory; remove assets | model manager/offscreen | Controls | Cache/metadata | Code review; model E2E | IMPLEMENTED AND VERIFIED |
-| WebGPU | GPU acceleration where practical | Capability detection only | Display only | N/A | E2E detects Apple Metal; inference uses WASM | NOT IMPLEMENTED (Q4F16 not validated) |
+| WebGPU | GPU acceleration where practical | Capability detection only; WASM inference | Display only | N/A | Apple Metal detected; WebGPU-disabled fallback audit; Q4F16 not validated | NOT IMPLEMENTED (evaluated, deliberately WASM-only) |
 | Model upgrade/migration | Switch pinned model repo | None | None | None | Code review | MISSING |
 | Model output validation | Catalogue/grounding/limits/review | `core/extraction/pipeline.ts`, `ai-matcher.ts` | Extraction/popup | Encrypted values | Pipeline/ai-matcher/model E2E; prompt-injection unit test | IMPLEMENTED AND VERIFIED (model recall/quality limited) |
 | Prompt injection resistance | Document text is data; no vault access | pipeline prompt + worker boundary | Transparent | None | Prompt-injection unit test; worker isolation tests | IMPLEMENTED AND VERIFIED (output grounding, not full prompt-injection immunity) |
@@ -116,7 +116,7 @@ Status meanings:
 | Profile edit/delete/add | User-editable fields, custom values | `profileService`, pages | Personal/addresses | Encrypted values | Phase3; unit tests | IMPLEMENTED AND VERIFIED |
 | Verify value | Explicit user verification; stale evidence cleared | `VERIFY_FIELD`, updateField | Field table/dialog | Encrypted value metadata | Extraction-service tests | IMPLEMENTED AND VERIFIED |
 | Structured records | Education/employment/address/skills/certs/projects | extraction-service synth, profile records | Record pages | Encrypted profile records | Extraction-service tests; model E2E education | IMPLEMENTED AND VERIFIED (merge of later fields is limited) |
-| Search/filter | Profile/document/history search/filter | page state | UI controls | N/A | Source/unit; not all browser flows tested | IMPLEMENTED BUT NOT FULLY VERIFIED |
+| Search/filter | Profile/document/history search/filter | page state | UI controls | N/A | Document type/status/category/search; profile search/verification filter; UI audit | IMPLEMENTED AND VERIFIED |
 | Change history | Activity/history entries | activity/history repositories | Overview/history | Encrypted activity/history | Phase3 E2E; code review | IMPLEMENTED AND VERIFIED |
 | Collections | Group documents, scope matching | collection repository/service | Collections page/popup | Encrypted collections/memberships | Phase3; unit tests | IMPLEMENTED AND VERIFIED |
 
@@ -134,9 +134,9 @@ Status meanings:
 | Fill execution | Native setters/events, selects/radios/checks | adapters | Popup | None | Extension tests; standard audit includes radio/checkbox safety | IMPLEMENTED AND VERIFIED |
 | Read-back rejection | Report failed/transformed values accurately | adapters | Popup result | History | Extension tests; standard audit | IMPLEMENTED AND VERIFIED |
 | No auto-submit | Never click submit | adapters | Popup | None | Google test/audit; standard audit | IMPLEMENTED AND VERIFIED |
-| Iframes/Shadow DOM | Correct framing/visibility handling | content script top-frame + Google all_frames | None | None | Content isolation; not full iframe/shadow tests | PARTIALLY IMPLEMENTED (untested) |
+| Iframes/Shadow DOM | Safe traversal/visibility/approval binding | `extension/src/lib/dom.ts`, Standard adapter, content fingerprint | Popup scan/fill | None | Standard audit same-origin iframe + open Shadow DOM; cross-origin/closed excluded | IMPLEMENTED AND VERIFIED (scoped) |
 | Cross-tab/cross-origin | No fill in wrong tab/origin | approval binding | Popup | Background memory | Standard audit; Google stale-tab audit | IMPLEMENTED AND VERIFIED (new fix) |
-| Sensitive-field behavior | Explicit review, no silent fill | matcher/popup | Popup | None | Code/phase3; browser E2E partial | IMPLEMENTED BUT NOT FULLY VERIFIED |
+| Sensitive-field behavior | Explicit review, no silent fill | classifier/matcher/popup | Popup | None | Browser audit verifies email/phone/address/DOB/ID flags; popup confirmation | IMPLEMENTED AND VERIFIED |
 | Autofill history | Record website/status/counts | history service/popup/background | History page/popup | Encrypted history | Phase3/popup; code review | IMPLEMENTED AND VERIFIED |
 
 ## Settings, UX, and remaining surfaces
@@ -146,17 +146,17 @@ Status meanings:
 | Model settings | Status, storage, install/remove/self-test, auto-download | `ModelSettingsCard.tsx`, background | Settings Local AI | Metadata/cache | Model E2E; code review | IMPLEMENTED AND VERIFIED |
 | Security settings | Lock, integrity, passphrase, delete | `SettingsPage.tsx`, vault services | Settings Vault security | IndexedDB | Phase3 | IMPLEMENTED AND VERIFIED |
 | Autofill settings | Effective controls | Settings/popup; `allowLongAnswers` wired | Settings/popup | Settings | Extension tests; source review | IMPLEMENTED AND VERIFIED (other inert toggles removed) |
-| Empty/loading/error states | Usable states | pages/components | All main pages | N/A | Phase3/phase4/router; source review | IMPLEMENTED BUT NOT FULLY VERIFIED (accessibility not audited) |
-| Responsive/accessibility | Keyboard/focus/labels/responsive | components/CSS | All | N/A | Not systematically tested | IMPLEMENTED BUT NOT FULLY VERIFIED |
+| Empty/loading/error states | Usable states | pages/components | All main pages | N/A | Phase3/phase4/router; UI audit empty states | IMPLEMENTED AND VERIFIED (not exhaustive) |
+| Responsive/accessibility | Keyboard/focus/labels/responsive | components/CSS, Modal, Toast | All | N/A | UI audit 1280/768, modal focus/Escape, keyboard, reduced motion; no full WCAG | IMPLEMENTED BUT NOT FULLY VERIFIED |
 | Extension setup page | Instructions/demo review | `ExtensionSetupPage.tsx` | Dashboard | N/A | Router E2E; source review | IMPLEMENTED AND VERIFIED (preview only; shortcut claims removed) |
 | Demo form | Local test form | `DemoFormPage.tsx` | Dashboard | Local state | Source review | UI/TEST SURFACE ONLY (not production form target) |
 | Legacy server API | Development/migration only | `server/index.mjs` | Localhost only | SQLite | Server tests | IMPLEMENTED BUT NOT PRODUCTION-SCOPED |
 | Google Drive | Removed | No client route/service | None | None | Source scan; server tests 404/410 | REMOVED / NOT APPLICABLE |
 | External AI providers | Removed | No provider classes/routes | None | None | Source scan; server tests | REMOVED / NOT APPLICABLE |
-| Public distribution | Store package, signing, policy, update channel | None | None | N/A | No artifacts | MISSING |
+| Public distribution | Store package, signing, policy, update channel | `scripts/package-extension.mjs`, `.github/workflows/ci.yml`, docs | `npm run package:extension` | `release/` (ignored) | ZIP built with SHA-256; no store signing/submission | PARTIALLY IMPLEMENTED |
 
 ## Audit conclusion per feature
 
 - Core encrypted vault, local ingestion, local OCR, structure validation, model lifecycle, local inference, grounded extraction, profile review, backup/restore, deterministic/standard/Google autofill, and approval safety are implemented and verified in the tested scope.
-- WebGPU inference, model upgrades, Word-verified pagination, dedicated onboarding wizard, live CDN download, multi-browser support, public distribution, and some accessibility/iframe/shadow-DOM cases are not fully implemented or not fully verified.
+- WebGPU inference, model upgrades, Word-verified pagination, full live CDN download, non-Chromium browsers, store signing/submission, and full WCAG accessibility remain unimplemented or unverified. Onboarding, search/filter, same-origin iframe/open Shadow DOM, CI, and packaging were added and verified.
 - No feature is marked verified solely because a source file exists; each row references tests/execution or explicitly states the verification gap.

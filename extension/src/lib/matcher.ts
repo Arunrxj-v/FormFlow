@@ -78,7 +78,7 @@ export function buildSuggestions(
       method: generated ? 'contextual' : 'deterministic',
       needsReview,
       reason,
-      sensitive: Boolean(item?.sensitive ?? field.sensitive),
+      sensitive: Boolean(item?.sensitive || field.sensitive),
       conflict: Boolean(item?.conflicts?.length),
       alternates: item?.conflicts?.map((conflict) => ({
         value: conflict.value,

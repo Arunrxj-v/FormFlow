@@ -26,7 +26,7 @@ async function waitForHash(page, expected) {
 try {
   context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
-    ...(executablePath ? { executablePath } : {}),
+    ...(executablePath ? { executablePath } : process.env.CI ? { channel: 'chromium' } : {}),
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,

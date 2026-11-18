@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
-const SECRET = process.env.AUTH_SECRET || 'formflow-local-development-secret-change-me';
+const DEVELOPMENT_SECRET = 'formflow-local-development-secret-change-me';
+const SECRET = process.env.AUTH_SECRET || DEVELOPMENT_SECRET;
 const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 export function hashPassword(password, salt = randomBytes(16).toString('hex')) {
@@ -81,7 +82,16 @@ export function isProduction() {
 }
 
 export function assertProductionSecret() {
-  if (isProduction() && !process.env.AUTH_SECRET) {
+  if (!isProduction()) return;
+  const secret = process.env.AUTH_SECRET;
+  if (!secret) {
     throw new Error('AUTH_SECRET must be configured in production.');
   }
+  if (secret === DEVELOPMENT_SECRET || secret.length < 32) {
+    throw new Error('AUTH_SECRET must be a unique secret of at least 32 characters in production.');
+  }
+}
+
+export function isDevelopmentSecret() {
+  return !process.env.AUTH_SECRET || process.env.AUTH_SECRET === DEVELOPMENT_SECRET;
 }

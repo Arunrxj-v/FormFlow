@@ -17,6 +17,12 @@ import type {
 } from '@shared/types';
 
 
+export interface SetupState {
+  completed: boolean;
+  currentStep: number;
+  vaultCreatedAt?: string;
+}
+
 export interface VaultStatus {
   exists: boolean;
   unlocked: boolean;
@@ -146,6 +152,8 @@ export interface VaultClientApi {
   getProfile(): Promise<VaultProfile>;
   updateProfile(patch: Partial<Omit<VaultProfile, 'id'>>): Promise<VaultProfile>;
   getDashboardData(): Promise<DashboardPayload>;
+  getSetupState(): Promise<SetupState>;
+  updateSetupState(patch: Partial<SetupState>): Promise<SetupState>;
   listFields(): Promise<VaultField[]>;
   addField(field: VaultFieldInput): Promise<{ field: VaultField; conflictCreated: boolean }>;
   updateField(id: string, value: string): Promise<VaultField>;
@@ -158,6 +166,10 @@ export interface VaultClientApi {
   cancelModelInstall(): Promise<{ cancelled: boolean }>;
   removeModel(): Promise<void>;
   selfTestModel(): Promise<ModelSelfTestResult>;
+  upgradeModel(): Promise<{ ok: boolean; message: string; status: ModelStatusSnapshot }>;
+  cancelModelUpgrade(): Promise<{ cancelled: boolean }>;
+  rollbackModel(): Promise<{ ok: boolean; message: string; status: ModelStatusSnapshot }>;
+  prunePreviousModel(): Promise<{ pruned: boolean }>;
   cancelInference(): Promise<{ cancelled: boolean }>;
   listDocuments(): Promise<VaultDocument[]>;
   getDocument(id: string): Promise<VaultDocument | null>;

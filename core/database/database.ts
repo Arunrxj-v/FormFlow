@@ -82,6 +82,8 @@ export function getDb(): Promise<IDBPDatabase<FormFlowDB>> {
         }
 
         if (!db.objectStoreNames.contains('modelMetadata')) db.createObjectStore('modelMetadata', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('modelLifecycle')) db.createObjectStore('modelLifecycle', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('securityState')) db.createObjectStore('securityState', { keyPath: 'id' });
       },
       blocked() {
         console.warn('[FormFlow] Database upgrade blocked by another open tab.');

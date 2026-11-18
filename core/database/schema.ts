@@ -8,6 +8,7 @@ import type {
   ExtractedValueRecord,
   FormHistoryRow,
   InstalledModelRecord,
+  ModelLifecycleState,
   ProcessingJob,
   ProfileRecordRow,
   SettingRow,
@@ -17,6 +18,7 @@ import type {
   VaultProfile,
   VaultRecord,
   StoredVaultProfileRow,
+  UnlockThrottleRecord,
 } from '@shared/types';
 
 export interface FormFlowDB extends DBSchema {
@@ -68,6 +70,8 @@ export interface FormFlowDB extends DBSchema {
     indexes: { 'by-document': string; 'by-status': string };
   };
   modelMetadata: { key: string; value: InstalledModelRecord };
+  modelLifecycle: { key: string; value: ModelLifecycleState };
+  securityState: { key: string; value: UnlockThrottleRecord };
 }
 
 export type { VaultProfile };

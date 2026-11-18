@@ -10,15 +10,15 @@ export interface ClassifiedField {
 }
 
 const rules: Array<{ kind: FieldKind; sensitive?: boolean; patterns: RegExp[]; weight: number }> = [
-  { kind: 'email', patterns: [/\bemail\b/i, /e-mail/i, /courriel/i, /email address/i], weight: 98 },
-  { kind: 'phone', patterns: [/\bphone\b/i, /mobile/i, /telephone/i, /contact number/i, /whatsapp/i], weight: 96 },
+  { kind: 'email', sensitive: true, patterns: [/\bemail\b/i, /e-mail/i, /courriel/i, /email address/i], weight: 98 },
+  { kind: 'phone', sensitive: true, patterns: [/\bphone\b/i, /mobile/i, /telephone/i, /contact number/i, /whatsapp/i], weight: 96 },
   { kind: 'firstName', patterns: [/first name/i, /given name/i, /\bfname\b/i], weight: 97 },
   { kind: 'lastName', patterns: [/last name/i, /family name/i, /surname/i, /\blname\b/i], weight: 97 },
   { kind: 'fullName', patterns: [/full name/i, /your name/i, /applicant name/i, /candidate name/i, /student name/i], weight: 95 },
   { kind: 'dateOfBirth', sensitive: true, patterns: [/date of birth/i, /\bdob\b/i, /birth date/i, /birthday/i], weight: 98 },
   { kind: 'gender', patterns: [/\bgender\b/i, /\bsex\b/i], weight: 95 },
   { kind: 'nationality', patterns: [/nationality/i, /citizenship/i], weight: 96 },
-  { kind: 'address', patterns: [/address line 1/i, /street address/i, /^address$/i, /residential address/i, /mailing address/i], weight: 94 },
+  { kind: 'address', sensitive: true, patterns: [/address line 1/i, /street address/i, /^address$/i, /residential address/i, /mailing address/i], weight: 94 },
   { kind: 'city', patterns: [/\bcity\b/i, /\btown\b/i, /\bdistrict\b/i], weight: 94 },
   { kind: 'state', patterns: [/\bstate\b/i, /\bprovince\b/i, /\bregion\b/i], weight: 92 },
   { kind: 'postalCode', patterns: [/postal code/i, /zip code/i, /\bzip\b/i, /pin code/i, /pincode/i], weight: 96 },
@@ -56,8 +56,8 @@ export function classifyField(input: {
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (input.type === 'email') return { kind: 'email', confidence: 99, sensitive: false };
-  if (input.type === 'tel') return { kind: 'phone', confidence: 99, sensitive: false };
+  if (input.type === 'email') return { kind: 'email', confidence: 99, sensitive: true };
+  if (input.type === 'tel') return { kind: 'phone', confidence: 99, sensitive: true };
   if ((input.label ?? '').trim().toLowerCase() === 'name') {
     return { kind: 'fullName', confidence: 95, sensitive: false };
   }

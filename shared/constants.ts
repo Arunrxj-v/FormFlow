@@ -1,7 +1,7 @@
 export const APP_NAME = 'FormFlow';
 export const APP_VERSION = '2.0.0';
 export const DB_NAME = 'formflow-local';
-export const DB_VERSION = 2;
+export const DB_VERSION = 4;
 export const VAULT_SCHEMA_VERSION = 2;
 export const ENCRYPTION_FORMAT_VERSION = 2;
 
@@ -9,8 +9,13 @@ export const MODEL_CACHE_NAME = 'formflow-model-cache-v1';
 export const MODEL_METADATA_ID = 'qwen3-0.6b-instruct';
 export const MODEL_REPOSITORY = 'onnx-community/Qwen3-0.6B-Instruct-ONNX';
 export const MODEL_REVISION = '54250909aca286a05b9d013c8af7a21859ee6ead';
+export const MODEL_MANIFEST_VERSION = 1 as const;
+export const MODEL_RELEASE_ID = 'qwen3-0.6b-int8-2026-11';
+export const MODEL_VERSION = '0.6.0-int8-r1';
 export const MODEL_LICENSE = 'Apache-2.0';
 export const MODEL_LICENSE_URL = 'https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE';
+/** Single journal record for the active/rollback model lifecycle. */
+export const MODEL_LIFECYCLE_ID = 'active';
 
 export const VAULT_STATE_KEY = 'formflow.vault.state';
 /** Legacy Phase 3 key; removed from storage.session on startup. */
@@ -110,13 +115,19 @@ export const MAX_PAGINATION_GEOMETRY_CHARS = 300_000;
 export const MAX_PAGINATION_LINES_PER_BLOCK = 2_000;
 export const MAX_PAGINATION_COLUMNS = 16;
 
-export const MODEL_INFERENCE_TIMEOUT_MS = 180_000;
+/** Loading is separate from generation; a cold WASM model can take minutes. */
+export const MODEL_LOAD_TIMEOUT_MS = 240_000;
+/** Base generation budget; scaled by output tokens for slower hosts. */
+export const MODEL_INFERENCE_TIMEOUT_MS = 300_000;
+export const MODEL_INFERENCE_TIMEOUT_PER_TOKEN_MS = 1_500;
+export const MODEL_INFERENCE_TIMEOUT_MAX_MS = 600_000;
 export const MODEL_SELF_TEST_TIMEOUT_MS = 180_000;
 export const MODEL_MAX_OUTPUT_TOKENS = 160;
 export const MODEL_MAX_CONTEXT_TOKENS = 3072;
 
 export const BACKUP_FORMAT = 'formflow-encrypted-backup';
 export const BACKUP_VERSION = 3;
+export const BACKUP_PASSPHRASE_MIN_LENGTH = 12;
 export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 export const MAX_BACKUP_DOCUMENTS = 5000;
 export const MAX_BACKUP_VALUES = 50000;

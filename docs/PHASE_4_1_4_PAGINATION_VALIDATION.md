@@ -1,11 +1,13 @@
 # Phase 4.1.4.2 DOCX pagination fidelity and image validation
 
-Generated: 2026-11-17T15:00:21.653Z
+Generated: 2026-11-18T08:41:32.261Z
 
 Method: each fixture is converted to PDF by a locally installed LibreOffice (`soffice --headless --convert-to pdf`). The same DOCX is imported through the production extension in Chromium, and the renderer-derived pagination, font evidence, image blocks, line/cell boxes, and column geometry are read back from encrypted extraction. Reference page text is extracted with `pdfjs-dist`, and each top-level block is matched by normalized first/last text segments to estimate start/end page mapping. When `WORD_REFERENCE_DIR` is supplied, Word-exported PDFs are read through the same comparison path; no Word reference was supplied for this generated report unless the section below says otherwise.
 
+Reference application: LibreOffice; version: detected via soffice --version.
 Reference renderer: LibreOffice 26.8.3.1 861effc5289d539f15c4c18d1ba8579ffd78728b
 FormFlow renderer: @docx-editor.dev/core 2.38.0 with packaged Carlito/Liberation fonts and HarfBuzz.
+Reference mode: libreoffice; verified_physical: false (renderer_derived_physical only).
 
 | Fixture | Features | Reference pages | FormFlow pages | Diff | Compared blocks | Exact mapping | Start page | End page | Orientation match |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -1,5 +1,5 @@
 import { FormFlowError } from '@shared/errors';
-import { ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS, VAULT_SCHEMA_VERSION } from '@shared/constants';
+import { BACKUP_PASSPHRASE_MIN_LENGTH, ENCRYPTION_FORMAT_VERSION, PBKDF2_ITERATIONS, VAULT_SCHEMA_VERSION } from '@shared/constants';
 
 export interface EncryptedEnvelope {
   v: 1 | 2;
@@ -389,6 +389,25 @@ export function validatePasswordStrength(password: string): { ok: boolean; messa
   if (/^(.)\1+$/.test(password)) return { ok: false, message: 'Choose a less repetitive password.' };
   if (/^\d+$/.test(password)) return { ok: false, message: 'A password made only of digits is too weak.' };
   return { ok: true };
+}
+
+/**
+ * Policy for new backup archives. Existing archives are still imported with
+ * their original passphrase because restore never applies a minimum length to
+ * compatibility input; only export enforces this policy.
+ */
+export function validateBackupPassphrase(passphrase: string): { ok: boolean; message?: string; length: number } {
+  const length = Array.from(passphrase ?? '').length;
+  if (!passphrase || !passphrase.trim()) {
+    return { ok: false, message: 'Enter a backup passphrase.', length };
+  }
+  if (length < BACKUP_PASSPHRASE_MIN_LENGTH) {
+    return { ok: false, message: `Use at least ${BACKUP_PASSPHRASE_MIN_LENGTH} characters for a new backup passphrase.`, length };
+  }
+  if (length > 200) {
+    return { ok: false, message: 'Use a backup passphrase of 200 characters or fewer.', length };
+  }
+  return { ok: true, length };
 }
 
 export function isSupportedSchemaVersion(value: unknown): value is number {

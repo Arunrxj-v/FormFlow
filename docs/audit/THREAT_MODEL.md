@@ -129,11 +129,11 @@ Scope: Chrome extension, dashboard, popup, background service worker, offscreen 
 | T22 | Ciphertext tampering/AAD swapping | Local attacker | Per-record AAD with vault/record/field/schema; v2 envelope; integrity check | No formal cryptographic audit |
 | T23 | Backup exfiltration | Stolen archive | Encrypted v3 payload + authenticated header; passphrase separate; no plaintext values | Backup passphrase minimum only 8 chars; offline guessing possible |
 | T24 | Malicious backup overwrites data | Hostile archive | Import only into empty target; validate counts/checksums/references; atomic activation/journal | Physical disk-full/crash combinations untested |
-| T25 | Model cache tampering | Local attacker/extension page | Hash verification by manager; model worker cache-only; no remote fallback | Public cache not encrypted; trusted extension page could alter it; aliases not independently rehashed |
+| T25 | Model cache tampering | Local attacker/extension page | Hash verification by manager; worker re-hashes verified revision files and rebuilds aliases; no remote fallback | Public cache not encrypted; a trusted extension page could alter files, but hash checks fail closed |
 | T26 | Offscreen compromise | Parser exploit | No vault key/IDB, exact port sender, narrow protocol, allowlisted results | Shares extension origin; not a separate sandboxed origin |
 | T27 | Background compromise | Memory/JS bug | DEK only memory; operations leases; session generation; sender validation | A compromised service worker can use the unlocked key; inherent |
 | T28 | Legacy server account/data access | Exposed dev server | Auth tokens, scoped queries, rate limiting, CORS whitelist, JSON body, production secret assertion | Default dev secret, in-memory rate limits, no CSRF token; do not expose publicly |
-| T29 | Repository personal-document disclosure | Git history/remote | Current index cleaned and `server/storage/` ignored; future files untracked | **Historical blobs remain on `main`/`origin/migration/local-first` and feature history**; requires history rewrite/remote purge |
+| T29 | Repository personal-document disclosure | Git history/remote | Current index cleaned and `server/storage/` ignored; future files untracked | **Confirmed public GitHub repository; `migration/local-first` and other refs serve the identity PDF; raw URL returned 200**; requires immediate owner remediation |
 | T30 | Dependency supply chain | npm install/build | Pinned versions; audit; no remote code at runtime; built assets verified | Dev-only Vite/fdir/picomatch advisories; native install scripts; no SBOM/attestation |
 
 ## 6. Trust assumptions
@@ -148,7 +148,7 @@ Scope: Chrome extension, dashboard, popup, background service worker, offscreen 
 
 ## 7. Residual risk summary
 
-1. Historical personal PDFs remain in Git history/remotes (critical repository exposure).
+1. Historical personal PDFs remain in a **public** Git remote/history (confirmed critical repository exposure).
 2. Personal-use runtime has no remaining known critical/high finding after the autofill binding fix, but no independent security audit has been performed.
 3. Live CDN download behavior, WebGPU/Q4F16, model upgrades, Word pagination, accessibility, iframe/Shadow DOM, and peak memory are not fully verified.
 4. Dev-only dependency advisories and legacy server defaults remain low/medium residual risks.

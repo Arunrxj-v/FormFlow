@@ -440,6 +440,18 @@ async function readPdfReference(pdfPath, source) {
   const { getDocument, OPS } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const task = getDocument({ data, useSystemFonts: false, disableFontFace: true });
   const document = await task.promise;
+  let metadata = {};
+  try {
+    const info = await document.getMetadata();
+    const raw = info?.info ?? {};
+    metadata = {
+      producer: typeof raw.Producer === 'string' ? raw.Producer : undefined,
+      creator: typeof raw.Creator === 'string' ? raw.Creator : undefined,
+      creationDate: typeof raw.CreationDate === 'string' ? raw.CreationDate : undefined,
+    };
+  } catch {
+    // Some PDFs omit metadata; the declared source and optional version remain.
+  }
   const pages = [];
   const orientations = [];
   const imagePaints = [];
@@ -468,6 +480,7 @@ async function readPdfReference(pdfPath, source) {
     imagePaintsTotal: imagePaints.reduce((sum, count) => sum + count, 0),
     pdfPath,
     source,
+    metadata,
   };
 }
 
@@ -649,12 +662,23 @@ async function main() {
   });
   const selectedFixtures = fixtures.filter((fixture) => !filter?.length || filter.includes(fixture.name));
   if (selectedFixtures.length === 0) throw new Error('No corpus fixtures matched CORPUS_ONLY.');
+  const referenceAppMode = (process.env.REFERENCE_APP ?? '').toLowerCase();
+  if (referenceAppMode && referenceAppMode !== 'libreoffice' && referenceAppMode !== 'word') {
+    throw new Error('REFERENCE_APP must be "libreoffice" or "word".');
+  }
   const wordReferenceDir = process.env.WORD_REFERENCE_DIR
     ? path.resolve(process.env.WORD_REFERENCE_DIR)
     : undefined;
   if (wordReferenceDir && !existsSync(wordReferenceDir)) {
     throw new Error(`WORD_REFERENCE_DIR does not exist: ${wordReferenceDir}`);
   }
+  if (referenceAppMode === 'word' && !wordReferenceDir) {
+    throw new Error('REFERENCE_APP=word requires WORD_REFERENCE_DIR with one PDF per fixture.');
+  }
+  const wordMode = referenceAppMode === 'word' || Boolean(wordReferenceDir);
+  const referenceApplication = wordMode
+    ? { name: 'Microsoft Word', version: process.env.WORD_VERSION ?? process.env.REFERENCE_APP_VERSION ?? 'from PDF metadata' }
+    : { name: 'LibreOffice', version: sofficePath ? 'detected via soffice --version' : 'not installed' };
   const wordReferences = [];
   const results = [];
 
@@ -704,7 +728,12 @@ async function main() {
         if (existsSync(wordPdfPath)) {
           wordReference = await readPdfReference(wordPdfPath, 'microsoft-word');
         }
-        wordReferences.push({ name: fixture.name, supplied: Boolean(wordReference), path: wordPdfPath });
+        wordReferences.push({
+          name: fixture.name,
+          supplied: Boolean(wordReference),
+          path: wordPdfPath,
+          metadata: wordReference?.metadata ?? {},
+        });
       }
       const imported = await send(`corpus_${fixture.name}`, 'IMPORT_DOCUMENT', {
         name: `${fixture.name}.docx`,
@@ -774,6 +803,7 @@ async function main() {
         imageAppearances,
         maxHeaderFooterAppearances,
         geometry,
+        blockPages: pagination?.blockPages ?? [],
         columnBoxes,
         columnWidths,
         columnCounts,
@@ -891,8 +921,10 @@ async function main() {
   lines.push('');
   lines.push('Method: each fixture is converted to PDF by a locally installed LibreOffice (`soffice --headless --convert-to pdf`). The same DOCX is imported through the production extension in Chromium, and the renderer-derived pagination, font evidence, image blocks, line/cell boxes, and column geometry are read back from encrypted extraction. Reference page text is extracted with `pdfjs-dist`, and each top-level block is matched by normalized first/last text segments to estimate start/end page mapping. When `WORD_REFERENCE_DIR` is supplied, Word-exported PDFs are read through the same comparison path; no Word reference was supplied for this generated report unless the section below says otherwise.');
   lines.push('');
+  lines.push(`Reference application: ${referenceApplication.name}; version: ${referenceApplication.version}.`);
   lines.push(`Reference renderer: ${(await execFileAsync(sofficePath, ['--version'])).stdout.trim()}`);
   lines.push(`FormFlow renderer: @docx-editor.dev/core 2.38.0 with packaged Carlito/Liberation fonts and HarfBuzz.`);
+  lines.push(`Reference mode: ${wordMode ? 'microsoft-word' : 'libreoffice'}; verified_physical: false (renderer_derived_physical only).`);
   lines.push('');
   const percent = (value) => value === null ? '—' : `${Math.round(value * 100)}%`;
   lines.push('| Fixture | Features | Reference pages | FormFlow pages | Diff | Compared blocks | Exact mapping | Start page | End page | Orientation match |');
@@ -997,6 +1029,54 @@ async function main() {
     lines.push('');
   }
   await writeFile(outputMarkdown, `${lines.join('\n')}\n`, 'utf8');
+
+  // Dedicated discrepancy report for Microsoft Word reference mode. Each
+  // dimension is reported explicitly; absence of a dimension means the harness
+  // cannot measure it, never that it matched.
+  if (wordMode) {
+    const supplied = wordReferences.filter((entry) => entry.supplied);
+    const discrepancy = [];
+    discrepancy.push('# DOCX Word reference discrepancy report');
+    discrepancy.push('');
+    discrepancy.push(`Generated: ${new Date().toISOString()}`);
+    discrepancy.push('');
+    discrepancy.push(`Reference application: ${referenceApplication.name}; version: ${referenceApplication.version}.`);
+    discrepancy.push(`verified_physical: false. Status: ${supplied.length ? 'reference comparison executed' : 'not executed — no Word PDFs supplied'}.`);
+    discrepancy.push('');
+    discrepancy.push(`Word PDFs supplied: ${supplied.length}/${wordReferences.length}.`);
+    if (supplied.length) {
+      const producers = [...new Set(supplied.map((entry) => entry.metadata.producer).filter(Boolean))];
+      if (producers.length) discrepancy.push(`PDF Producer metadata: ${producers.join(' | ')}.`);
+      discrepancy.push('');
+      discrepancy.push('| Fixture | Pages (Word / LO / FormFlow) | Paragraph placement | Table fragmentation | Images (Word paints / FormFlow) | Headers/footers | Page geometry | Block ranges |');
+      discrepancy.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+      for (const result of results) {
+        if (!result.wordComparison) continue;
+        const wc = result.wordComparison;
+        const tableRows = result.blockPages.reduce((sum, block) => sum + (block.tableRows?.length ?? 0), 0);
+        const multiPageTables = result.blockPages.filter((block) => (block.tableRows?.length ?? 0) > 0 && block.startPageNumber !== block.endPageNumber).length;
+        discrepancy.push([
+          `\`${result.fixture.name}\``,
+          `${wc.referencePages} / ${result.referencePages} / ${wc.formflowPages} (Δ${wc.difference > 0 ? '+' : ''}${wc.difference})`,
+          `${wc.exact}/${wc.compared} exact start/end`,
+          `${tableRows} rows, ${multiPageTables} spanning-page block(s)`,
+          `${result.referenceImagePaints} / ${result.imageAppearances}`,
+          `${result.headerFooterImageBlocks} header/footer image block(s)`,
+          `${result.orientationMatches}/${result.orientationCompared} orientation match`,
+          `${percent(wc.startRate)} start / ${percent(wc.endRate)} end`,
+        ].join(' | '));
+      }
+      discrepancy.push('');
+      discrepancy.push('Word compatibility is NOT claimed from these numbers. Physical pagination requires identical fonts, renderer and OOXML feature support; a zero page-count difference is necessary but not sufficient.');
+    }
+    const missingWord = wordReferences.filter((entry) => !entry.supplied);
+    if (missingWord.length) {
+      discrepancy.push('');
+      discrepancy.push(`Missing Word PDFs: ${missingWord.map((entry) => `\`${entry.name}.pdf\``).join(', ')}.`);
+    }
+    await writeFile(path.join(root, 'docs', 'DOCX_WORD_DISCREPANCY_REPORT.md'), `${discrepancy.join('\n')}\n`, 'utf8');
+    console.log(`WORD DISCREPANCY REPORT docs/DOCX_WORD_DISCREPANCY_REPORT.md`);
+  }
   console.log(`REPORT ${path.relative(root, outputMarkdown)}`);
   console.log(`FAILURES ${failures.length}`);
   if (failures.length) process.exitCode = 1;

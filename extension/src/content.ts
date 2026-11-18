@@ -1,4 +1,5 @@
 import { defaultAdapterRegistry, type FillRequestItem } from './adapters/index.ts';
+import { collectControlElements, collectFormRoots } from './lib/dom.ts';
 
 declare global {
   interface Window {
@@ -11,7 +12,15 @@ let lastScanToken: string | null = null;
 let lastScanFingerprint = '';
 
 function formFingerprint(): string {
-  const controls = Array.from(document.querySelectorAll<HTMLElement>('input, textarea, select, [role="textbox"], [role="radio"], [role="checkbox"], [role="listbox"]'));
+  const controls = collectControlElements(document);
+  const roots = collectFormRoots(document);
+  const rootIdentity = roots.map((root) => {
+    try {
+      return 'location' in root ? root.location.href : 'shadow-root';
+    } catch {
+      return 'cross-origin-root';
+    }
+  }).join(',');
   return controls.map((element) => [
     element.tagName.toLowerCase(),
     element.getAttribute('type') ?? '',
@@ -19,7 +28,7 @@ function formFingerprint(): string {
     element.getAttribute('id') ?? '',
     element.getAttribute('aria-label') ?? '',
     element.getAttribute('placeholder') ?? '',
-  ].join(':')).join('|') + `|forms:${document.forms.length}`;
+  ].join(':')).join('|') + `|forms:${document.forms.length}|roots:${rootIdentity}`;
 }
 
 try {

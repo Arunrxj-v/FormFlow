@@ -73,6 +73,11 @@ export const vaultClient: VaultClientApi = {
   touch: () => vaultService.touch(),
   getProfile: () => profileService.getProfile(),
   updateProfile: (patch) => profileService.saveProfile(patch),
+  getSetupState: () => vaultService.getSetupState(),
+  updateSetupState: async (patch) => {
+    await vaultService.updateSetupState(patch);
+    return vaultService.getSetupState();
+  },
   getDashboardData: async (): Promise<DashboardPayload> => {
     const [vault, profile, data] = await Promise.all([
       vaultService.getActiveVault(),
@@ -108,6 +113,10 @@ export const vaultClient: VaultClientApi = {
     variant: 'q8',
     message: 'Local inference is available in the installed Chrome extension build.',
   }),
+  upgradeModel: async () => ({ ok: false, message: 'Install the FormFlow Chrome extension to manage model upgrades.', status: await vaultClient.modelStatus() }),
+  cancelModelUpgrade: async () => ({ cancelled: false }),
+  rollbackModel: async () => ({ ok: false, message: 'Install the FormFlow Chrome extension to manage model rollback.', status: await vaultClient.modelStatus() }),
+  prunePreviousModel: async () => ({ pruned: false }),
   cancelInference: async () => ({ cancelled: false }),
   listDocuments: () => documentService.list(),
   getDocument: (id) => documentService.get(id),

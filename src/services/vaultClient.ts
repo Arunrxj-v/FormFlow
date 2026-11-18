@@ -25,6 +25,7 @@ import type {
   EncryptionStatus,
   LegacyMigrationSummary,
   ProfileRecordType,
+  SetupState,
   VaultClientApi,
   VaultImportResult,
   VaultIntegrityReport,
@@ -186,6 +187,8 @@ export const vaultClient: VaultClientApi = {
   getProfile: () => send<VaultProfile>(MESSAGE.GET_PROFILE),
   updateProfile: (patch) => send<VaultProfile>(MESSAGE.UPDATE_PROFILE, patch as Record<string, unknown>),
   getDashboardData: () => send<DashboardPayload>(MESSAGE.GET_DASHBOARD_DATA, {}, 60_000),
+  getSetupState: () => send<SetupState>(MESSAGE.GET_SETUP_STATE),
+  updateSetupState: (patch) => send<SetupState>(MESSAGE.UPDATE_SETUP_STATE, patch as Record<string, unknown>),
   listFields: () => send<VaultField[]>(MESSAGE.LIST_FIELDS),
   addField: (field) => send<{ field: VaultField; conflictCreated: boolean }>(MESSAGE.ADD_FIELD, { field: field as unknown as Record<string, unknown> }),
   updateField: (id, value) => send<VaultField>(MESSAGE.UPDATE_FIELD, { id, value }),
@@ -201,6 +204,10 @@ export const vaultClient: VaultClientApi = {
     await send<void>(MESSAGE.MODEL_REMOVE, {}, 120_000);
   },
   selfTestModel: () => send<ModelSelfTestResult>(MESSAGE.MODEL_SELF_TEST, {}, 600_000),
+  upgradeModel: () => send<{ ok: boolean; message: string; status: ModelStatusSnapshot }>(MESSAGE.MODEL_UPGRADE, {}, 600_000),
+  cancelModelUpgrade: () => send<{ cancelled: boolean }>(MESSAGE.MODEL_UPGRADE_CANCEL),
+  rollbackModel: () => send<{ ok: boolean; message: string; status: ModelStatusSnapshot }>(MESSAGE.MODEL_ROLLBACK, {}, 600_000),
+  prunePreviousModel: () => send<{ pruned: boolean }>(MESSAGE.MODEL_PRUNE_PREVIOUS, {}, 120_000),
   cancelInference: () => send<{ cancelled: boolean }>(MESSAGE.INFER_CANCEL),
   listDocuments: async () => {
     const result = await send<{ documents: VaultDocument[] }>(MESSAGE.LIST_DOCUMENTS);

@@ -1,9 +1,15 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { MODEL_CACHE_NAME, MODEL_METADATA_ID, MODEL_REVISION } from '@shared/constants';
+import {
+  MODEL_CACHE_NAME,
+  MODEL_METADATA_ID,
+  MODEL_REVISION,
+  MODEL_VERSION,
+} from '@shared/constants';
 import { FormFlowError } from '@shared/errors';
 import type { InstalledModelRecord, ModelCapabilities, ModelRuntime } from '@shared/types';
 import { getDb } from '../../core/database/database';
 import { MODEL_VARIANTS, resolveModelUrl, variantById, type ModelVariant } from '../models/model-registry';
+import { validateManifest, type ModelManifest } from './model-manifest';
 
 export interface DownloadProgress {
   phase: 'checking' | 'downloading' | 'verifying' | 'ready';
@@ -61,8 +67,11 @@ export function defaultVariant(): ModelVariant {
   return MODEL_VARIANTS.q8;
 }
 
-async function openCache(): Promise<Cache> {
-  return caches.open(MODEL_CACHE_NAME);
+/** Separate cache used to stage an upgrade before it is promoted. */
+export const MODEL_STAGING_CACHE_NAME = 'formflow-model-cache-staging-v1';
+
+async function openCache(name: string = MODEL_CACHE_NAME): Promise<Cache> {
+  return caches.open(name);
 }
 
 async function cachedResponse(variant: ModelVariant, filePath: string): Promise<Response | null> {
@@ -123,6 +132,39 @@ async function listParts(cache: Cache, url: string): Promise<Array<{ key: string
 
 async function clearParts(cache: Cache, url: string): Promise<void> {
   for (const entry of await listParts(cache, url)) await cache.delete(entry.key);
+}
+
+/**
+ * transformers.js 4.3.2 reads config.json under the main revision during
+ * pipeline discovery. The main-revision alias is therefore part of the trust
+ * boundary: rewrite it from the verified revision bytes and never trust a
+ * pre-existing alias.
+ */
+async function clearIncompleteParts(variant: ModelVariant, cacheName: string = MODEL_CACHE_NAME): Promise<void> {
+  const cache = await openCache(cacheName);
+  for (const file of variant.files) {
+    await clearParts(cache, resolveModelUrl(file.path));
+  }
+}
+
+async function syncVerifiedAliases(cache: Cache, variant: ModelVariant): Promise<void> {
+  for (const alias of ['config.json', 'tokenizer_config.json']) {
+    const file = variant.files.find((entry) => entry.path === alias);
+    if (!file) throw new FormFlowError('MODEL_HASH_MISMATCH', `The model registry is missing ${alias}.`);
+    const revisionResponse = await cache.match(resolveModelUrl(alias));
+    if (!revisionResponse) {
+      throw new FormFlowError('MODEL_HASH_MISMATCH', `The verified model file ${alias} is missing.`);
+    }
+    const verified = await hashResponse(revisionResponse.clone(), file.size);
+    if (file.sha256 && verified.sha256 !== file.sha256) {
+      throw new FormFlowError('MODEL_HASH_MISMATCH', `The model file ${alias} failed integrity verification.`);
+    }
+    const bytes = await revisionResponse.clone().arrayBuffer();
+    await cache.delete(resolveModelUrl(alias, 'main'));
+    await cache.put(resolveModelUrl(alias, 'main'), new Response(bytes, {
+      headers: { 'content-type': revisionResponse.headers.get('content-type') ?? 'application/json' },
+    }));
+  }
 }
 
 async function readParts(
@@ -241,10 +283,11 @@ export async function downloadFile(
   totalCompleted: number,
   onProgress: (progress: DownloadProgress) => void,
   signal: AbortSignal,
+  cacheName: string = MODEL_CACHE_NAME,
 ): Promise<{ sha256: string; size: number; totalBytes: number }> {
   const file = variant.files[fileIndex];
   const url = resolveModelUrl(file.path);
-  const cache = await openCache();
+  const cache = await openCache(cacheName);
 
   const existing = await cache.match(url);
   if (existing) {
@@ -520,11 +563,7 @@ export const modelLoader = {
       // transformers.js 4.3.2 reads config.json under the main revision while
       // discovering pipeline files even when a pinned revision is supplied.
       // Alias the exact verified config bytes so discovery remains local-only.
-      const modelCache = await openCache();
-      for (const alias of ['config.json', 'tokenizer_config.json']) {
-        const cachedAlias = await modelCache.match(resolveModelUrl(alias, MODEL_REVISION));
-        if (cachedAlias) await modelCache.put(resolveModelUrl(alias, 'main'), cachedAlias.clone());
-      }
+      await syncVerifiedAliases(await openCache(), variant);
       const installed: InstalledModelRecord = {
         ...started,
         status: 'installed',
@@ -555,8 +594,15 @@ export const modelLoader = {
         error: error instanceof Error ? error.message : 'Model download failed.',
       };
       await db.put('modelMetadata', failed);
+      // Never leave resumable chunks behind after a failed/cancelled install;
+      // they consume quota and would be revalidated on the next attempt.
+      await clearIncompleteParts(variant).catch(() => undefined);
       throw error;
     }
+  },
+
+  async clearIncomplete(variantId: 'q8' | 'q4f16'): Promise<void> {
+    await clearIncompleteParts(variantById(variantId));
   },
 
   async verify(variantId: 'q8' | 'q4f16', readonly = false): Promise<InstalledModelRecord | null> {
@@ -593,6 +639,21 @@ export const modelLoader = {
         return corrupt;
       }
     }
+    try {
+      await syncVerifiedAliases(cache, variant);
+    } catch (error) {
+      const corrupt: InstalledModelRecord = {
+        ...record,
+        status: 'corrupt',
+        files,
+        error: error instanceof Error ? error.message : 'Model alias verification failed.',
+      };
+      if (!readonly) {
+        const db = await getDb();
+        await db.put('modelMetadata', corrupt);
+      }
+      return corrupt;
+    }
     const updated: InstalledModelRecord = {
       ...record,
       status: record.status === 'ready' ? 'ready' : 'installed',
@@ -627,6 +688,170 @@ export const modelLoader = {
     await cache.delete(resolveModelUrl('tokenizer_config.json', 'main'));
     const db = await getDb();
     await db.delete('modelMetadata', `${MODEL_METADATA_ID}:${variant.id}`);
+  },
+
+  /** Convert a validated trusted manifest into the known-good variant. */
+  variantFromManifest(manifest: ModelManifest): ModelVariant {
+    const validated = validateManifest(manifest, { requireTrusted: true });
+    if (validated.revision !== MODEL_REVISION) {
+      throw new FormFlowError('MODEL_UPGRADE_UNSUPPORTED', 'This build pins a single immutable model revision; staging other revisions requires a build update.');
+    }
+    const variant = MODEL_VARIANTS.q8;
+    const sameFiles = validated.files.length === variant.files.length
+      && validated.files.every((file, index) => {
+        const known = variant.files[index];
+        return known?.path === file.path && known.size === file.size && known.sha256 === file.sha256;
+      });
+    if (!sameFiles) {
+      throw new FormFlowError('MODEL_UPGRADE_UNSUPPORTED', 'The staged manifest files do not match the known-good model variant.');
+    }
+    return variant;
+  },
+
+  /**
+   * Stage a trusted manifest's files into the dedicated staging cache. The
+   * active model and its metadata are untouched. All bytes are hashed while
+   * downloading, then re-hashed by verifyStaged before promotion.
+   */
+  async stageInstall(
+    manifest: ModelManifest,
+    onProgress: (progress: DownloadProgress) => void,
+    signal: AbortSignal,
+  ): Promise<InstalledModelRecord> {
+    const validated = validateManifest(manifest, { requireTrusted: true });
+    const variant = this.variantFromManifest(validated);
+    const recordId = `${MODEL_METADATA_ID}:staging:${validated.releaseId}`;
+    const db = await getDb();
+    const staged: InstalledModelRecord = {
+      id: recordId,
+      modelId: MODEL_METADATA_ID,
+      releaseId: validated.releaseId,
+      manifestVersion: validated.schemaVersion,
+      version: validated.version,
+      revision: validated.revision,
+      dtype: variant.dtype,
+      runtime: variant.runtime,
+      status: 'downloading',
+      expectedBytes: variant.totalBytes,
+      downloadedBytes: 0,
+      files: validated.files.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
+    };
+    await db.put('modelMetadata', staged);
+    try {
+      let total = 0;
+      const computed: InstalledModelRecord['files'] = [];
+      for (let index = 0; index < variant.files.length; index += 1) {
+        if (signal.aborted) throw new FormFlowError('MODEL_CANCELLED', 'Model upgrade was cancelled.');
+        const result = await downloadFile(variant, index, total, onProgress, signal, MODEL_STAGING_CACHE_NAME);
+        total = result.totalBytes;
+        computed.push({ path: variant.files[index]!.path, size: variant.files[index]!.size, sha256: variant.files[index]!.sha256, sha256Computed: result.sha256 });
+        await db.put('modelMetadata', { ...staged, downloadedBytes: total, files: computed, status: 'verifying' });
+      }
+      await syncVerifiedAliases(await openCache(MODEL_STAGING_CACHE_NAME), variant);
+      const verifiedRecord: InstalledModelRecord = { ...staged, downloadedBytes: total, files: computed, status: 'verifying' };
+      await db.put('modelMetadata', verifiedRecord);
+      return verifiedRecord;
+    } catch (error) {
+      await db.put('modelMetadata', {
+        ...staged,
+        status: signal.aborted ? 'not_installed' : 'failed',
+        error: error instanceof Error ? error.message : 'Model staging failed.',
+      });
+      await clearIncompleteParts(variant, MODEL_STAGING_CACHE_NAME).catch(() => undefined);
+      throw error;
+    }
+  },
+
+  /** Re-hash every staged file against the manifest (never trusts cached metadata). */
+  async verifyStaged(manifest: ModelManifest): Promise<boolean> {
+    const validated = validateManifest(manifest, { requireTrusted: true });
+    const cache = await openCache(MODEL_STAGING_CACHE_NAME);
+    for (const file of validated.files) {
+      const response = await cache.match(resolveModelUrl(file.path));
+      if (!response) return false;
+      try {
+        const verified = await hashResponse(response.clone(), file.size);
+        if (verified.sha256 !== file.sha256) return false;
+      } catch {
+        return false;
+      }
+    }
+    try {
+      await syncVerifiedAliases(cache, this.variantFromManifest(validated));
+    } catch {
+      return false;
+    }
+    return true;
+  },
+
+  /** Atomically promote staged files into the active cache and record. */
+  async promoteStaged(manifest: ModelManifest): Promise<InstalledModelRecord> {
+    const validated = validateManifest(manifest, { requireTrusted: true });
+    const variant = this.variantFromManifest(validated);
+    const staging = await openCache(MODEL_STAGING_CACHE_NAME);
+    const active = await openCache(MODEL_CACHE_NAME);
+    for (const file of validated.files) {
+      const url = resolveModelUrl(file.path);
+      const staged = await staging.match(url);
+      if (!staged) throw new FormFlowError('MODEL_HASH_MISMATCH', `The staged model file ${file.path} is missing.`);
+      const bytes = await staged.clone().arrayBuffer();
+      const verified = await hashResponse(new Response(bytes), file.size);
+      if (verified.sha256 !== file.sha256) {
+        throw new FormFlowError('MODEL_HASH_MISMATCH', `The staged model file ${file.path} failed verification before promotion.`);
+      }
+      await active.put(url, new Response(bytes, {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream', 'content-length': String(file.size) },
+      }));
+    }
+    await syncVerifiedAliases(active, variant);
+    const record: InstalledModelRecord = {
+      id: `${MODEL_METADATA_ID}:${variant.id}`,
+      modelId: MODEL_METADATA_ID,
+      releaseId: validated.releaseId,
+      manifestVersion: validated.schemaVersion,
+      version: validated.version ?? MODEL_VERSION,
+      revision: validated.revision,
+      dtype: variant.dtype,
+      runtime: variant.runtime,
+      status: 'installed',
+      expectedBytes: variant.totalBytes,
+      downloadedBytes: variant.totalBytes,
+      files: validated.files.map((file) => ({ ...file, sha256Computed: file.sha256 })),
+      installedAt: new Date().toISOString(),
+      lastVerifiedAt: new Date().toISOString(),
+    };
+    const db = await getDb();
+    await db.put('modelMetadata', record);
+    await this.discardStaged(validated);
+    return record;
+  },
+
+  /** Discard staged files and their journal record after failure or promotion. */
+  async discardStaged(manifest: ModelManifest): Promise<void> {
+    const validated = validateManifest(manifest, { requireTrusted: true });
+    const cache = await openCache(MODEL_STAGING_CACHE_NAME);
+    for (const file of validated.files) {
+      const url = resolveModelUrl(file.path);
+      await cache.delete(url);
+      await clearParts(cache, url);
+    }
+    await cache.delete(resolveModelUrl('config.json', 'main'));
+    await cache.delete(resolveModelUrl('tokenizer_config.json', 'main'));
+    const db = await getDb();
+    await db.delete('modelMetadata', `${MODEL_METADATA_ID}:staging:${validated.releaseId}`);
+  },
+
+  /** Wipe all staging state (cache + metadata) after a failed/interrupted upgrade. */
+  async clearStaging(): Promise<void> {
+    const cache = await openCache(MODEL_STAGING_CACHE_NAME);
+    const keys = await cache.keys();
+    await Promise.all(keys.map((request) => cache.delete(request)));
+    const db = await getDb();
+    const records = await db.getAll('modelMetadata');
+    await Promise.all(records
+      .filter((record) => record.id.startsWith(`${MODEL_METADATA_ID}:staging:`))
+      .map((record) => db.delete('modelMetadata', record.id)));
   },
 
   async cachedChatTemplate(variant: ModelVariant): Promise<string> {

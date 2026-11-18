@@ -4,7 +4,7 @@
   "short_name": "FormFlow",
   "version": "2.0.0",
   "description": "Local-first, encrypted document vault and review-before-fill form assistant.",
-  "minimum_chrome_version": "109",
+  "minimum_chrome_version": "113",
   "action": {
     "default_title": "FormFlow",
     "default_popup": "popup.html",

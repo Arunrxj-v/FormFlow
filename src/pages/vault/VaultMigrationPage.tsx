@@ -129,11 +129,11 @@ export function VaultMigrationPage() {
           <CardHeader title="Encrypted vault transfer" subtitle="Export or import an encrypted vault archive between browser origins." />
           <div className="ff-settings-section">
             <div className="ff-settings-grid">
-              <Input label="Backup passphrase" type="password" value={backupPassword} onChange={(event) => setBackupPassword(event.target.value)} placeholder="At least 8 characters" />
+              <Input label="Backup passphrase" type="password" value={backupPassword} onChange={(event) => setBackupPassword(event.target.value)} placeholder="At least 12 characters for new backups" />
               <Input label="Import passphrase" type="password" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} placeholder="Passphrase for the archive" />
             </div>
             <div className="ff-row ff-gap-8 ff-mt-12" style={{ flexWrap: 'wrap' }}>
-              <Button icon={Download} onClick={exportLocalVault} disabled={backupPassword.length < 8}>Export encrypted vault</Button>
+              <Button icon={Download} onClick={exportLocalVault} disabled={Array.from(backupPassword).length < 12}>Export encrypted vault</Button>
               <label className="ff-btn ff-btn--secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <FileInput size={14} />
                 Import encrypted vault

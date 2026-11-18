@@ -1,4 +1,5 @@
 import { classifyField, optionMatches } from '../lib/classifier.ts';
+import { collectControlElements, rootForElement } from '../lib/dom.ts';
 import type {
   DetectedField,
   DetectedUploadField,
@@ -24,13 +25,15 @@ function createEvent(type: string, options: any = { bubbles: true }): any {
 
 export class StandardFormAdapter implements FormAdapter {
   readonly name = 'Standard Web Form';
+  private elementRegistry = new Map<number, HTMLElement>();
 
   isApplicable(_doc: Document, _url: string): boolean {
     return true; // Default fallback adapter
   }
 
   scan(doc: Document): ScanResult {
-    const candidates = Array.from(doc.querySelectorAll<HTMLElement>('input, textarea, select, [role="textbox"]'));
+    const candidates = collectControlElements(doc);
+    this.elementRegistry.clear();
     const fields: DetectedField[] = [];
     const uploadFields: DetectedUploadField[] = [];
     let index = 0;
@@ -80,6 +83,7 @@ export class StandardFormAdapter implements FormAdapter {
 
       const selector = `[data-formflow-id="${index}"]`;
       element.setAttribute('data-formflow-id', String(index));
+      this.elementRegistry.set(index, element);
 
       let qType: QuestionType = 'text';
       if (element.tagName.toLowerCase() === 'textarea' || element.getAttribute('aria-multiline') === 'true') {
@@ -140,7 +144,10 @@ export class StandardFormAdapter implements FormAdapter {
     const skipped: Array<{ index: number; reason: string }> = [];
 
     for (const item of fills) {
-      const element = doc.querySelector<HTMLElement>(`[data-formflow-id="${item.index}"]`);
+      const registered = this.elementRegistry.get(item.index);
+      const element = registered?.isConnected
+        ? registered
+        : doc.querySelector<HTMLElement>(`[data-formflow-id="${item.index}"]`);
       if (!element) {
         failed += 1;
         skipped.push({ index: item.index, reason: 'Field no longer exists on the page.' });
@@ -166,39 +173,49 @@ export class StandardFormAdapter implements FormAdapter {
   }
 
   private setNativeValue(element: HTMLElement, value: string, doc: Document): boolean {
-    if (element instanceof HTMLSelectElement) {
-      const option = Array.from(element.options).find(
+    const tag = element.tagName.toLowerCase();
+    // Use duck-typing and ownerDocument constructors: controls inside a
+    // same-origin iframe come from a different JavaScript realm, so top-level
+    // `instanceof HTMLInputElement` checks would wrongly fail.
+    if (tag === 'select') {
+      const select = element as HTMLSelectElement;
+      const option = Array.from(select.options).find(
         (item) => item.value === value || item.textContent?.trim().toLowerCase() === value.toLowerCase()
       );
       if (!option) return false;
-      element.value = option.value;
-      element.dispatchEvent(createEvent('input', { bubbles: true }));
-      element.dispatchEvent(createEvent('change', { bubbles: true }));
-      return element.value === option.value;
+      select.value = option.value;
+      select.dispatchEvent(createEvent('input', { bubbles: true }));
+      select.dispatchEvent(createEvent('change', { bubbles: true }));
+      return select.value === option.value;
     }
 
-    if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+    if (tag === 'input' && ['checkbox', 'radio'].includes((element as HTMLInputElement).type)) {
+      const input = element as HTMLInputElement;
       const optionLabel = (this.labelFor(element, doc)
         || element.getAttribute('aria-label')
-        || element.value
+        || input.value
         || '').trim().toLowerCase();
       const targets = value.split(',').map((entry) => entry.trim()).filter(Boolean);
       const matches = targets.some((target) => optionMatches(optionLabel, target));
       if (!matches) return false;
-      if (!element.checked) element.click();
-      return element.checked;
+      if (!input.checked) input.click();
+      return input.checked;
     }
 
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (tag === 'input' || tag === 'textarea') {
+      const input = element as HTMLInputElement | HTMLTextAreaElement;
+      const view = element.ownerDocument?.defaultView;
+      const prototype = tag === 'textarea'
+        ? view?.HTMLTextAreaElement?.prototype
+        : view?.HTMLInputElement?.prototype;
+      const setter = prototype ? Object.getOwnPropertyDescriptor(prototype, 'value')?.set : undefined;
       if (setter) setter.call(element, value);
-      else element.value = value;
+      else input.value = value;
       element.dispatchEvent(createEvent('input', { bubbles: true }));
       element.dispatchEvent(createEvent('change', { bubbles: true }));
       element.dispatchEvent(createEvent('keyup', { bubbles: true, key: 'Unidentified' }));
       // Verify the page did not reject or overwrite the value synchronously.
-      return element.value === value;
+      return input.value === value;
     }
 
     if (element.getAttribute('role') === 'textbox') {
@@ -223,10 +240,11 @@ export class StandardFormAdapter implements FormAdapter {
   }
 
   private labelFor(field: HTMLElement, doc: Document): string {
+    const root = rootForElement(field) ?? doc;
     const id = field.getAttribute('id');
     if (id) {
       try {
-        const explicit = doc.querySelector(`label[for="${CSS.escape(id)}"]`);
+        const explicit = root.querySelector(`label[for="${CSS.escape(id)}"]`);
         if (explicit) return this.textOf(explicit);
       } catch {
         // Fallback if id is invalid selector
@@ -237,7 +255,7 @@ export class StandardFormAdapter implements FormAdapter {
 
     const labelledBy = field.getAttribute('aria-labelledby');
     if (labelledBy) {
-      const parts = labelledBy.split(/\s+/).map((part) => this.textOf(doc.getElementById(part))).filter(Boolean);
+      const parts = labelledBy.split(/\s+/).map((part) => this.textOf(root.getElementById(part))).filter(Boolean);
       if (parts.length > 0) return parts.join(' ');
     }
 

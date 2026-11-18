@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
@@ -22,6 +22,8 @@ import { Button } from '@/components/ui/Button';
 import { Badge as BadgePill } from '@/components/ui/Badge';
 import { useApp } from '@/context/AppContext';
 import { ProgressBar } from '@/components/ui/States';
+import { vaultClient } from '@/services/vaultClient';
+import type { SetupState } from '@/services/vaultClientTypes';
 
 export function OverviewPage() {
   const {
@@ -36,6 +38,11 @@ export function OverviewPage() {
     cancelModelInstall,
   } = useApp();
   const navigate = useNavigate();
+  const [setup, setSetup] = useState<SetupState | null>(null);
+
+  useEffect(() => {
+    void vaultClient.getSetupState().then(setSetup).catch(() => undefined);
+  }, []);
 
   const personalFields = fields.filter((field) => field.category === 'personal' || field.category === 'contact');
   const personalComplete = personalFields.length > 0
@@ -80,6 +87,24 @@ export function OverviewPage() {
           <div><div className="ff-stat-label">Forms autofilled</div><div className="ff-stat-value">{filledCount} completed</div></div>
         </div>
       </section>
+
+      {setup && !setup.completed ? (
+        <section className="ff-card" aria-label="Finish setting up FormFlow" style={{ padding: 16, marginBottom: 16, borderLeft: '3px solid var(--ff-primary)' }}>
+          <div className="ff-row ff-between ff-gap-12" style={{ flexWrap: 'wrap' }}>
+            <div className="ff-row ff-gap-10">
+              <span className="ff-list-row__icon"><Sparkles size={17} /></span>
+              <div>
+                <div className="ff-h3">Finish setting up FormFlow</div>
+                <div className="ff-body-sm ff-muted">Install the optional local model, add documents, and review the review-before-fill workflow.</div>
+              </div>
+            </div>
+            <div className="ff-row ff-gap-8">
+              <Button variant="ghost" onClick={() => void vaultClient.updateSetupState({ completed: true }).then(setSetup)}>Dismiss</Button>
+              <Button variant="primary" icon={ArrowRight} onClick={() => navigate('/onboarding')}>Continue setup</Button>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <div className="ff-dashboard-grid">
         <div className="ff-dashboard-col">

@@ -48,6 +48,7 @@ import {
   decryptBytesWithRawAad,
   decryptJsonWithKey,
   deriveKeyFromPassword,
+  validateBackupPassphrase,
   encryptBytesWithKey,
   encryptBytesWithRawAad,
   encryptJsonWithKey,
@@ -1426,7 +1427,8 @@ export const vaultExportService = {
 
   async exportEncrypted(passphrase: string): Promise<Blob> {
     if (!(await vaultSession.isUnlocked())) throw new FormFlowError('VAULT_LOCKED', 'Unlock the vault before exporting.');
-    if (!passphrase || passphrase.length < 8) throw new FormFlowError('WEAK_PASSWORD', 'Use a backup passphrase of at least 8 characters.');
+    const strength = validateBackupPassphrase(passphrase);
+    if (!strength.ok) throw new FormFlowError('WEAK_PASSWORD', strength.message ?? 'Choose a stronger backup passphrase.');
     const activeVault = await vaultRecordRepository.getActive();
     if (!activeVault) throw new FormFlowError('VAULT_NOT_FOUND', 'Create a local vault before exporting.');
 
